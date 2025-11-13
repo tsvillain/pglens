@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pglens - PostgreSQL Database Viewer</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <div class="sidebar-header-top">
+            <div class="sidebar-header-title">
+              <h2>Tables</h2>
+              <span class="table-count" id="tableCount">0</span>
+            </div>
+            <button class="sidebar-toggle" id="sidebarToggle" title="Minimize sidebar">
+              <span class="toggle-icon">◀</span>
+            </button>
+          </div>
+          <div class="sidebar-search-container">
+            <input 
+              type="text" 
+              class="sidebar-search" 
+              id="sidebarSearch" 
+              placeholder="Search tables..."
+            />
+            <div class="theme-selector">
+              <button class="theme-button" id="themeButton" title="Theme">
+                <span class="theme-icon">🌓</span>
+              </button>
+              <div class="theme-menu" id="themeMenu" style="display: none;">
+                <button class="theme-option" data-theme="light">☀️ Light</button>
+                <button class="theme-option" data-theme="dark">🌙 Dark</button>
+                <button class="theme-option" data-theme="system">💻 System</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar-content">
+          <div class="loading">Loading tables...</div>
+        </div>
+      </div>
+      <div class="main-content">
+        <div class="tabs-container" id="tabsContainer" style="display: none;">
+          <div class="tabs-bar" id="tabsBar"></div>
+        </div>
+        <div class="table-view" id="tableView">
+          <div class="empty-state">
+            <p>Select a table from the sidebar to view its data</p>
+          </div>
+        </div>
+        <div class="pagination" id="pagination" style="display: none;"></div>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

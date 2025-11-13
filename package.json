@@ -1,0 +1,34 @@
+{
+  "name": "pglens",
+  "version": "1.0.0",
+  "description": "A simple PostgreSQL database viewer tool",
+  "main": "src/server.js",
+  "bin": {
+    "pglens": "./bin/pglens"
+  },
+  "scripts": {
+    "start": "node bin/pglens"
+  },
+  "keywords": [
+    "postgresql",
+    "database",
+    "viewer",
+    "cli"
+  ],
+  "author": "Tekeshwar Singh (https://github.com/tsvillain)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tsvillain/pglens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tsvillain/pglens/issues"
+  },
+  "homepage": "https://github.com/tsvillain/pglens#readme",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^11.1.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "postgres": "^3.4.3"
+  }
+}

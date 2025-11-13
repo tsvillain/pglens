@@ -1,0 +1,18 @@
+#!/usr/bin/env node
+
+const { program } = require('commander');
+const { startServer } = require('../src/server');
+
+program
+  .name('pglens')
+  .description('A simple PostgreSQL database viewer tool')
+  .version('1.0.0')
+  .requiredOption('--url <url>', 'PostgreSQL connection string (e.g., postgresql://user:pass@localhost:5432/dbname)')
+  .option('--port <port>', 'Port to run the web server on', '54321')
+  .option('--sslmode <mode>', 'SSL mode: disable, require, prefer, verify-ca, verify-full', 'prefer')
+  .parse(process.argv);
+
+const options = program.opts();
+
+startServer(options.url, parseInt(options.port, 10), options.sslmode);
+
