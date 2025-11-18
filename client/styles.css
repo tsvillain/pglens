@@ -605,6 +605,20 @@ tr:hover {
   font-style: italic;
 }
 
+.json-value {
+  margin: 0;
+  padding: 0;
+  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
+    "Courier New", monospace;
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+}
+
 .column-selector {
   position: relative;
 }

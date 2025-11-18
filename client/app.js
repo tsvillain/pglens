@@ -425,6 +425,27 @@ function handleRefresh() {
 }
 
 /**
+ * Check if a value is a JSON object or array (JSONB/JSON type).
+ * Excludes null, Date objects, and other non-JSON types.
+ * @param {*} value - Value to check
+ * @returns {boolean} True if value is a JSON object or array
+ */
+function isJsonValue(value) {
+  if (value === null || value === undefined) {
+    return false;
+  }
+
+  if (typeof value === 'object') {
+    if (value instanceof Date) {
+      return false;
+    }
+    return Array.isArray(value) || Object.prototype.toString.call(value) === '[object Object]';
+  }
+
+  return false;
+}
+
+/**
  * Load table data for the active tab.
  * Uses cursor-based pagination for tables with primary keys (more efficient for large datasets).
  * Falls back to offset-based pagination for tables without primary keys or backward navigation.
@@ -602,6 +623,15 @@ function renderTable(data) {
         nullSpan.className = 'null-value';
         nullSpan.textContent = 'NULL';
         td.appendChild(nullSpan);
+      } else if (isJsonValue(value)) {
+        const jsonPre = document.createElement('pre');
+        jsonPre.className = 'json-value';
+        try {
+          jsonPre.textContent = JSON.stringify(value, null, 2);
+        } catch (e) {
+          jsonPre.textContent = String(value);
+        }
+        td.appendChild(jsonPre);
       } else {
         td.textContent = String(value);
       }
@@ -836,9 +866,26 @@ function getSortedRows(rows, tab) {
       return tab.sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
     }
 
-    // String comparison (case-insensitive)
-    const aStr = String(aVal).toLowerCase();
-    const bStr = String(bVal).toLowerCase();
+    let aStr, bStr;
+    if (isJsonValue(aVal)) {
+      try {
+        aStr = JSON.stringify(aVal).toLowerCase();
+      } catch (e) {
+        aStr = String(aVal).toLowerCase();
+      }
+    } else {
+      aStr = String(aVal).toLowerCase();
+    }
+
+    if (isJsonValue(bVal)) {
+      try {
+        bStr = JSON.stringify(bVal).toLowerCase();
+      } catch (e) {
+        bStr = String(bVal).toLowerCase();
+      }
+    } else {
+      bStr = String(bVal).toLowerCase();
+    }
 
     if (tab.sortDirection === 'asc') {
       return aStr < bStr ? -1 : aStr > bStr ? 1 : 0;
