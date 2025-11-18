@@ -89,6 +89,147 @@ async function getPrimaryKeyColumn(pool, tableName) {
 }
 
 /**
+ * Get foreign key relationships for a table.
+ * Queries information_schema to get foreign key constraints and their references.
+ * @param {Pool} pool - Database connection pool
+ * @param {string} tableName - Name of the table
+ * @returns {Promise<Object>} Object mapping column names to their foreign key references { table, column }
+ */
+async function getForeignKeyRelations(pool, tableName) {
+  try {
+    const fkQuery = `
+      SELECT
+        kcu.column_name,
+        ccu.table_name AS foreign_table_name,
+        ccu.column_name AS foreign_column_name
+      FROM information_schema.table_constraints AS tc
+      JOIN information_schema.key_column_usage AS kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+      JOIN information_schema.constraint_column_usage AS ccu
+        ON ccu.constraint_name = tc.constraint_name
+        AND ccu.table_schema = tc.table_schema
+      WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_name = $1
+        AND tc.table_schema = 'public';
+    `;
+    const result = await pool.query(fkQuery, [tableName]);
+    const foreignKeys = {};
+    result.rows.forEach(row => {
+      foreignKeys[row.column_name] = {
+        table: row.foreign_table_name,
+        column: row.foreign_column_name
+      };
+    });
+    return foreignKeys;
+  } catch (error) {
+    console.error('Error getting foreign key relations:', error);
+    return {};
+  }
+}
+
+/**
+ * Get all primary key columns for a table.
+ * @param {Pool} pool - Database connection pool
+ * @param {string} tableName - Name of the table
+ * @returns {Promise<Set>} Set of primary key column names
+ */
+async function getPrimaryKeyColumns(pool, tableName) {
+  try {
+    const pkQuery = `
+      SELECT kcu.column_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+      WHERE tc.constraint_type = 'PRIMARY KEY'
+        AND tc.table_name = $1
+        AND tc.table_schema = 'public';
+    `;
+    const result = await pool.query(pkQuery, [tableName]);
+    const pkColumns = new Set();
+    result.rows.forEach(row => {
+      pkColumns.add(row.column_name);
+    });
+    return pkColumns;
+  } catch (error) {
+    console.error('Error getting primary key columns:', error);
+    return new Set();
+  }
+}
+
+/**
+ * Get all unique constraint columns for a table.
+ * @param {Pool} pool - Database connection pool
+ * @param {string} tableName - Name of the table
+ * @returns {Promise<Set>} Set of unique constraint column names
+ */
+async function getUniqueColumns(pool, tableName) {
+  try {
+    const uniqueQuery = `
+      SELECT kcu.column_name
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+      WHERE tc.constraint_type = 'UNIQUE'
+        AND tc.table_name = $1
+        AND tc.table_schema = 'public';
+    `;
+    const result = await pool.query(uniqueQuery, [tableName]);
+    const uniqueColumns = new Set();
+    result.rows.forEach(row => {
+      uniqueColumns.add(row.column_name);
+    });
+    return uniqueColumns;
+  } catch (error) {
+    console.error('Error getting unique columns:', error);
+    return new Set();
+  }
+}
+
+/**
+ * Get column metadata (datatypes and key relationships) for a table.
+ * Queries information_schema.columns to get column names and their data types,
+ * and includes key relationship information (primary keys, foreign keys, unique constraints).
+ * @param {Pool} pool - Database connection pool
+ * @param {string} tableName - Name of the table
+ * @returns {Promise<Object>} Object mapping column names to metadata objects with dataType, isPrimaryKey, isForeignKey, foreignKeyRef, isUnique
+ */
+async function getColumnMetadata(pool, tableName) {
+  try {
+    const metadataQuery = `
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = $1
+      ORDER BY ordinal_position;
+    `;
+    const result = await pool.query(metadataQuery, [tableName]);
+
+    const primaryKeyColumns = await getPrimaryKeyColumns(pool, tableName);
+    const foreignKeyRelations = await getForeignKeyRelations(pool, tableName);
+    const uniqueColumns = await getUniqueColumns(pool, tableName);
+
+    const columns = {};
+    result.rows.forEach(row => {
+      const columnName = row.column_name;
+      columns[columnName] = {
+        dataType: row.data_type,
+        isPrimaryKey: primaryKeyColumns.has(columnName),
+        isForeignKey: !!foreignKeyRelations[columnName],
+        foreignKeyRef: foreignKeyRelations[columnName] || null,
+        isUnique: uniqueColumns.has(columnName)
+      };
+    });
+    return columns;
+  } catch (error) {
+    console.error('Error getting column metadata:', error);
+    return {};
+  }
+}
+
+/**
  * GET /api/tables/:tableName
  * 
  * Returns paginated table data with support for cursor-based pagination.
@@ -110,7 +251,13 @@ async function getPrimaryKeyColumn(pool, tableName) {
  *   limit: number,
  *   isApproximate: boolean,
  *   nextCursor: string|null,
- *   hasPrimaryKey: boolean
+ *   hasPrimaryKey: boolean,
+ *   columns: Object - Map of column names to metadata objects with:
+ *     - dataType: string
+ *     - isPrimaryKey: boolean
+ *     - isForeignKey: boolean
+ *     - foreignKeyRef: { table: string, column: string } | null
+ *     - isUnique: boolean
  * }
  */
 router.get('/tables/:tableName', async (req, res) => {
@@ -126,6 +273,7 @@ router.get('/tables/:tableName', async (req, res) => {
 
     const pool = getPool();
     const primaryKeyColumn = await getPrimaryKeyColumn(pool, tableName);
+    const columnMetadata = await getColumnMetadata(pool, tableName);
 
     const countQuery = `SELECT COUNT(*) as total FROM "${tableName}"`;
     const countResult = await pool.query(countQuery);
@@ -188,6 +336,7 @@ router.get('/tables/:tableName', async (req, res) => {
       isApproximate,
       nextCursor,
       hasPrimaryKey: !!primaryKeyColumn,
+      columns: columnMetadata,
     };
     res.json(responseData);
   } catch (error) {

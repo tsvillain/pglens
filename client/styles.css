@@ -526,11 +526,89 @@ th {
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
   border-bottom: 1px solid var(--border-subtle);
-  white-space: nowrap;
+  white-space: normal;
   font-size: var(--font-size-xs);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   position: relative;
+  vertical-align: bottom;
+}
+
+.column-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-height: 100%;
+}
+
+.column-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  line-height: 1.2;
+}
+
+.column-name {
+  line-height: 1.2;
+}
+
+.key-badges {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.key-badge {
+  display: inline-block;
+  padding: 2px 4px;
+  font-size: 9px;
+  font-weight: var(--font-weight-bold);
+  border-radius: 3px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.key-badge-pk {
+  background-color: #3b82f6;
+  color: #ffffff;
+}
+
+[data-theme="dark"] .key-badge-pk {
+  background-color: #60a5fa;
+  color: #0f172a;
+}
+
+.key-badge-fk {
+  background-color: #f59e0b;
+  color: #ffffff;
+}
+
+[data-theme="dark"] .key-badge-fk {
+  background-color: #fbbf24;
+  color: #0f172a;
+}
+
+.key-badge-uq {
+  background-color: #10b981;
+  color: #ffffff;
+}
+
+[data-theme="dark"] .key-badge-uq {
+  background-color: #34d399;
+  color: #0f172a;
+}
+
+.column-datatype {
+  font-size: 10px;
+  font-weight: var(--font-weight-normal);
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.2;
+  opacity: 0.8;
 }
 
 th.resizable {

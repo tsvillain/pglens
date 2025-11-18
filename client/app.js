@@ -559,7 +559,6 @@ function renderTable(data) {
 
   visibleColumns.forEach((column, index) => {
     const th = document.createElement('th');
-    th.textContent = column;
     th.className = 'sortable resizable';
     th.dataset.column = column;
 
@@ -569,6 +568,78 @@ function renderTable(data) {
     } else {
       th.style.minWidth = '120px';
     }
+
+    const columnHeader = document.createElement('div');
+    columnHeader.className = 'column-header';
+
+    // Column name with key badges
+    const columnNameRow = document.createElement('div');
+    columnNameRow.className = 'column-name-row';
+    
+    const columnName = document.createElement('div');
+    columnName.className = 'column-name';
+    columnName.textContent = column;
+    columnNameRow.appendChild(columnName);
+
+    const columnMeta = data.columns && data.columns[column] ? data.columns[column] : null;
+    
+    let dataType = '';
+    let isPrimaryKey = false;
+    let isForeignKey = false;
+    let foreignKeyRef = null;
+    let isUnique = false;
+
+    if (columnMeta) {
+      if (typeof columnMeta === 'string') {
+        dataType = columnMeta;
+      } else {
+        dataType = columnMeta.dataType || '';
+        isPrimaryKey = columnMeta.isPrimaryKey || false;
+        isForeignKey = columnMeta.isForeignKey || false;
+        foreignKeyRef = columnMeta.foreignKeyRef || null;
+        isUnique = columnMeta.isUnique || false;
+      }
+    }
+
+    const keyBadges = document.createElement('div');
+    keyBadges.className = 'key-badges';
+
+    if (isPrimaryKey) {
+      const pkBadge = document.createElement('span');
+      pkBadge.className = 'key-badge key-badge-pk';
+      pkBadge.textContent = 'PK';
+      pkBadge.title = 'Primary Key';
+      keyBadges.appendChild(pkBadge);
+    }
+
+    if (isForeignKey && foreignKeyRef) {
+      const fkBadge = document.createElement('span');
+      fkBadge.className = 'key-badge key-badge-fk';
+      fkBadge.textContent = 'FK';
+      fkBadge.title = `Foreign Key → ${foreignKeyRef.table}.${foreignKeyRef.column}`;
+      keyBadges.appendChild(fkBadge);
+    }
+
+    if (isUnique && !isPrimaryKey) {
+      const uqBadge = document.createElement('span');
+      uqBadge.className = 'key-badge key-badge-uq';
+      uqBadge.textContent = 'UQ';
+      uqBadge.title = 'Unique Constraint';
+      keyBadges.appendChild(uqBadge);
+    }
+
+    if (keyBadges.children.length > 0) {
+      columnNameRow.appendChild(keyBadges);
+    }
+
+    // Column datatype
+    const columnDatatype = document.createElement('div');
+    columnDatatype.className = 'column-datatype';
+    columnDatatype.textContent = dataType;
+
+    columnHeader.appendChild(columnNameRow);
+    columnHeader.appendChild(columnDatatype);
+    th.appendChild(columnHeader);
 
     if (tab.sortColumn === column) {
       th.classList.add(`sorted-${tab.sortDirection}`);
