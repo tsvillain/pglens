@@ -575,14 +575,14 @@ function renderTable(data) {
     // Column name with key badges
     const columnNameRow = document.createElement('div');
     columnNameRow.className = 'column-name-row';
-    
+
     const columnName = document.createElement('div');
     columnName.className = 'column-name';
     columnName.textContent = column;
     columnNameRow.appendChild(columnName);
 
     const columnMeta = data.columns && data.columns[column] ? data.columns[column] : null;
-    
+
     let dataType = '';
     let isPrimaryKey = false;
     let isForeignKey = false;
@@ -689,6 +689,20 @@ function renderTable(data) {
       }
 
       const value = row[column];
+
+      // Store original value for popup
+      td.dataset.originalValue = value !== null && value !== undefined
+        ? (isJsonValue(value) ? JSON.stringify(value, null, 2) : String(value))
+        : 'NULL';
+      td.dataset.columnName = column;
+
+      td.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        showCellContentPopup(column, value);
+      });
+
+      td.style.cursor = 'pointer';
+
       if (value === null || value === undefined) {
         const nullSpan = document.createElement('span');
         nullSpan.className = 'null-value';
@@ -1044,3 +1058,144 @@ function handlePageChange(newPage) {
 }
 
 window.handlePageChange = handlePageChange;
+
+/**
+ * Format cell content for display in popup dialog.
+ * Handles JSON values, null values, and regular text appropriately.
+ * @param {*} value - The cell value to format
+ * @returns {string} Formatted content string
+ */
+function formatCellContentForPopup(value) {
+  if (value === null || value === undefined) {
+    return 'NULL';
+  }
+
+  if (isJsonValue(value)) {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (e) {
+      return String(value);
+    }
+  }
+
+  return String(value);
+}
+
+/**
+ * Show popup dialog with full cell content.
+ * @param {string} column - Column name
+ * @param {*} value - Cell value
+ */
+function showCellContentPopup(column, value) {
+  closeCellContentPopup();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'cell-popup-overlay';
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      closeCellContentPopup();
+    }
+  });
+
+  const dialog = document.createElement('div');
+  dialog.className = 'cell-popup-dialog';
+  dialog.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+
+  const formattedContent = formatCellContentForPopup(value);
+
+  const header = document.createElement('div');
+  header.className = 'cell-popup-header';
+
+  const title = document.createElement('h3');
+  title.className = 'cell-popup-title';
+  title.textContent = column;
+  header.appendChild(title);
+
+  const headerActions = document.createElement('div');
+  headerActions.className = 'cell-popup-actions';
+
+  const copyButton = document.createElement('button');
+  copyButton.className = 'cell-popup-copy';
+  copyButton.innerHTML = '📋';
+  copyButton.title = 'Copy to clipboard';
+  copyButton.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(formattedContent);
+      copyButton.innerHTML = '✓';
+      copyButton.title = 'Copied!';
+      copyButton.classList.add('copied');
+      setTimeout(() => {
+        copyButton.innerHTML = '📋';
+        copyButton.title = 'Copy to clipboard';
+        copyButton.classList.remove('copied');
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      copyButton.innerHTML = '✗';
+      copyButton.title = 'Copy failed';
+      setTimeout(() => {
+        copyButton.innerHTML = '📋';
+        copyButton.title = 'Copy to clipboard';
+      }, 2000);
+    }
+  });
+  headerActions.appendChild(copyButton);
+
+  const closeButton = document.createElement('button');
+  closeButton.className = 'cell-popup-close';
+  closeButton.innerHTML = '×';
+  closeButton.title = 'Close';
+  closeButton.addEventListener('click', closeCellContentPopup);
+  headerActions.appendChild(closeButton);
+
+  header.appendChild(headerActions);
+
+  const body = document.createElement('div');
+  body.className = 'cell-popup-body';
+
+  const content = document.createElement('pre');
+  content.className = 'cell-popup-content';
+
+  if (value === null || value === undefined) {
+    content.classList.add('null-content');
+    content.textContent = 'NULL';
+  } else if (isJsonValue(value)) {
+    content.classList.add('json-value-popup');
+    content.textContent = formattedContent;
+  } else {
+    content.textContent = formattedContent;
+  }
+
+  body.appendChild(content);
+
+  dialog.appendChild(header);
+  dialog.appendChild(body);
+  overlay.appendChild(dialog);
+
+  document.body.appendChild(overlay);
+
+  const escapeHandler = (e) => {
+    if (e.key === 'Escape') {
+      closeCellContentPopup();
+    }
+  };
+  overlay.dataset.escapeHandler = 'true';
+  document.addEventListener('keydown', escapeHandler);
+
+  overlay._escapeHandler = escapeHandler;
+}
+
+/**
+ * Close the cell content popup dialog.
+ */
+function closeCellContentPopup() {
+  const overlay = document.querySelector('.cell-popup-overlay');
+  if (overlay) {
+    if (overlay._escapeHandler) {
+      document.removeEventListener('keydown', overlay._escapeHandler);
+    }
+    overlay.remove();
+  }
+}
