@@ -1060,22 +1060,154 @@ function handlePageChange(newPage) {
 window.handlePageChange = handlePageChange;
 
 /**
- * Format cell content for display in popup dialog.
- * Handles JSON values, null values, JSON strings, and regular text appropriately.
- * @param {*} value - The cell value to format
- * @returns {Object} Object with formatted content and isJson flag: { content: string, isJson: boolean }
+ * Check if a value is a date/time value and parse it.
+ * Detects Date objects, ISO date strings, and PostgreSQL timestamp strings.
+ * @param {*} value - Value to check
+ * @returns {Date|null} Parsed Date object if valid date/time, null otherwise
  */
-function formatCellContentForPopup(value) {
+function isDateTimeValue(value) {
   if (value === null || value === undefined) {
-    return { content: 'NULL', isJson: false };
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '' || trimmed === 'NULL') {
+      return null;
+    }
+
+    // Try parsing as ISO date string or PostgreSQL timestamp
+    // PostgreSQL timestamps: '2024-01-01 12:00:00' or '2024-01-01 12:00:00.123' or with timezone
+    // ISO strings: '2024-01-01T12:00:00' or '2024-01-01T12:00:00Z' or with timezone offset
+    const date = new Date(trimmed);
+    if (!isNaN(date.getTime())) {
+      const datePattern = /^\d{4}-\d{2}-\d{2}/;
+      if (datePattern.test(trimmed)) {
+        return date;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Get user's current timezone.
+ * @returns {string} IANA timezone identifier (e.g., 'America/New_York')
+ */
+function getCurrentTimezone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch (e) {
+    return 'UTC';
+  }
+}
+
+/**
+ * Get list of common timezones.
+ * @returns {Array<{value: string, label: string}>} Array of timezone objects
+ */
+function getCommonTimezones() {
+  const timezones = [
+    { value: 'UTC', label: 'UTC (Coordinated Universal Time)' },
+    { value: 'America/New_York', label: 'America/New_York (EST/EDT)' },
+    { value: 'America/Chicago', label: 'America/Chicago (CST/CDT)' },
+    { value: 'America/Denver', label: 'America/Denver (MST/MDT)' },
+    { value: 'America/Los_Angeles', label: 'America/Los_Angeles (PST/PDT)' },
+    { value: 'Europe/London', label: 'Europe/London (GMT/BST)' },
+    { value: 'Europe/Paris', label: 'Europe/Paris (CET/CEST)' },
+    { value: 'Europe/Berlin', label: 'Europe/Berlin (CET/CEST)' },
+    { value: 'Asia/Tokyo', label: 'Asia/Tokyo (JST)' },
+    { value: 'Asia/Shanghai', label: 'Asia/Shanghai (CST)' },
+    { value: 'Asia/Dubai', label: 'Asia/Dubai (GST)' },
+    { value: 'Asia/Kolkata', label: 'Asia/Kolkata (IST)' },
+    { value: 'Australia/Sydney', label: 'Australia/Sydney (AEDT/AEST)' },
+    { value: 'Pacific/Auckland', label: 'Pacific/Auckland (NZDT/NZST)' },
+  ];
+
+  // Add current timezone if not already in list
+  const currentTz = getCurrentTimezone();
+  const hasCurrent = timezones.some(tz => tz.value === currentTz);
+  if (!hasCurrent && currentTz !== 'UTC') {
+    timezones.unshift({ value: currentTz, label: `${currentTz} (Current)` });
+  }
+
+  return timezones;
+}
+
+/**
+ * Format date/time in specified timezone.
+ * @param {Date} date - Date object to format
+ * @param {string} timezone - IANA timezone identifier
+ * @returns {string} Formatted date/time string with timezone info
+ */
+function formatDateTimeInTimezone(date, timezone) {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      fractionalSecondDigits: 3,
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(date);
+    const year = parts.find(p => p.type === 'year').value;
+    const month = parts.find(p => p.type === 'month').value;
+    const day = parts.find(p => p.type === 'day').value;
+    const hour = parts.find(p => p.type === 'hour').value;
+    const minute = parts.find(p => p.type === 'minute').value;
+    const second = parts.find(p => p.type === 'second').value;
+    const fractionalSecond = parts.find(p => p.type === 'fractionalSecond')?.value || '';
+
+    const tzFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      timeZoneName: 'short',
+    });
+    const tzParts = tzFormatter.formatToParts(date);
+    const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value || timezone;
+
+    const dateStr = `${year}-${month}-${day}`;
+    const timeStr = `${hour}:${minute}:${second}${fractionalSecond ? '.' + fractionalSecond : ''}`;
+
+    return `${dateStr} ${timeStr} ${tzName}`;
+  } catch (e) {
+    return date.toISOString();
+  }
+}
+
+/**
+ * Format cell content for display in popup dialog.
+ * Handles JSON values, null values, JSON strings, date/time values, and regular text appropriately.
+ * @param {*} value - The cell value to format
+ * @returns {Object} Object with formatted content, isJson flag, isDateTime flag, and dateValue: { content: string, isJson: boolean, isDateTime: boolean, dateValue: Date | null }
+ */
+function formatCellContentForPopup(value, timezone = null) {
+  if (value === null || value === undefined) {
+    return { content: 'NULL', isJson: false, isDateTime: false, dateValue: null };
+  }
+
+  const dateValue = isDateTimeValue(value);
+  if (dateValue) {
+    const tz = timezone || getCurrentTimezone();
+    const formatted = formatDateTimeInTimezone(dateValue, tz);
+    return { content: formatted, isJson: false, isDateTime: true, dateValue: dateValue };
   }
 
   // Handle JSON objects/arrays
   if (isJsonValue(value)) {
     try {
-      return { content: JSON.stringify(value, null, 2), isJson: true };
+      return { content: JSON.stringify(value, null, 2), isJson: true, isDateTime: false, dateValue: null };
     } catch (e) {
-      return { content: String(value), isJson: false };
+      return { content: String(value), isJson: false, isDateTime: false, dateValue: null };
     }
   }
 
@@ -1083,18 +1215,18 @@ function formatCellContentForPopup(value) {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     // Check if string looks like JSON (starts with { or [)
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || 
-        (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
       try {
         const parsed = JSON.parse(trimmed);
-        return { content: JSON.stringify(parsed, null, 2), isJson: true };
+        return { content: JSON.stringify(parsed, null, 2), isJson: true, isDateTime: false, dateValue: null };
       } catch (e) {
-        return { content: String(value), isJson: false };
+        return { content: String(value), isJson: false, isDateTime: false, dateValue: null };
       }
     }
   }
 
-  return { content: String(value), isJson: false };
+  return { content: String(value), isJson: false, isDateTime: false, dateValue: null };
 }
 
 /**
@@ -1122,6 +1254,10 @@ function showCellContentPopup(column, value) {
   const formatted = formatCellContentForPopup(value);
   const formattedContent = formatted.content;
   const isJson = formatted.isJson;
+  const isDateTime = formatted.isDateTime;
+  const dateValue = formatted.dateValue;
+
+  let currentTimezone = getCurrentTimezone();
 
   const header = document.createElement('div');
   header.className = 'cell-popup-header';
@@ -1134,13 +1270,72 @@ function showCellContentPopup(column, value) {
   const headerActions = document.createElement('div');
   headerActions.className = 'cell-popup-actions';
 
+  let timezoneSelect = null;
+  if (isDateTime && dateValue) {
+    timezoneSelect = document.createElement('select');
+    timezoneSelect.className = 'cell-popup-timezone';
+    timezoneSelect.title = 'Select timezone';
+
+    const timezones = getCommonTimezones();
+    timezones.forEach(tz => {
+      const option = document.createElement('option');
+      option.value = tz.value;
+      option.textContent = tz.label;
+      if (tz.value === currentTimezone) {
+        option.selected = true;
+      }
+      timezoneSelect.appendChild(option);
+    });
+
+    headerActions.appendChild(timezoneSelect);
+  }
+
   const copyButton = document.createElement('button');
   copyButton.className = 'cell-popup-copy';
   copyButton.innerHTML = '📋';
   copyButton.title = 'Copy to clipboard';
+
+  const updateContent = () => {
+    if (value === null || value === undefined) {
+      content.classList.add('null-content');
+      content.classList.remove('json-value-popup', 'datetime-value-popup');
+      content.textContent = 'NULL';
+    } else if (isJson) {
+      const formatted = formatCellContentForPopup(value, currentTimezone);
+      content.classList.add('json-value-popup');
+      content.classList.remove('null-content', 'datetime-value-popup');
+      content.textContent = formatted.content;
+    } else if (isDateTime && dateValue) {
+      content.classList.add('datetime-value-popup');
+      content.classList.remove('null-content', 'json-value-popup');
+
+      // Show multiple timezone formats
+      const localTz = formatDateTimeInTimezone(dateValue, getCurrentTimezone());
+      const utcTz = formatDateTimeInTimezone(dateValue, 'UTC');
+      const selectedTz = formatDateTimeInTimezone(dateValue, currentTimezone);
+
+      let displayText = `Local (${getCurrentTimezone()}): ${localTz}\n`;
+      displayText += `UTC: ${utcTz}\n`;
+      if (currentTimezone !== getCurrentTimezone() && currentTimezone !== 'UTC') {
+        displayText += `Selected (${currentTimezone}): ${selectedTz}`;
+      }
+
+      content.textContent = displayText;
+    } else {
+      const formatted = formatCellContentForPopup(value, currentTimezone);
+      content.classList.remove('null-content', 'json-value-popup', 'datetime-value-popup');
+      content.textContent = formatted.content;
+    }
+
+    // Update copy button to use current formatted content
+    const finalFormatted = formatCellContentForPopup(value, currentTimezone);
+    copyButton._formattedContent = finalFormatted.content;
+  };
+
   copyButton.addEventListener('click', async () => {
     try {
-      await navigator.clipboard.writeText(formattedContent);
+      const textToCopy = copyButton._formattedContent || formattedContent;
+      await navigator.clipboard.writeText(textToCopy);
       copyButton.innerHTML = '✓';
       copyButton.title = 'Copied!';
       copyButton.classList.add('copied');
@@ -1159,6 +1354,7 @@ function showCellContentPopup(column, value) {
       }, 2000);
     }
   });
+  copyButton._formattedContent = formattedContent;
   headerActions.appendChild(copyButton);
 
   const closeButton = document.createElement('button');
@@ -1176,14 +1372,13 @@ function showCellContentPopup(column, value) {
   const content = document.createElement('pre');
   content.className = 'cell-popup-content';
 
-  if (value === null || value === undefined) {
-    content.classList.add('null-content');
-    content.textContent = 'NULL';
-  } else if (isJson) {
-    content.classList.add('json-value-popup');
-    content.textContent = formattedContent;
-  } else {
-    content.textContent = formattedContent;
+  updateContent();
+
+  if (timezoneSelect) {
+    timezoneSelect.addEventListener('change', (e) => {
+      currentTimezone = e.target.value;
+      updateContent();
+    });
   }
 
   body.appendChild(content);

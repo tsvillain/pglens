@@ -786,6 +786,30 @@ tr:hover {
   gap: var(--space-2);
 }
 
+.cell-popup-timezone {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  font-family: inherit;
+  color: var(--text-primary);
+  background-color: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  min-width: 200px;
+}
+
+.cell-popup-timezone:hover {
+  border-color: var(--border-default);
+  background-color: var(--bg-hover);
+}
+
+.cell-popup-timezone:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
 .cell-popup-copy,
 .cell-popup-close {
   background: none;
@@ -843,6 +867,13 @@ tr:hover {
   color: var(--text-tertiary);
   font-style: italic;
   font-family: inherit;
+}
+
+.cell-popup-content.datetime-value-popup {
+  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
+    "Courier New", monospace;
+  line-height: 1.8;
+  white-space: pre-wrap;
 }
 
 .column-selector {
