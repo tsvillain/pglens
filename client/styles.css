@@ -528,7 +528,6 @@ th {
   border-bottom: 1px solid var(--border-subtle);
   white-space: normal;
   font-size: var(--font-size-xs);
-  text-transform: uppercase;
   letter-spacing: 0.05em;
   position: relative;
   vertical-align: bottom;
@@ -903,6 +902,33 @@ tr:hover {
   color: var(--text-primary);
   border-bottom: 1px solid var(--border-subtle);
   background-color: var(--bg-elevated);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.column-menu-header-title {
+  flex: 1;
+}
+
+.column-select-all-button {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-primary);
+  background-color: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.column-select-all-button:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .column-menu-options {

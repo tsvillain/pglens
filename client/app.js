@@ -751,6 +751,7 @@ function setupColumnSelector(tab, columns, tableHeader) {
   const columnButton = tableHeader.querySelector('#columnButton');
   const columnMenu = tableHeader.querySelector('#columnMenu');
   const columnMenuOptions = tableHeader.querySelector('#columnMenuOptions');
+  const columnMenuHeader = tableHeader.querySelector('.column-menu-header');
 
   if (!columnButton || !columnMenu || !columnMenuOptions) {
     console.warn('Column selector elements not found');
@@ -758,6 +759,55 @@ function setupColumnSelector(tab, columns, tableHeader) {
   }
 
   columnMenuOptions.innerHTML = '';
+
+  // Check if any columns are hidden
+  const hasHiddenColumns = tab.hiddenColumns && tab.hiddenColumns.length > 0;
+
+  if (columnMenuHeader) {
+    let headerTitle = columnMenuHeader.querySelector('.column-menu-header-title');
+    if (!headerTitle) {
+      const headerText = columnMenuHeader.textContent.trim();
+      columnMenuHeader.innerHTML = '';
+      headerTitle = document.createElement('span');
+      headerTitle.className = 'column-menu-header-title';
+      headerTitle.textContent = headerText || 'Columns';
+      columnMenuHeader.appendChild(headerTitle);
+    }
+
+    let selectAllButton = columnMenuHeader.querySelector('.column-select-all-button');
+    if (hasHiddenColumns) {
+      if (!selectAllButton) {
+        selectAllButton = document.createElement('button');
+        selectAllButton.className = 'column-select-all-button';
+        selectAllButton.textContent = 'Select All';
+        selectAllButton.title = 'Show all columns';
+        selectAllButton.addEventListener('click', (e) => {
+          e.stopPropagation();
+          // Show all columns
+          tab.hiddenColumns = [];
+          if (tab.data) {
+            renderTable(tab.data);
+            requestAnimationFrame(() => {
+              const newTableHeader = document.querySelector('.table-header');
+              if (newTableHeader) {
+                const newColumnMenu = newTableHeader.querySelector('#columnMenu');
+                if (newColumnMenu) {
+                  newColumnMenu.style.display = 'block';
+                  const columns = Object.keys(tab.data.rows[0] || {});
+                  setupColumnSelector(tab, columns, newTableHeader);
+                  updateColumnButtonLabel(tab, columns, newTableHeader);
+                }
+              }
+            });
+          }
+        });
+        columnMenuHeader.appendChild(selectAllButton);
+      }
+      selectAllButton.style.display = 'block';
+    } else if (selectAllButton) {
+      selectAllButton.style.display = 'none';
+    }
+  }
 
   columns.forEach(column => {
     const label = document.createElement('label');
