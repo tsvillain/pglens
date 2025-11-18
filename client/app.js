@@ -1061,24 +1061,40 @@ window.handlePageChange = handlePageChange;
 
 /**
  * Format cell content for display in popup dialog.
- * Handles JSON values, null values, and regular text appropriately.
+ * Handles JSON values, null values, JSON strings, and regular text appropriately.
  * @param {*} value - The cell value to format
- * @returns {string} Formatted content string
+ * @returns {Object} Object with formatted content and isJson flag: { content: string, isJson: boolean }
  */
 function formatCellContentForPopup(value) {
   if (value === null || value === undefined) {
-    return 'NULL';
+    return { content: 'NULL', isJson: false };
   }
 
+  // Handle JSON objects/arrays
   if (isJsonValue(value)) {
     try {
-      return JSON.stringify(value, null, 2);
+      return { content: JSON.stringify(value, null, 2), isJson: true };
     } catch (e) {
-      return String(value);
+      return { content: String(value), isJson: false };
     }
   }
 
-  return String(value);
+  // Handle string values - check if it's a JSON string
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    // Check if string looks like JSON (starts with { or [)
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || 
+        (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        return { content: JSON.stringify(parsed, null, 2), isJson: true };
+      } catch (e) {
+        return { content: String(value), isJson: false };
+      }
+    }
+  }
+
+  return { content: String(value), isJson: false };
 }
 
 /**
@@ -1103,7 +1119,9 @@ function showCellContentPopup(column, value) {
     e.stopPropagation();
   });
 
-  const formattedContent = formatCellContentForPopup(value);
+  const formatted = formatCellContentForPopup(value);
+  const formattedContent = formatted.content;
+  const isJson = formatted.isJson;
 
   const header = document.createElement('div');
   header.className = 'cell-popup-header';
@@ -1161,7 +1179,7 @@ function showCellContentPopup(column, value) {
   if (value === null || value === undefined) {
     content.classList.add('null-content');
     content.textContent = 'NULL';
-  } else if (isJsonValue(value)) {
+  } else if (isJson) {
     content.classList.add('json-value-popup');
     content.textContent = formattedContent;
   } else {
