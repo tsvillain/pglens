@@ -6,13 +6,14 @@ const { startServer } = require('../src/server');
 program
   .name('pglens')
   .description('A simple PostgreSQL database viewer tool')
-  .version('1.0.0')
-  .requiredOption('--url <url>', 'PostgreSQL connection string (e.g., postgresql://user:pass@localhost:5432/dbname)')
-  .option('--port <port>', 'Port to run the web server on', '54321')
-  .option('--sslmode <mode>', 'SSL mode: disable, require, prefer, verify-ca, verify-full', 'prefer')
-  .parse(process.argv);
+  .version('1.0.0');
 
-const options = program.opts();
+program
+  .command('start')
+  .description('Start the pglens server')
+  .action(() => {
+    startServer();
+  });
 
-startServer(options.url, parseInt(options.port, 10), options.sslmode);
+program.parse(process.argv);
 

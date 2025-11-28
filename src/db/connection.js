@@ -60,12 +60,24 @@ function createPool(connectionString, sslMode = 'prefer') {
       console.error('✗ Failed to connect to PostgreSQL database:', err.message);
       const recommendation = getSslModeRecommendation(err, sslMode);
       if (recommendation) {
-        console.error(`\n💡 SSL Mode Recommendation: Try using --sslmode ${recommendation}`);
-        console.error(`   Current SSL mode: ${sslMode}`);
-        console.error(`   Suggested command: Add --sslmode ${recommendation} to your command\n`);
+        console.error(`\n💡 SSL Mode Recommendation: Try using sslmode '${recommendation}'`);
       }
       throw err;
     });
+}
+
+/**
+ * Check if the database pool is initialized and connected.
+ * @returns {Promise<boolean>} True if connected
+ */
+function checkConnection() {
+  if (!sql) {
+    return Promise.resolve(false);
+  }
+  
+  return sql`SELECT 1`
+    .then(() => true)
+    .catch(() => false);
 }
 
 /**
@@ -176,7 +188,7 @@ function getSslConfig(sslMode) {
  */
 function getPool() {
   if (!sql) {
-    throw new Error('Database pool not initialized. Call createPool first.');
+    return null;
   }
   return createPoolWrapper(sql);
 }
@@ -196,5 +208,6 @@ module.exports = {
   createPool,
   getPool,
   closePool,
+  checkConnection,
 };
 

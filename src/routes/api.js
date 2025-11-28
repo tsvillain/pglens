@@ -14,9 +14,68 @@
  */
 
 const express = require('express');
-const { getPool } = require('../db/connection');
+const { getPool, createPool, closePool, checkConnection } = require('../db/connection');
 
 const router = express.Router();
+
+/**
+ * Middleware to check if connected to database
+ */
+const requireConnection = async (req, res, next) => {
+  const pool = getPool();
+  if (!pool) {
+    return res.status(503).json({ error: 'Not connected to database' });
+  }
+  next();
+};
+
+/**
+ * POST /api/connect
+ * Connect to a PostgreSQL database
+ */
+router.post('/connect', async (req, res) => {
+  const { url, sslMode } = req.body;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'Connection string is required' });
+  }
+
+  try {
+    await createPool(url, sslMode || 'prefer');
+    res.json({ connected: true });
+  } catch (error) {
+    res.status(400).json({ 
+      connected: false, 
+      error: error.message 
+    });
+  }
+});
+
+/**
+ * POST /api/disconnect
+ * Disconnect from the current database
+ */
+router.post('/disconnect', async (req, res) => {
+  try {
+    await closePool();
+    res.json({ connected: false });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/status
+ * Check connection status
+ */
+router.get('/status', async (req, res) => {
+  try {
+    const connected = await checkConnection();
+    res.json({ connected });
+  } catch (error) {
+    res.json({ connected: false, error: error.message });
+  }
+});
 
 /**
  * Sanitize table name to prevent SQL injection.
@@ -40,7 +99,7 @@ function sanitizeTableName(tableName) {
  * 
  * Response: { tables: string[] }
  */
-router.get('/tables', async (req, res) => {
+router.get('/tables', requireConnection, async (req, res) => {
   try {
     const pool = getPool();
     const result = await pool.query(`
@@ -260,7 +319,7 @@ async function getColumnMetadata(pool, tableName) {
  *     - isUnique: boolean
  * }
  */
-router.get('/tables/:tableName', async (req, res) => {
+router.get('/tables/:tableName', requireConnection, async (req, res) => {
   try {
     const tableName = sanitizeTableName(req.params.tableName);
     const page = parseInt(req.query.page || '1', 10);

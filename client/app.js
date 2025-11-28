@@ -16,6 +16,9 @@ let activeTabIndex = -1; // Currently active tab index
 let allTables = []; // All available tables from the database
 let searchQuery = ''; // Current search filter for tables
 let currentTheme = 'system'; // Current theme: 'light', 'dark', or 'system'
+let isConnected = false; // Connection status
+
+// UI Elements
 const sidebar = document.getElementById('sidebar');
 const sidebarContent = sidebar.querySelector('.sidebar-content');
 const tableCount = document.getElementById('tableCount');
@@ -28,13 +31,33 @@ const tabsBar = document.getElementById('tabsBar');
 const tableView = document.getElementById('tableView');
 const pagination = document.getElementById('pagination');
 
+// Connection UI Elements
+const connectionDialog = document.getElementById('connectionDialog');
+const connectionUrlInput = document.getElementById('connectionUrl');
+const sslModeSelect = document.getElementById('sslMode');
+const connectButton = document.getElementById('connectButton');
+const connectionError = document.getElementById('connectionError');
+const connectionStatus = document.getElementById('connectionStatus');
+const disconnectButton = document.getElementById('disconnectButton');
+
 /**
  * Initialize the application when DOM is ready.
  * Sets up event listeners and loads initial data.
  */
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  loadTables();
+  checkConnectionStatus(); // Check status before loading tables
+
+  // Connection Event Listeners
+  connectButton.addEventListener('click', handleConnect);
+  disconnectButton.addEventListener('click', handleDisconnect);
+  
+  // Allow Enter key to submit connection form
+  connectionUrlInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      handleConnect();
+    }
+  });
 
   sidebarToggle.addEventListener('click', () => {
     if (tabs.length > 0) {
@@ -140,10 +163,146 @@ function updateSidebarToggleState() {
 }
 
 /**
+ * Check connection status from API.
+ */
+async function checkConnectionStatus() {
+  try {
+    const response = await fetch('/api/status');
+    const data = await response.json();
+    
+    if (data.connected) {
+      setConnectedState(true);
+      loadTables();
+    } else {
+      setConnectedState(false);
+      showConnectionDialog();
+    }
+  } catch (error) {
+    console.error('Failed to check connection status:', error);
+    setConnectedState(false);
+    showConnectionDialog();
+  }
+}
+
+/**
+ * Handle database connection.
+ */
+async function handleConnect() {
+  const url = connectionUrlInput.value.trim();
+  const sslMode = sslModeSelect.value;
+
+  if (!url) {
+    showConnectionError('Please enter a connection URL');
+    return;
+  }
+
+  // Validate URL format
+  try {
+    if (!url.startsWith('postgres://') && !url.startsWith('postgresql://')) {
+      showConnectionError('URL must start with postgres:// or postgresql://');
+      return;
+    }
+    
+    const urlObj = new URL(url);
+    if (!urlObj.pathname || urlObj.pathname === '/') {
+      showConnectionError('URL must include a database name');
+      return;
+    }
+  } catch (e) {
+    showConnectionError('Invalid URL format');
+    return;
+  }
+
+  try {
+    setConnectingState(true);
+    
+    const response = await fetch('/api/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, sslMode })
+    });
+    
+    const data = await response.json();
+
+    if (response.ok && data.connected) {
+      setConnectedState(true);
+      hideConnectionDialog();
+      loadTables();
+      connectionUrlInput.value = ''; // Clear sensitive data
+    } else {
+      showConnectionError(data.error || 'Failed to connect');
+    }
+  } catch (error) {
+    showConnectionError(error.message);
+  } finally {
+    setConnectingState(false);
+  }
+}
+
+/**
+ * Handle database disconnection.
+ */
+async function handleDisconnect() {
+  if (!confirm('Are you sure you want to disconnect? All open tabs will be closed.')) {
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/disconnect', { method: 'POST' });
+    if (response.ok) {
+      setConnectedState(false);
+      closeAllTabs();
+      sidebarContent.innerHTML = '';
+      tableCount.textContent = '0';
+      showConnectionDialog();
+    }
+  } catch (error) {
+    console.error('Failed to disconnect:', error);
+  }
+}
+
+function setConnectedState(connected) {
+  isConnected = connected;
+  if (connected) {
+    connectionStatus.classList.add('connected');
+    connectionStatus.title = 'Connected';
+    disconnectButton.style.display = 'flex';
+  } else {
+    connectionStatus.classList.remove('connected');
+    connectionStatus.title = 'Not Connected';
+    disconnectButton.style.display = 'none';
+  }
+}
+
+function showConnectionDialog() {
+  connectionDialog.style.display = 'flex';
+  connectionError.style.display = 'none';
+  connectionUrlInput.focus();
+}
+
+function hideConnectionDialog() {
+  connectionDialog.style.display = 'none';
+}
+
+function showConnectionError(message) {
+  connectionError.textContent = message;
+  connectionError.style.display = 'block';
+}
+
+function setConnectingState(isConnecting) {
+  connectButton.disabled = isConnecting;
+  connectButton.textContent = isConnecting ? 'Connecting...' : 'Connect';
+  connectionUrlInput.disabled = isConnecting;
+  sslModeSelect.disabled = isConnecting;
+}
+
+/**
  * Load all tables from the database via API.
  * Fetches table list and updates the sidebar.
  */
 async function loadTables() {
+  if (!isConnected) return;
+  
   try {
     sidebarContent.innerHTML = '<div class="loading">Loading tables...</div>';
     const response = await fetch('/api/tables');

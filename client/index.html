@@ -8,16 +8,56 @@
   </head>
   <body>
     <div class="app">
+      <!-- Connection Dialog -->
+      <div class="connection-dialog-overlay" id="connectionDialog" style="display: none;">
+        <div class="connection-dialog">
+          <div class="connection-dialog-header">
+            <h2>Connect to Database</h2>
+          </div>
+          <div class="connection-dialog-body">
+            <div class="form-group">
+              <label for="connectionUrl">Connection URL</label>
+              <input 
+                type="text" 
+                id="connectionUrl" 
+                placeholder="postgresql://user:password@localhost:5432/dbname"
+                autocomplete="off"
+              />
+            </div>
+            <div class="form-group">
+              <label for="sslMode">SSL Mode</label>
+              <select id="sslMode">
+                <option value="prefer" selected>Prefer (Default)</option>
+                <option value="require">Require</option>
+                <option value="disable">Disable</option>
+                <option value="verify-ca">Verify CA</option>
+                <option value="verify-full">Verify Full</option>
+              </select>
+            </div>
+            <div class="error-message" id="connectionError" style="display: none;"></div>
+          </div>
+          <div class="connection-dialog-footer">
+            <button class="button-primary" id="connectButton">Connect</button>
+          </div>
+        </div>
+      </div>
+
       <div class="sidebar" id="sidebar">
         <div class="sidebar-header">
           <div class="sidebar-header-top">
             <div class="sidebar-header-title">
               <h2>Tables</h2>
+              <span class="connection-status" id="connectionStatus" title="Not Connected"></span>
               <span class="table-count" id="tableCount">0</span>
             </div>
-            <button class="sidebar-toggle" id="sidebarToggle" title="Minimize sidebar">
-              <span class="toggle-icon">◀</span>
-            </button>
+            <div class="sidebar-actions">
+               <button class="icon-button" id="disconnectButton" title="Disconnect" style="display: none;">
+                <span class="icon">⏻</span>
+              </button>
+              <button class="sidebar-toggle" id="sidebarToggle" title="Minimize sidebar">
+                <span class="toggle-icon">◀</span>
+              </button>
+            </div>
           </div>
           <div class="sidebar-search-container">
             <input 
