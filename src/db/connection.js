@@ -1,13 +1,16 @@
 /**
  * Database Connection Pool Manager
  * 
- * Manages PostgreSQL connection pool using postgres library.
+ * Manages PostgreSQL connection pools using postgres library.
  * Provides connection pooling for efficient database access.
+ * Supports multiple simultaneous connections.
  */
 
 const postgres = require('postgres');
+const crypto = require('crypto');
 
-let sql = null;
+// Map to store multiple connections: id -> { pool, name, connectionString }
+const connections = new Map();
 
 /**
  * Create a wrapper that provides pg-compatible query interface.
@@ -26,17 +29,27 @@ function createPoolWrapper(sqlClient) {
 }
 
 /**
+ * Extract database name from connection string
+ * @param {string} connectionString 
+ * @returns {string} Database name or 'Unknown'
+ */
+function getDatabaseName(connectionString) {
+  try {
+    const url = new URL(connectionString);
+    return url.pathname.replace(/^\//, '') || 'postgres';
+  } catch (e) {
+    return 'postgres';
+  }
+}
+
+/**
  * Create a new connection pool.
- * Closes existing pool if one exists.
  * @param {string} connectionString - PostgreSQL connection string
  * @param {string} sslMode - SSL mode: disable, require, prefer, verify-ca, verify-full
- * @returns {Promise} The created connection wrapper
+ * @param {string} [customName] - Optional custom name for the connection
+ * @returns {Promise<{id: string, name: string}>} The created connection info
  */
-function createPool(connectionString, sslMode = 'prefer') {
-  if (sql) {
-    sql.end();
-  }
-
+function createPool(connectionString, sslMode = 'prefer', customName = null) {
   const sslConfig = getSslConfig(sslMode);
   const poolConfig = {
     max: 10,
@@ -48,13 +61,36 @@ function createPool(connectionString, sslMode = 'prefer') {
     poolConfig.ssl = sslConfig;
   }
 
-  sql = postgres(connectionString, poolConfig);
+  const sql = postgres(connectionString, poolConfig);
 
   // Test the connection
   return sql`SELECT NOW()`
     .then(() => {
       console.log('✓ Connected to PostgreSQL database');
-      return createPoolWrapper(sql);
+
+      // Check if this connection string already exists
+      for (const [existingId, existingConn] of connections.entries()) {
+        if (existingConn.connectionString === connectionString) {
+          // If a custom name is provided and different from existing, update it
+          if (customName && customName !== existingConn.name) {
+            existingConn.name = customName;
+          }
+          // Return the existing connection details
+          sql.end();
+          return { id: existingId, name: existingConn.name, reused: true };
+        }
+      }
+
+      const id = crypto.randomUUID();
+      const name = customName || getDatabaseName(connectionString);
+
+      connections.set(id, {
+        pool: sql,
+        name,
+        connectionString
+      });
+
+      return { id, name };
     })
     .catch((err) => {
       console.error('✗ Failed to connect to PostgreSQL database:', err.message);
@@ -67,15 +103,17 @@ function createPool(connectionString, sslMode = 'prefer') {
 }
 
 /**
- * Check if the database pool is initialized and connected.
+ * Check if a specific connection is active.
+ * @param {string} connectionId - Connection ID
  * @returns {Promise<boolean>} True if connected
  */
-function checkConnection() {
-  if (!sql) {
+function checkConnection(connectionId) {
+  const conn = connections.get(connectionId);
+  if (!conn) {
     return Promise.resolve(false);
   }
-  
-  return sql`SELECT 1`
+
+  return conn.pool`SELECT 1`
     .then(() => true)
     .catch(() => false);
 }
@@ -182,26 +220,51 @@ function getSslConfig(sslMode) {
 }
 
 /**
- * Get the current connection pool.
- * @returns {object} The connection pool wrapper
- * @throws {Error} If pool is not initialized
+ * Get a connection pool by ID.
+ * @param {string} connectionId - The connection ID
+ * @returns {object|null} The connection pool wrapper or null if not found
  */
-function getPool() {
-  if (!sql) {
+function getPool(connectionId) {
+  const conn = connections.get(connectionId);
+  if (!conn) {
     return null;
   }
-  return createPoolWrapper(sql);
+  return createPoolWrapper(conn.pool);
 }
 
 /**
- * Close the connection pool gracefully.
+ * Get list of all active connections.
+ * @returns {Array<{id: string, name: string}>} List of connections
+ */
+function getConnections() {
+  const result = [];
+  for (const [id, conn] of connections.entries()) {
+    result.push({ id, name: conn.name });
+  }
+  return result;
+}
+
+/**
+ * Close a specific connection pool.
+ * @param {string} connectionId - The connection ID to close
  * @returns {Promise} Promise that resolves when pool is closed
  */
-function closePool() {
-  if (sql) {
-    return sql.end();
+async function closePool(connectionId) {
+  if (connectionId) {
+    const conn = connections.get(connectionId);
+    if (conn) {
+      await conn.pool.end();
+      connections.delete(connectionId);
+    }
+  } else {
+    // Close all connections (e.g., on server shutdown)
+    const promises = [];
+    for (const conn of connections.values()) {
+      promises.push(conn.pool.end());
+    }
+    await Promise.all(promises);
+    connections.clear();
   }
-  return Promise.resolve();
 }
 
 module.exports = {
@@ -209,5 +272,5 @@ module.exports = {
   getPool,
   closePool,
   checkConnection,
+  getConnections
 };
-

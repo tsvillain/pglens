@@ -96,6 +96,9 @@
   padding: var(--space-6);
   border-bottom: 1px solid var(--border-subtle);
   background-color: var(--bg-elevated);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .connection-dialog-header h2 {
@@ -103,6 +106,23 @@
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
   margin: 0;
+}
+
+.close-dialog-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.close-dialog-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .connection-dialog-body {
@@ -316,7 +336,8 @@ code {
 }
 
 .sidebar.minimized .sidebar-header-top h2,
-.sidebar.minimized .sidebar-header-top .table-count,
+.sidebar.minimized .connections-section,
+.sidebar.minimized .tables-section h3,
 .sidebar.minimized .sidebar-search-container,
 .sidebar.minimized .sidebar-content {
   display: none;
@@ -339,7 +360,7 @@ code {
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .sidebar-header-top {
@@ -395,6 +416,111 @@ code {
   display: inline-block;
 }
 
+/* Connections Section */
+.connections-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-right: var(--space-1);
+}
+
+.add-connection-button {
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+}
+
+.connections-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.connection-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  margin-bottom: 2px;
+}
+
+.connection-item:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.connection-item.active {
+  background-color: var(--bg-active);
+  color: var(--color-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.connection-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: var(--space-2);
+}
+
+.connection-disconnect {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: all var(--transition-fast);
+}
+
+.connection-item:hover .connection-disconnect {
+  opacity: 1;
+}
+
+.connection-disconnect:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+  color: var(--color-error);
+}
+
+[data-theme="dark"] .connection-disconnect:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Tables Section */
+.tables-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space-3);
+}
+
 .sidebar-search-container {
   width: 100%;
   display: flex;
@@ -423,16 +549,18 @@ code {
 .table-count {
   background-color: var(--bg-elevated);
   color: var(--text-secondary);
-  padding: var(--space-1) var(--space-2);
+  padding: 2px 6px;
   border-radius: var(--radius-full);
-  font-size: var(--font-size-xs);
+  font-size: 10px;
   font-weight: var(--font-weight-medium);
+  margin-left: var(--space-2);
+  border: 1px solid var(--border-subtle);
 }
 
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-2) 0;
+  padding: 0;
 }
 
 .table-list {
@@ -442,12 +570,14 @@ code {
 }
 
 .table-list li {
-  padding: var(--space-2) var(--space-5);
+  padding: var(--space-2) var(--space-3);
   cursor: pointer;
   color: var(--text-primary);
   font-size: var(--font-size-sm);
   transition: background-color var(--transition-fast);
   border-left: 3px solid transparent;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin-right: var(--space-2);
 }
 
 .table-list li:hover {

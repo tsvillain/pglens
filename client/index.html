@@ -13,8 +13,18 @@
         <div class="connection-dialog">
           <div class="connection-dialog-header">
             <h2>Connect to Database</h2>
+            <button class="close-dialog-button" id="closeConnectionDialog" style="display: none;">×</button>
           </div>
           <div class="connection-dialog-body">
+            <div class="form-group">
+              <label for="connectionName">Connection Name (Optional)</label>
+              <input 
+                type="text" 
+                id="connectionName" 
+                placeholder="e.g., Production DB, Local Dev"
+                autocomplete="off"
+              />
+            </div>
             <div class="form-group">
               <label for="connectionUrl">Connection URL</label>
               <input 
@@ -46,40 +56,55 @@
         <div class="sidebar-header">
           <div class="sidebar-header-top">
             <div class="sidebar-header-title">
-              <h2>Tables</h2>
-              <span class="connection-status" id="connectionStatus" title="Not Connected"></span>
-              <span class="table-count" id="tableCount">0</span>
+              <h2>pglens</h2>
             </div>
             <div class="sidebar-actions">
-               <button class="icon-button" id="disconnectButton" title="Disconnect" style="display: none;">
-                <span class="icon">⏻</span>
-              </button>
               <button class="sidebar-toggle" id="sidebarToggle" title="Minimize sidebar">
                 <span class="toggle-icon">◀</span>
               </button>
             </div>
           </div>
-          <div class="sidebar-search-container">
-            <input 
-              type="text" 
-              class="sidebar-search" 
-              id="sidebarSearch" 
-              placeholder="Search tables..."
-            />
-            <div class="theme-selector">
-              <button class="theme-button" id="themeButton" title="Theme">
-                <span class="theme-icon">🌓</span>
+          
+          <!-- Connections Section -->
+          <div class="connections-section">
+            <div class="section-header">
+              <h3>Connections</h3>
+              <button class="icon-button add-connection-button" id="addConnectionButton" title="Add Connection">
+                <span class="icon">+</span>
               </button>
-              <div class="theme-menu" id="themeMenu" style="display: none;">
-                <button class="theme-option" data-theme="light">☀️ Light</button>
-                <button class="theme-option" data-theme="dark">🌙 Dark</button>
-                <button class="theme-option" data-theme="system">💻 System</button>
+            </div>
+            <ul class="connections-list" id="connectionsList">
+              <!-- Connections will be added here -->
+            </ul>
+          </div>
+
+          <!-- Tables Section -->
+          <div class="tables-section">
+            <div class="section-header">
+              <h3>Tables <span class="table-count" id="tableCount">0</span></h3>
+            </div>
+            <div class="sidebar-search-container">
+              <input 
+                type="text" 
+                class="sidebar-search" 
+                id="sidebarSearch" 
+                placeholder="Search tables..."
+              />
+              <div class="theme-selector">
+                <button class="theme-button" id="themeButton" title="Theme">
+                  <span class="theme-icon">🌓</span>
+                </button>
+                <div class="theme-menu" id="themeMenu" style="display: none;">
+                  <button class="theme-option" data-theme="light">☀️ Light</button>
+                  <button class="theme-option" data-theme="dark">🌙 Dark</button>
+                  <button class="theme-option" data-theme="system">💻 System</button>
+                </div>
               </div>
             </div>
+            <div class="sidebar-content" id="sidebarContent">
+              <div class="loading">Loading tables...</div>
+            </div>
           </div>
-        </div>
-        <div class="sidebar-content">
-          <div class="loading">Loading tables...</div>
         </div>
       </div>
       <div class="main-content">

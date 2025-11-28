@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { getPool, createPool, closePool, checkConnection } = require('../db/connection');
+const { getPool, createPool, closePool, checkConnection, getConnections } = require('../db/connection');
 
 const router = express.Router();
 
@@ -22,10 +22,17 @@ const router = express.Router();
  * Middleware to check if connected to database
  */
 const requireConnection = async (req, res, next) => {
-  const pool = getPool();
-  if (!pool) {
-    return res.status(503).json({ error: 'Not connected to database' });
+  const connectionId = req.headers['x-connection-id'];
+  if (!connectionId) {
+    return res.status(400).json({ error: 'Connection ID header required' });
   }
+  
+  const pool = getPool(connectionId);
+  if (!pool) {
+    return res.status(503).json({ error: 'Not connected to database or invalid connection ID' });
+  }
+  
+  req.pool = pool;
   next();
 };
 
@@ -34,15 +41,15 @@ const requireConnection = async (req, res, next) => {
  * Connect to a PostgreSQL database
  */
 router.post('/connect', async (req, res) => {
-  const { url, sslMode } = req.body;
+  const { url, sslMode, name } = req.body;
   
   if (!url) {
     return res.status(400).json({ error: 'Connection string is required' });
   }
 
   try {
-    await createPool(url, sslMode || 'prefer');
-    res.json({ connected: true });
+    const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name);
+    res.json({ connected: true, connectionId: id, name: connectionName });
   } catch (error) {
     res.status(400).json({ 
       connected: false, 
@@ -52,12 +59,27 @@ router.post('/connect', async (req, res) => {
 });
 
 /**
+ * GET /api/connections
+ * List active connections
+ */
+router.get('/connections', (req, res) => {
+  const connections = getConnections();
+  res.json({ connections });
+});
+
+/**
  * POST /api/disconnect
- * Disconnect from the current database
+ * Disconnect from a database
  */
 router.post('/disconnect', async (req, res) => {
+  const connectionId = req.body.connectionId || req.headers['x-connection-id'];
+  
+  if (!connectionId) {
+    return res.status(400).json({ error: 'Connection ID required' });
+  }
+
   try {
-    await closePool();
+    await closePool(connectionId);
     res.json({ connected: false });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -69,8 +91,13 @@ router.post('/disconnect', async (req, res) => {
  * Check connection status
  */
 router.get('/status', async (req, res) => {
+  const connectionId = req.headers['x-connection-id'];
+  if (!connectionId) {
+    return res.json({ connected: false });
+  }
+  
   try {
-    const connected = await checkConnection();
+    const connected = await checkConnection(connectionId);
     res.json({ connected });
   } catch (error) {
     res.json({ connected: false, error: error.message });
@@ -101,7 +128,7 @@ function sanitizeTableName(tableName) {
  */
 router.get('/tables', requireConnection, async (req, res) => {
   try {
-    const pool = getPool();
+    const pool = req.pool;
     const result = await pool.query(`
       SELECT table_name 
       FROM information_schema.tables 
@@ -261,7 +288,7 @@ async function getColumnMetadata(pool, tableName) {
       SELECT column_name, data_type
       FROM information_schema.columns
       WHERE table_schema = 'public'
-        AND table_name = $1
+      AND table_name = $1
       ORDER BY ordinal_position;
     `;
     const result = await pool.query(metadataQuery, [tableName]);
@@ -330,7 +357,7 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
       return res.status(400).json({ error: 'Page and limit must be positive integers' });
     }
 
-    const pool = getPool();
+    const pool = req.pool;
     const primaryKeyColumn = await getPrimaryKeyColumn(pool, tableName);
     const columnMetadata = await getColumnMetadata(pool, tableName);
 
@@ -405,4 +432,3 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
 });
 
 module.exports = router;
-

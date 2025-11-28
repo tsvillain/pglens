@@ -3,6 +3,7 @@
  * 
  * Main client-side application for viewing PostgreSQL database tables.
  * Features:
+ * - Multi-database connection support
  * - Multi-tab table viewing
  * - Client-side sorting and column management
  * - Cursor-based pagination for large tables
@@ -11,16 +12,18 @@
  */
 
 // Application state
-let tabs = []; // Array of tab objects: { tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate }
+let connections = []; // Array of active connections: { id, name }
+let activeConnectionId = null; // Currently active connection ID
+let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate }
 let activeTabIndex = -1; // Currently active tab index
-let allTables = []; // All available tables from the database
+let allTables = []; // All available tables from the current database connection
 let searchQuery = ''; // Current search filter for tables
 let currentTheme = 'system'; // Current theme: 'light', 'dark', or 'system'
-let isConnected = false; // Connection status
 
 // UI Elements
 const sidebar = document.getElementById('sidebar');
-const sidebarContent = sidebar.querySelector('.sidebar-content');
+const sidebarContent = document.getElementById('sidebarContent');
+const connectionsList = document.getElementById('connectionsList');
 const tableCount = document.getElementById('tableCount');
 const sidebarToggle = document.getElementById('sidebarToggle');
 const sidebarSearch = document.getElementById('sidebarSearch');
@@ -30,15 +33,16 @@ const tabsContainer = document.getElementById('tabsContainer');
 const tabsBar = document.getElementById('tabsBar');
 const tableView = document.getElementById('tableView');
 const pagination = document.getElementById('pagination');
+const addConnectionButton = document.getElementById('addConnectionButton');
 
 // Connection UI Elements
 const connectionDialog = document.getElementById('connectionDialog');
+const closeConnectionDialogButton = document.getElementById('closeConnectionDialog');
+const connectionNameInput = document.getElementById('connectionName');
 const connectionUrlInput = document.getElementById('connectionUrl');
 const sslModeSelect = document.getElementById('sslMode');
 const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
-const connectionStatus = document.getElementById('connectionStatus');
-const disconnectButton = document.getElementById('disconnectButton');
 
 /**
  * Initialize the application when DOM is ready.
@@ -46,12 +50,13 @@ const disconnectButton = document.getElementById('disconnectButton');
  */
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  checkConnectionStatus(); // Check status before loading tables
+  fetchConnections(); // Check status and load connections
 
   // Connection Event Listeners
   connectButton.addEventListener('click', handleConnect);
-  disconnectButton.addEventListener('click', handleDisconnect);
-  
+  addConnectionButton.addEventListener('click', () => showConnectionDialog(true));
+  closeConnectionDialogButton.addEventListener('click', hideConnectionDialog);
+
   // Allow Enter key to submit connection form
   connectionUrlInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
@@ -152,7 +157,7 @@ function updateThemeIcon() {
 }
 
 function updateSidebarToggleState() {
-  if (tabs.length === 0) {
+  if (tabs.length === 0 && connections.length === 0) {
     sidebarToggle.disabled = true;
     sidebarToggle.classList.add('disabled');
     sidebar.classList.remove('minimized');
@@ -163,24 +168,93 @@ function updateSidebarToggleState() {
 }
 
 /**
- * Check connection status from API.
+ * Fetch active connections from API.
  */
-async function checkConnectionStatus() {
+async function fetchConnections() {
   try {
-    const response = await fetch('/api/status');
+    const response = await fetch('/api/connections');
     const data = await response.json();
-    
-    if (data.connected) {
-      setConnectedState(true);
+
+    connections = data.connections || [];
+
+    if (connections.length > 0) {
+      if (!activeConnectionId || !connections.find(c => c.id === activeConnectionId)) {
+        activeConnectionId = connections[0].id;
+      }
+      renderConnectionsList();
       loadTables();
+      hideConnectionDialog();
     } else {
-      setConnectedState(false);
-      showConnectionDialog();
+      showConnectionDialog(false);
     }
   } catch (error) {
-    console.error('Failed to check connection status:', error);
-    setConnectedState(false);
-    showConnectionDialog();
+    console.error('Failed to fetch connections:', error);
+    showConnectionDialog(false);
+  }
+}
+
+/**
+ * Render the list of active connections in the sidebar.
+ */
+function renderConnectionsList() {
+  connectionsList.innerHTML = '';
+
+  connections.forEach(conn => {
+    const li = document.createElement('li');
+    li.className = 'connection-item';
+    if (conn.id === activeConnectionId) {
+      li.classList.add('active');
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'connection-name';
+    nameSpan.textContent = conn.name;
+    nameSpan.title = conn.name;
+    nameSpan.addEventListener('click', () => switchConnection(conn.id));
+
+    const disconnectBtn = document.createElement('button');
+    disconnectBtn.className = 'connection-disconnect';
+    disconnectBtn.innerHTML = '×';
+    disconnectBtn.title = 'Disconnect';
+    disconnectBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      handleDisconnect(conn.id);
+    });
+
+    li.appendChild(nameSpan);
+    li.appendChild(disconnectBtn);
+    connectionsList.appendChild(li);
+  });
+}
+
+/**
+ * Switch the active connection.
+ * @param {string} connectionId - The connection ID to switch to
+ */
+function switchConnection(connectionId) {
+  if (activeConnectionId === connectionId) return;
+
+  activeConnectionId = connectionId;
+  renderConnectionsList();
+  loadTables();
+
+  // Clear tables view if no tab from this connection is active
+  const currentTab = getActiveTab();
+  if (currentTab && currentTab.connectionId !== activeConnectionId) {
+    // Try to find the last active tab for this connection
+    const tabIndex = tabs.findIndex(t => t.connectionId === activeConnectionId);
+    if (tabIndex !== -1) {
+      switchToTab(tabIndex);
+    } else {
+      // No tabs for this connection, show empty state
+      tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+      pagination.style.display = 'none';
+
+      // Deselect all tabs visually
+      const tabElements = tabsBar.querySelectorAll('.tab');
+      tabElements.forEach(el => el.classList.remove('active'));
+      activeTabIndex = -1;
+    }
   }
 }
 
@@ -189,6 +263,7 @@ async function checkConnectionStatus() {
  */
 async function handleConnect() {
   const url = connectionUrlInput.value.trim();
+  const connectionName = connectionNameInput.value.trim();
   const sslMode = sslModeSelect.value;
 
   if (!url) {
@@ -202,7 +277,7 @@ async function handleConnect() {
       showConnectionError('URL must start with postgres:// or postgresql://');
       return;
     }
-    
+
     const urlObj = new URL(url);
     if (!urlObj.pathname || urlObj.pathname === '/') {
       showConnectionError('URL must include a database name');
@@ -215,20 +290,33 @@ async function handleConnect() {
 
   try {
     setConnectingState(true);
-    
+
     const response = await fetch('/api/connect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, sslMode })
+      body: JSON.stringify({ url, sslMode, name: connectionName || undefined })
     });
-    
+
     const data = await response.json();
 
-    if (response.ok && data.connected) {
-      setConnectedState(true);
-      hideConnectionDialog();
-      loadTables();
-      connectionUrlInput.value = ''; // Clear sensitive data
+    if (response.ok) {
+      if (data.connected) {
+        // Check if this connection ID already exists in our list (backend might return existing one)
+        const existingIndex = connections.findIndex(c => c.id === data.connectionId);
+        if (existingIndex === -1) {
+          connections.push({ id: data.connectionId, name: data.name });
+        } else {
+          console.log('Connection already exists, switching to it');
+        }
+
+        activeConnectionId = data.connectionId;
+
+        renderConnectionsList();
+        loadTables();
+        hideConnectionDialog();
+        connectionUrlInput.value = ''; // Clear sensitive data
+        connectionNameInput.value = ''; // Clear connection name
+      }
     } else {
       showConnectionError(data.error || 'Failed to connect');
     }
@@ -241,43 +329,67 @@ async function handleConnect() {
 
 /**
  * Handle database disconnection.
+ * @param {string} connectionId - ID of connection to disconnect
  */
-async function handleDisconnect() {
-  if (!confirm('Are you sure you want to disconnect? All open tabs will be closed.')) {
+async function handleDisconnect(connectionId) {
+  if (!confirm('Are you sure you want to disconnect? Associated tabs will be closed.')) {
     return;
   }
 
   try {
-    const response = await fetch('/api/disconnect', { method: 'POST' });
+    const response = await fetch('/api/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connectionId })
+    });
+
     if (response.ok) {
-      setConnectedState(false);
-      closeAllTabs();
-      sidebarContent.innerHTML = '';
-      tableCount.textContent = '0';
-      showConnectionDialog();
+      // Remove from local state
+      connections = connections.filter(c => c.id !== connectionId);
+
+      // Close associated tabs
+      const tabsToRemove = [];
+      tabs.forEach((tab, index) => {
+        if (tab.connectionId === connectionId) {
+          tabsToRemove.push(index);
+        }
+      });
+
+      // Remove tabs in reverse order to maintain indices
+      for (let i = tabsToRemove.length - 1; i >= 0; i--) {
+        closeTab(tabsToRemove[i]);
+      }
+
+      if (connections.length === 0) {
+        activeConnectionId = null;
+        sidebarContent.innerHTML = '';
+        tableCount.textContent = '0';
+        renderConnectionsList();
+        showConnectionDialog(false);
+      } else {
+        if (activeConnectionId === connectionId) {
+          // Switch to another connection (the first one)
+          activeConnectionId = connections[0].id;
+          loadTables();
+        }
+        renderConnectionsList();
+      }
     }
   } catch (error) {
     console.error('Failed to disconnect:', error);
   }
 }
 
-function setConnectedState(connected) {
-  isConnected = connected;
-  if (connected) {
-    connectionStatus.classList.add('connected');
-    connectionStatus.title = 'Connected';
-    disconnectButton.style.display = 'flex';
-  } else {
-    connectionStatus.classList.remove('connected');
-    connectionStatus.title = 'Not Connected';
-    disconnectButton.style.display = 'none';
-  }
-}
-
-function showConnectionDialog() {
+function showConnectionDialog(allowClose) {
   connectionDialog.style.display = 'flex';
   connectionError.style.display = 'none';
   connectionUrlInput.focus();
+
+  if (allowClose && connections.length > 0) {
+    closeConnectionDialogButton.style.display = 'block';
+  } else {
+    closeConnectionDialogButton.style.display = 'none';
+  }
 }
 
 function hideConnectionDialog() {
@@ -292,20 +404,24 @@ function showConnectionError(message) {
 function setConnectingState(isConnecting) {
   connectButton.disabled = isConnecting;
   connectButton.textContent = isConnecting ? 'Connecting...' : 'Connect';
+  connectionNameInput.disabled = isConnecting;
   connectionUrlInput.disabled = isConnecting;
   sslModeSelect.disabled = isConnecting;
 }
 
 /**
- * Load all tables from the database via API.
+ * Load all tables from the active database via API.
  * Fetches table list and updates the sidebar.
  */
 async function loadTables() {
-  if (!isConnected) return;
-  
+  if (!activeConnectionId) return;
+
   try {
     sidebarContent.innerHTML = '<div class="loading">Loading tables...</div>';
-    const response = await fetch('/api/tables');
+
+    const response = await fetch('/api/tables', {
+      headers: { 'x-connection-id': activeConnectionId }
+    });
     const data = await response.json();
 
     if (data.error) {
@@ -384,7 +500,11 @@ function escapeHtml(text) {
 }
 
 function updateSidebarActiveState() {
-  const activeTable = getActiveTab()?.tableName;
+  const activeTab = getActiveTab();
+
+  // Only highlight sidebar if active tab belongs to active connection
+  const activeTable = (activeTab && activeTab.connectionId === activeConnectionId) ? activeTab.tableName : null;
+
   if (!activeTable) {
     const tableItems = sidebarContent.querySelectorAll('.table-list li');
     tableItems.forEach(item => item.classList.remove('active'));
@@ -411,12 +531,18 @@ function updateSidebarActiveState() {
  * @param {string} tableName - Name of the table to open
  */
 function handleTableSelect(tableName) {
-  const existingTabIndex = tabs.findIndex(tab => tab.tableName === tableName);
+  if (!activeConnectionId) return;
+
+  // Check if tab already exists for this table AND connection
+  const existingTabIndex = tabs.findIndex(tab =>
+    tab.tableName === tableName && tab.connectionId === activeConnectionId
+  );
 
   if (existingTabIndex !== -1) {
     switchToTab(existingTabIndex);
   } else {
     const newTab = {
+      connectionId: activeConnectionId,
       tableName: tableName,
       page: 1,
       totalCount: 0,
@@ -446,14 +572,12 @@ function switchToTab(index) {
   activeTabIndex = index;
   const tab = tabs[activeTabIndex];
 
-  const tableItems = sidebarContent.querySelectorAll('.table-list li');
-  tableItems.forEach(item => {
-    if (item.textContent === tab.tableName) {
-      item.classList.add('active');
-    } else {
-      item.classList.remove('active');
-    }
-  });
+  // Switch connection if tab belongs to different connection
+  if (tab.connectionId !== activeConnectionId) {
+    activeConnectionId = tab.connectionId;
+    renderConnectionsList();
+    loadTables();
+  }
 
   renderTabs();
   updateSidebarActiveState();
@@ -471,29 +595,41 @@ function closeTab(index, event) {
     event.stopPropagation();
   }
 
-  if (tabs.length <= 1) {
-    tabs = [];
+  if (index < 0 || index >= tabs.length) return;
+
+  const tabWasActive = (index === activeTabIndex);
+  tabs.splice(index, 1);
+
+  if (tabs.length === 0) {
     activeTabIndex = -1;
     tabsContainer.style.display = 'none';
     tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
     pagination.style.display = 'none';
-
-    const tableItems = sidebarContent.querySelectorAll('.table-list li');
-    tableItems.forEach(item => item.classList.remove('active'));
-
+    updateSidebarActiveState();
     updateSidebarToggleState();
     return;
   }
 
-  tabs.splice(index, 1);
-
+  // Adjust activeTabIndex
   if (activeTabIndex >= index) {
     activeTabIndex--;
-    if (activeTabIndex < 0) activeTabIndex = 0;
+  }
+  if (activeTabIndex < 0) {
+    activeTabIndex = 0;
   }
 
-  if (index === activeTabIndex || activeTabIndex >= tabs.length) {
-    activeTabIndex = Math.max(0, tabs.length - 1);
+  // If we closed the active tab, switch to the new active one
+  if (tabWasActive) {
+    // Ensure index is within bounds
+    if (activeTabIndex >= tabs.length) activeTabIndex = tabs.length - 1;
+
+    const newActiveTab = tabs[activeTabIndex];
+    // Switch connection if needed
+    if (newActiveTab && newActiveTab.connectionId !== activeConnectionId) {
+      activeConnectionId = newActiveTab.connectionId;
+      renderConnectionsList();
+      loadTables();
+    }
   }
 
   renderTabs();
@@ -506,9 +642,7 @@ function closeTab(index, event) {
     } else {
       loadTableData();
     }
-
     updateSidebarActiveState();
-    updateSidebarToggleState();
   }
 }
 
@@ -531,6 +665,14 @@ function renderTabs() {
   tabs.forEach((tab, index) => {
     const tabElement = document.createElement('div');
     tabElement.className = `tab ${index === activeTabIndex ? 'active' : ''}`;
+    // Add connection indicator for tab if multiple connections exist
+    if (connections.length > 1) {
+      const conn = connections.find(c => c.id === tab.connectionId);
+      if (conn) {
+        tabElement.title = `${tab.tableName} (${conn.name})`;
+      }
+    }
+
     tabElement.addEventListener('click', () => switchToTab(index));
 
     const tabLabel = document.createElement('span');
@@ -555,9 +697,7 @@ function closeAllTabs() {
   tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
   pagination.style.display = 'none';
 
-  const tableItems = sidebarContent.querySelectorAll('.table-list li');
-  tableItems.forEach(item => item.classList.remove('active'));
-
+  updateSidebarActiveState();
   updateSidebarToggleState();
 }
 
@@ -623,7 +763,9 @@ async function loadTableData() {
       queryString += `&cursor=${encodeURIComponent(tab.cursor)}`;
     }
 
-    const response = await fetch(`/api/tables/${tab.tableName}?${queryString}`);
+    const response = await fetch(`/api/tables/${tab.tableName}?${queryString}`, {
+      headers: { 'x-connection-id': tab.connectionId }
+    });
     const data = await response.json();
 
     if (data.error) {
