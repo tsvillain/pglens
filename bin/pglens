@@ -2,6 +2,12 @@
 
 const { program } = require('commander');
 const { startServer } = require('../src/server');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
+
+const PID_FILE = path.join(os.homedir(), '.pglens.pid');
 
 program
   .name('pglens')
@@ -10,10 +16,66 @@ program
 
 program
   .command('start')
-  .description('Start the pglens server')
+  .description('Start the pglens server in background')
+  .action(() => {
+    // Check if already running
+    if (fs.existsSync(PID_FILE)) {
+      try {
+        const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
+        process.kill(pid, 0); // Check if process exists
+        console.log(`pglens is already running (PID: ${pid})`);
+        console.log('✓ Server running on http://localhost:54321');
+        return;
+      } catch (e) {
+        // Stale PID file, remove it
+        fs.unlinkSync(PID_FILE);
+      }
+    }
+
+    // Spawn detached child process
+    const child = spawn(process.execPath, [__filename, 'serve'], {
+      detached: true,
+      stdio: 'ignore'
+    });
+
+    // Save PID
+    fs.writeFileSync(PID_FILE, child.pid.toString());
+    
+    console.log('✓ Server running on http://localhost:54321');
+    console.log(`  Background process started (PID: ${child.pid})`);
+    
+    // Unref to allow parent to exit
+    child.unref();
+  });
+
+// Hidden command that actually runs the server
+program
+  .command('serve', { hidden: true })
   .action(() => {
     startServer();
   });
 
-program.parse(process.argv);
+program
+  .command('stop')
+  .description('Stop the pglens server')
+  .action(() => {
+    if (!fs.existsSync(PID_FILE)) {
+      console.log('pglens is not running');
+      return;
+    }
 
+    try {
+      const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
+      process.kill(pid, 'SIGTERM');
+      fs.unlinkSync(PID_FILE);
+      console.log('pglens stopped');
+    } catch (e) {
+      console.error(`Error stopping pglens: ${e.message}`);
+      // Clean up if process not found
+      if (e.code === 'ESRCH') {
+        fs.unlinkSync(PID_FILE);
+      }
+    }
+  });
+
+program.parse(process.argv);

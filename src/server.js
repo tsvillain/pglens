@@ -41,12 +41,15 @@ function startServer() {
     console.log(`  Open your browser to view your database`);
   });
 
-  process.on('SIGINT', () => {
+  const shutdown = () => {
     console.log('\nShutting down...');
     closePool().then(() => {
       process.exit(0);
     });
-  });
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 module.exports = { startServer };
