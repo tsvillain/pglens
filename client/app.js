@@ -997,7 +997,7 @@ function renderTable(data) {
         : 'NULL';
       td.dataset.columnName = column;
 
-      td.addEventListener('dblclick', (e) => {
+      td.addEventListener('click', (e) => {
         e.stopPropagation();
         showCellContentPopup(column, value);
       });
@@ -1606,9 +1606,6 @@ function showCellContentPopup(column, value) {
   const formattedContent = formatted.content;
   const isJson = formatted.isJson;
   const isDateTime = formatted.isDateTime;
-  const dateValue = formatted.dateValue;
-
-  let currentTimezone = getCurrentTimezone();
 
   const header = document.createElement('div');
   header.className = 'cell-popup-header';
@@ -1621,66 +1618,41 @@ function showCellContentPopup(column, value) {
   const headerActions = document.createElement('div');
   headerActions.className = 'cell-popup-actions';
 
-  let timezoneSelect = null;
-  if (isDateTime && dateValue) {
-    timezoneSelect = document.createElement('select');
-    timezoneSelect.className = 'cell-popup-timezone';
-    timezoneSelect.title = 'Select timezone';
-
-    const timezones = getCommonTimezones();
-    timezones.forEach(tz => {
-      const option = document.createElement('option');
-      option.value = tz.value;
-      option.textContent = tz.label;
-      if (tz.value === currentTimezone) {
-        option.selected = true;
-      }
-      timezoneSelect.appendChild(option);
-    });
-
-    headerActions.appendChild(timezoneSelect);
-  }
-
   const copyButton = document.createElement('button');
   copyButton.className = 'cell-popup-copy';
   copyButton.innerHTML = '📋';
   copyButton.title = 'Copy to clipboard';
 
   const updateContent = () => {
+    let contentToDisplay = '';
+    let contentToCopy = '';
+
     if (value === null || value === undefined) {
       content.classList.add('null-content');
       content.classList.remove('json-value-popup', 'datetime-value-popup');
-      content.textContent = 'NULL';
+      contentToDisplay = 'NULL';
+      contentToCopy = 'NULL';
     } else if (isJson) {
-      const formatted = formatCellContentForPopup(value, currentTimezone);
+      const formatted = formatCellContentForPopup(value);
       content.classList.add('json-value-popup');
       content.classList.remove('null-content', 'datetime-value-popup');
-      content.textContent = formatted.content;
-    } else if (isDateTime && dateValue) {
+      contentToDisplay = formatted.content;
+      contentToCopy = formatted.content;
+    } else if (isDateTime) {
+      // Display original date/time value without timezone conversion
       content.classList.add('datetime-value-popup');
       content.classList.remove('null-content', 'json-value-popup');
-
-      // Show multiple timezone formats
-      const localTz = formatDateTimeInTimezone(dateValue, getCurrentTimezone());
-      const utcTz = formatDateTimeInTimezone(dateValue, 'UTC');
-      const selectedTz = formatDateTimeInTimezone(dateValue, currentTimezone);
-
-      let displayText = `Local (${getCurrentTimezone()}): ${localTz}\n`;
-      displayText += `UTC: ${utcTz}\n`;
-      if (currentTimezone !== getCurrentTimezone() && currentTimezone !== 'UTC') {
-        displayText += `Selected (${currentTimezone}): ${selectedTz}`;
-      }
-
-      content.textContent = displayText;
+      contentToDisplay = String(value);
+      contentToCopy = String(value);
     } else {
-      const formatted = formatCellContentForPopup(value, currentTimezone);
+      const formatted = formatCellContentForPopup(value);
       content.classList.remove('null-content', 'json-value-popup', 'datetime-value-popup');
-      content.textContent = formatted.content;
+      contentToDisplay = formatted.content;
+      contentToCopy = formatted.content;
     }
 
-    // Update copy button to use current formatted content
-    const finalFormatted = formatCellContentForPopup(value, currentTimezone);
-    copyButton._formattedContent = finalFormatted.content;
+    content.textContent = contentToDisplay;
+    copyButton._formattedContent = contentToCopy;
   };
 
   copyButton.addEventListener('click', async () => {
@@ -1724,13 +1696,6 @@ function showCellContentPopup(column, value) {
   content.className = 'cell-popup-content';
 
   updateContent();
-
-  if (timezoneSelect) {
-    timezoneSelect.addEventListener('change', (e) => {
-      currentTimezone = e.target.value;
-      updateContent();
-    });
-  }
 
   body.appendChild(content);
 
