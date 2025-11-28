@@ -554,7 +554,8 @@ function handleTableSelect(tableName) {
       cursor: null, // Cursor for cursor-based pagination
       cursorHistory: [], // History for backward navigation
       hasPrimaryKey: false, // Whether table has primary key
-      isApproximate: false // Whether count is approximate (for large tables)
+      isApproximate: false, // Whether count is approximate (for large tables)
+      limit: 100 // Rows per page
     };
     tabs.push(newTab);
     activeTabIndex = tabs.length - 1;
@@ -712,7 +713,8 @@ function handleRefresh() {
 
   tab.data = null;
 
-  const refreshIcon = document.querySelector('.refresh-icon');
+  const refreshButton = document.querySelector('#refreshButton');
+  const refreshIcon = refreshButton ? refreshButton.querySelector('.refresh-icon') : null;
   if (refreshIcon) {
     refreshIcon.classList.add('spinning');
     setTimeout(() => {
@@ -757,7 +759,10 @@ async function loadTableData() {
     tableView.innerHTML = '<div class="loading-state"><p>Loading data from ' + tab.tableName + '...</p></div>';
 
     // Build query with cursor-based pagination if available
-    let queryString = `page=${tab.page}&limit=100`;
+    if (!tab.limit) {
+      tab.limit = 100; // Default limit for existing tabs
+    }
+    let queryString = `page=${tab.page}&limit=${tab.limit}`;
     if (tab.hasPrimaryKey && tab.cursor && tab.page > 1) {
       // Use cursor for forward navigation (more efficient than OFFSET)
       queryString += `&cursor=${encodeURIComponent(tab.cursor)}`;
@@ -809,32 +814,79 @@ function renderTable(data) {
 
   const columns = Object.keys(data.rows[0] || {});
 
+  if (!tab.limit) {
+    tab.limit = 100; // Default limit for existing tabs
+  }
+
   const tableHeader = document.createElement('div');
   tableHeader.className = 'table-header';
+  const startRow = ((tab.page - 1) * tab.limit) + 1;
+  const endRow = Math.min(tab.page * tab.limit, tab.totalCount);
+  const totalRows = tab.totalCount;
+  
   tableHeader.innerHTML = `
     <div class="table-header-left">
       <h2>${tab.tableName}</h2>
-      <button class="refresh-button" id="refreshButton" title="Refresh data">
-        <span class="refresh-icon">↻</span>
-      </button>
-      <div class="column-selector">
-        <button class="column-button" id="columnButton" title="Show/Hide columns">
-          <span class="column-label" id="columnLabel">Columns</span>
+      <div class="table-header-actions">
+        <button class="refresh-button" id="refreshButton" title="Refresh data">
+          <svg class="refresh-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8 2V6M8 14V10M2 8H6M10 8H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M2.5 5.5C3.1 4.2 4.1 3.2 5.4 2.6M13.5 10.5C12.9 11.8 11.9 12.8 10.6 13.4M5.5 2.5C4.2 3.1 3.2 4.1 2.6 5.4M10.5 13.5C11.8 12.9 12.8 11.9 13.4 10.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span class="refresh-text">Refresh</span>
         </button>
-        <div class="column-menu" id="columnMenu" style="display: none;">
-          <div class="column-menu-header">Columns</div>
-          <div class="column-menu-options" id="columnMenuOptions"></div>
+        <div class="limit-selector">
+          <select id="limitSelect" class="limit-select" title="Rows per page">
+            <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
+            <option value="50" ${tab.limit === 50 ? 'selected' : ''}>50 rows</option>
+            <option value="100" ${tab.limit === 100 ? 'selected' : ''}>100 rows</option>
+            <option value="200" ${tab.limit === 200 ? 'selected' : ''}>200 rows</option>
+            <option value="500" ${tab.limit === 500 ? 'selected' : ''}>500 rows</option>
+          </select>
+        </div>
+        <div class="column-selector">
+          <button class="column-button" id="columnButton" title="Show/Hide columns">
+            <svg class="column-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 2H13C13.5523 2 14 2.44772 14 3V13C14 13.5523 13.5523 14 13 14H3C2.44772 14 2 13.5523 2 13V3C2 2.44772 2.44772 2 3 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M6 2V14M10 2V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span class="column-label" id="columnLabel">Columns</span>
+          </button>
+          <div class="column-menu" id="columnMenu" style="display: none;">
+            <div class="column-menu-header">Columns</div>
+            <div class="column-menu-options" id="columnMenuOptions"></div>
+          </div>
         </div>
       </div>
     </div>
-    <span class="row-info">
-      Showing ${((tab.page - 1) * 100) + 1}-${Math.min(tab.page * 100, tab.totalCount)} of ${tab.totalCount}${tab.isApproximate ? ' (approx.)' : ''} rows
-    </span>
+    <div class="row-info-container">
+      <span class="row-info">
+        <span class="row-info-range">${startRow.toLocaleString()}–${endRow.toLocaleString()}</span>
+        <span class="row-info-separator">of</span>
+        <span class="row-info-total">${totalRows.toLocaleString()}</span>
+        ${tab.isApproximate ? '<span class="row-info-approx">(approx.)</span>' : ''}
+      </span>
+    </div>
   `;
 
   const refreshButton = tableHeader.querySelector('#refreshButton');
   if (refreshButton) {
     refreshButton.addEventListener('click', handleRefresh);
+  }
+
+  const limitSelect = tableHeader.querySelector('#limitSelect');
+  if (limitSelect) {
+    limitSelect.addEventListener('change', (e) => {
+      const newLimit = parseInt(e.target.value, 10);
+      if (tab.limit !== newLimit) {
+        tab.limit = newLimit;
+        tab.page = 1; // Reset to first page when limit changes
+        tab.cursor = null; // Reset cursor
+        tab.cursorHistory = [];
+        tab.data = null; // Clear cache
+        loadTableData();
+      }
+    });
   }
 
   if (!tab.hiddenColumns) {
@@ -1337,7 +1389,10 @@ function renderPagination() {
   const tab = getActiveTab();
   if (!tab) return;
 
-  const limit = 100;
+  if (!tab.limit) {
+    tab.limit = 100; // Default limit for existing tabs
+  }
+  const limit = tab.limit;
   const totalPages = Math.ceil(tab.totalCount / limit);
 
   if (totalPages <= 1) {
@@ -1350,24 +1405,41 @@ function renderPagination() {
   const hasPrevious = tab.page > 1;
   const hasNext = tab.page < totalPages;
 
+  const startRow = ((tab.page - 1) * limit) + 1;
+  const endRow = Math.min(tab.page * limit, tab.totalCount);
+  
   pagination.innerHTML = `
-    <button 
-      class="pagination-button" 
-      ${!hasPrevious ? 'disabled' : ''}
-      onclick="handlePageChange(${tab.page - 1})"
-    >
-      Previous
-    </button>
-    <span class="pagination-info">
-      Page ${tab.page} of ${totalPages}
-    </span>
-    <button 
-      class="pagination-button" 
-      ${!hasNext ? 'disabled' : ''}
-      onclick="handlePageChange(${tab.page + 1})"
-    >
-      Next
-    </button>
+    <div class="pagination-content">
+      <button 
+        class="pagination-button pagination-button-prev" 
+        ${!hasPrevious ? 'disabled' : ''}
+        onclick="handlePageChange(${tab.page - 1})"
+        title="Previous page"
+      >
+        <svg class="pagination-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>Previous</span>
+      </button>
+      <div class="pagination-info-container">
+        <span class="pagination-info">
+          <span class="pagination-page">Page <strong>${tab.page}</strong> of <strong>${totalPages}</strong></span>
+          <span class="pagination-separator">•</span>
+          <span class="pagination-rows">${startRow.toLocaleString()}–${endRow.toLocaleString()} of ${tab.totalCount.toLocaleString()}</span>
+        </span>
+      </div>
+      <button 
+        class="pagination-button pagination-button-next" 
+        ${!hasNext ? 'disabled' : ''}
+        onclick="handlePageChange(${tab.page + 1})"
+        title="Next page"
+      >
+        <span>Next</span>
+        <svg class="pagination-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M6 12L10 8L6 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
   `;
 }
 
