@@ -55,6 +55,7 @@ function createPool(connectionString, sslMode = 'prefer', customName = null) {
     max: 10,
     idle_timeout: 30,
     connect_timeout: 10,
+    timeout: 30, // Query timeout in seconds
   };
 
   if (sslConfig !== null) {
@@ -269,6 +270,7 @@ async function updateConnection(id, connectionString, sslMode, name) {
     max: 10,
     idle_timeout: 30,
     connect_timeout: 10,
+    timeout: 30, // Query timeout in seconds
   };
 
   if (sslConfig !== null) {

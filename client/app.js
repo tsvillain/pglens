@@ -51,6 +51,7 @@ const connPassword = document.getElementById('connPassword');
 const sslModeSelect = document.getElementById('sslMode');
 const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
+const loadingOverlay = document.getElementById('loadingOverlay');
 
 /**
  * Initialize the application when DOM is ready.
@@ -921,7 +922,8 @@ async function loadTableData() {
   if (!tab) return;
 
   try {
-    tableView.innerHTML = '<div class="loading-state"><p>Loading data from ' + tab.tableName + '...</p></div>';
+    showLoading();
+    // tableView.innerHTML = '<div class="loading-state"><p>Loading data from ' + tab.tableName + '...</p></div>';
 
     // Build query with cursor-based pagination if available
     if (!tab.limit) {
@@ -970,6 +972,8 @@ async function loadTableData() {
   } catch (error) {
     tableView.innerHTML = '<div class="error-state"><p>Error: ' + error.message + '</p></div>';
     pagination.style.display = 'none';
+  } finally {
+    hideLoading();
   }
 }
 
@@ -1963,5 +1967,17 @@ function closeCellContentPopup() {
       document.removeEventListener('keydown', overlay._escapeHandler);
     }
     overlay.remove();
+  }
+}
+
+function showLoading() {
+  if (loadingOverlay) {
+    loadingOverlay.style.display = 'flex';
+  }
+}
+
+function hideLoading() {
+  if (loadingOverlay) {
+    loadingOverlay.style.display = 'none';
   }
 }
