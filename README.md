@@ -13,7 +13,7 @@ A simple PostgreSQL database viewer tool. Perfect to quickly view and explore yo
 - 🕒 **Timezone Support**: View timestamps in local, UTC, or other timezones
 - 📋 **Clipboard Support**: One-click copy for cell contents
 - 🪟 **Multiple Tabs**: Open multiple tables simultaneously in separate tabs
-- 🔄 **Sorting**: Click column headers to sort data (client-side sorting on current view)
+- 🔄 **Server-Side Sorting**: Click column headers to sort data directly on the database server
 - 📄 **Pagination**: Navigate through large tables with Previous/Next buttons
 - 🔍 **Table Search**: Quickly find tables by name using the search bar
 - 👁️ **Column Visibility**: Show or hide columns to focus on what matters
@@ -45,17 +45,22 @@ Start pglens as a background service:
 pglens start
 ```
 
-This will start the server on `http://localhost:54321`. Open this URL in your browser to begin.
+This will start the server on `http://localhost:54321` (or the next available port if 54321 is busy).
+The URL will be printed to the console. You can also check the running URL at any time with:
+
+```bash
+pglens url
+```
 
 ### Connect to a Database
 
 1. Open `http://localhost:54321`
 2. Click the **+** icon in the sidebar
-3. Enter your connection details:
-   - **Name**: A friendly name for this connection (e.g., "Production", "Local")
-   - **URL**: Your PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/db`)
-   - **SSL Mode**: Choose the appropriate SSL mode for your server
-4. Click **Connect**
+3. Enter your connection details using one of the tabs:
+   - **Parameters** (Default): Enter Host, Port, Database, User, and Password separately.
+   - **Connection URL**: Paste a standard PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/db`).
+4. Select the **SSL Mode** appropriate for your server.
+5. Click **Connect**.
 
 ### Stop the Server
 

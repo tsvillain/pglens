@@ -433,8 +433,10 @@ code {
 }
 
 .sidebar-header h2 {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
+  font-family: "Asimovian", cursive;
+  font-size: 28px;
+  /* Slightly larger for display font */
+  font-weight: 400;
   color: var(--text-primary);
   margin: 0;
   letter-spacing: -0.01em;
