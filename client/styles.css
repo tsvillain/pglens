@@ -86,6 +86,7 @@
     opacity: 0;
     transform: translateY(20px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -137,6 +138,57 @@
   margin-bottom: 0;
 }
 
+.connection-type-tabs {
+  display: flex;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  margin-bottom: var(--space-5);
+  gap: 4px;
+}
+
+.connection-type-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.connection-type-tab:hover {
+  color: var(--text-primary);
+}
+
+.connection-type-tab.active {
+  background-color: var(--bg-base);
+  color: var(--color-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.form-row {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.form-row .form-group {
+  margin-bottom: 0;
+}
+
+.flex-1 {
+  flex: 1;
+}
+
+.flex-2 {
+  flex: 2;
+}
+
 .form-group label {
   display: block;
   margin-bottom: var(--space-2);
@@ -146,6 +198,8 @@
 }
 
 .form-group input[type="text"],
+.form-group input[type="password"],
+.form-group input[type="number"],
 .form-group select {
   width: 100%;
   padding: var(--space-3);
@@ -252,7 +306,7 @@
   line-height: 1;
 }
 
-[data-theme="dark"] {
+html[data-theme="dark"] {
   --color-primary: #3b82f6;
   --color-primary-hover: #60a5fa;
   --color-secondary: #94a3b8;
@@ -900,6 +954,7 @@ code {
   from {
     transform: rotate(0deg);
   }
+
   to {
     transform: rotate(360deg);
   }
@@ -1172,6 +1227,7 @@ tr:hover {
   from {
     opacity: 0;
   }
+
   to {
     opacity: 1;
   }
@@ -1199,6 +1255,7 @@ tr:hover {
     transform: translateY(20px);
     opacity: 0;
   }
+
   to {
     transform: translateY(0);
     opacity: 1;
@@ -1521,18 +1578,18 @@ tr:hover {
     flex-direction: column;
     gap: var(--space-3);
   }
-  
+
   .pagination-button {
     width: 100%;
     max-width: 200px;
   }
-  
+
   .pagination-info {
     flex-direction: column;
     gap: var(--space-1);
     text-align: center;
   }
-  
+
   .pagination-separator {
     display: none;
   }

@@ -87,7 +87,8 @@ function createPool(connectionString, sslMode = 'prefer', customName = null) {
       connections.set(id, {
         pool: sql,
         name,
-        connectionString
+        connectionString,
+        sslMode
       });
 
       return { id, name };
@@ -239,9 +240,65 @@ function getPool(connectionId) {
 function getConnections() {
   const result = [];
   for (const [id, conn] of connections.entries()) {
-    result.push({ id, name: conn.name });
+    result.push({
+      id,
+      name: conn.name,
+      connectionString: conn.connectionString,
+      sslMode: conn.sslMode
+    });
   }
   return result;
+}
+
+/**
+ * Update an existing connection.
+ * @param {string} id - Connection ID to update
+ * @param {string} connectionString - New connection string
+ * @param {string} sslMode - New SSL mode
+ * @param {string} name - New name
+ * @returns {Promise<{id: string, name: string}>} Updated connection info
+ */
+async function updateConnection(id, connectionString, sslMode, name) {
+  const existingConn = connections.get(id);
+  if (!existingConn) {
+    throw new Error('Connection not found');
+  }
+
+  const sslConfig = getSslConfig(sslMode);
+  const poolConfig = {
+    max: 10,
+    idle_timeout: 30,
+    connect_timeout: 10,
+  };
+
+  if (sslConfig !== null) {
+    poolConfig.ssl = sslConfig;
+  }
+
+  const sql = postgres(connectionString, poolConfig);
+
+  // Test the new connection
+  return sql`SELECT NOW()`
+    .then(async () => {
+      console.log('✓ Updated connection to PostgreSQL database');
+
+      // Close old pool
+      await existingConn.pool.end();
+
+      // Update map with new pool and details
+      connections.set(id, {
+        pool: sql,
+        name: name || getDatabaseName(connectionString),
+        connectionString,
+        sslMode
+      });
+
+      return { id, name: connections.get(id).name };
+    })
+    .catch((err) => {
+      console.error('✗ Failed to update connection:', err.message);
+      throw err;
+    });
 }
 
 /**
@@ -272,5 +329,6 @@ module.exports = {
   getPool,
   closePool,
   checkConnection,
-  getConnections
+  getConnections,
+  updateConnection
 };

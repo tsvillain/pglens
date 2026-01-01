@@ -12,7 +12,7 @@
  */
 
 // Application state
-let connections = []; // Array of active connections: { id, name }
+let connections = []; // Array of active connections: { id, name, connectionString, sslMode }
 let activeConnectionId = null; // Currently active connection ID
 let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate }
 let activeTabIndex = -1; // Currently active tab index
@@ -209,8 +209,19 @@ function renderConnectionsList() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'connection-name';
     nameSpan.textContent = conn.name;
-    nameSpan.title = conn.name;
-    nameSpan.addEventListener('click', () => switchConnection(conn.id));
+    nameSpan.title = 'Click to edit connection';
+    nameSpan.style.cursor = 'pointer';
+    nameSpan.addEventListener('click', (e) => {
+      e.stopPropagation();
+      handleConnectionEdit(conn);
+    });
+
+    // Add click event for the li to switch connection if not clicking name or close
+    li.addEventListener('click', (e) => {
+      if (e.target !== nameSpan && e.target !== disconnectBtn) {
+        switchConnection(conn.id);
+      }
+    });
 
     const disconnectBtn = document.createElement('button');
     disconnectBtn.className = 'connection-disconnect';
@@ -291,8 +302,18 @@ async function handleConnect() {
   try {
     setConnectingState(true);
 
-    const response = await fetch('/api/connect', {
-      method: 'POST',
+
+    let urlPath = '/api/connect';
+    let method = 'POST';
+
+    if (connectionDialog.dataset.mode === 'edit') {
+      const id = connectionDialog.dataset.connectionId;
+      urlPath = `/api/connections/${id}`;
+      method = 'PUT';
+    }
+
+    const response = await fetch(urlPath, {
+      method: method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, sslMode, name: connectionName || undefined })
     });
@@ -300,13 +321,32 @@ async function handleConnect() {
     const data = await response.json();
 
     if (response.ok) {
-      if (data.connected) {
-        // Check if this connection ID already exists in our list (backend might return existing one)
-        const existingIndex = connections.findIndex(c => c.id === data.connectionId);
-        if (existingIndex === -1) {
-          connections.push({ id: data.connectionId, name: data.name });
+      if (data.connected || data.updated) {
+        // If updated, update local array
+        if (data.updated) {
+          const index = connections.findIndex(c => c.id === data.connectionId);
+          if (index !== -1) {
+            connections[index] = {
+              ...connections[index],
+              name: data.name,
+              connectionString: url,
+              sslMode: sslMode
+            };
+          }
         } else {
-          console.log('Connection already exists, switching to it');
+          // New connection
+          // Check if this connection ID already exists in our list (backend might return existing one)
+          const existingIndex = connections.findIndex(c => c.id === data.connectionId);
+          if (existingIndex === -1) {
+            connections.push({
+              id: data.connectionId,
+              name: data.name,
+              connectionString: url,
+              sslMode: sslMode
+            });
+          } else {
+            console.log('Connection already exists, switching to it');
+          }
         }
 
         activeConnectionId = data.connectionId;
@@ -314,8 +354,7 @@ async function handleConnect() {
         renderConnectionsList();
         loadTables();
         hideConnectionDialog();
-        connectionUrlInput.value = ''; // Clear sensitive data
-        connectionNameInput.value = ''; // Clear connection name
+        // Don't clear inputs here, will clear on show
       }
     } else {
       showConnectionError(data.error || 'Failed to connect');
@@ -380,9 +419,30 @@ async function handleDisconnect(connectionId) {
   }
 }
 
-function showConnectionDialog(allowClose) {
+
+
+function showConnectionDialog(allowClose, editMode = false, connection = null) {
   connectionDialog.style.display = 'flex';
   connectionError.style.display = 'none';
+
+  const title = connectionDialog.querySelector('h2');
+  title.textContent = editMode ? 'Edit Connection' : 'Connect to Database';
+  connectButton.textContent = editMode ? 'Save' : 'Connect';
+
+  connectionDialog.dataset.mode = editMode ? 'edit' : 'add';
+
+  if (editMode && connection) {
+    connectionDialog.dataset.connectionId = connection.id;
+    connectionUrlInput.value = connection.connectionString || '';
+    connectionNameInput.value = connection.name || '';
+    sslModeSelect.value = connection.sslMode || 'prefer';
+  } else {
+    delete connectionDialog.dataset.connectionId;
+    connectionUrlInput.value = '';
+    connectionNameInput.value = '';
+    sslModeSelect.value = 'prefer';
+  }
+
   connectionUrlInput.focus();
 
   if (allowClose && connections.length > 0) {
@@ -390,6 +450,10 @@ function showConnectionDialog(allowClose) {
   } else {
     closeConnectionDialogButton.style.display = 'none';
   }
+}
+
+function handleConnectionEdit(connection) {
+  showConnectionDialog(true, true, connection);
 }
 
 function hideConnectionDialog() {
@@ -823,7 +887,7 @@ function renderTable(data) {
   const startRow = ((tab.page - 1) * tab.limit) + 1;
   const endRow = Math.min(tab.page * tab.limit, tab.totalCount);
   const totalRows = tab.totalCount;
-  
+
   tableHeader.innerHTML = `
     <div class="table-header-left">
       <h2>${tab.tableName}</h2>
@@ -1407,7 +1471,7 @@ function renderPagination() {
 
   const startRow = ((tab.page - 1) * limit) + 1;
   const endRow = Math.min(tab.page * limit, tab.totalCount);
-  
+
   pagination.innerHTML = `
     <div class="pagination-content">
       <button 

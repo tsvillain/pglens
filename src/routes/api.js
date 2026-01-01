@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { getPool, createPool, closePool, checkConnection, getConnections } = require('../db/connection');
+const { getPool, createPool, closePool, checkConnection, getConnections, updateConnection } = require('../db/connection');
 
 const router = express.Router();
 
@@ -26,12 +26,12 @@ const requireConnection = async (req, res, next) => {
   if (!connectionId) {
     return res.status(400).json({ error: 'Connection ID header required' });
   }
-  
+
   const pool = getPool(connectionId);
   if (!pool) {
     return res.status(503).json({ error: 'Not connected to database or invalid connection ID' });
   }
-  
+
   req.pool = pool;
   next();
 };
@@ -42,7 +42,7 @@ const requireConnection = async (req, res, next) => {
  */
 router.post('/connect', async (req, res) => {
   const { url, sslMode, name } = req.body;
-  
+
   if (!url) {
     return res.status(400).json({ error: 'Connection string is required' });
   }
@@ -51,9 +51,32 @@ router.post('/connect', async (req, res) => {
     const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name);
     res.json({ connected: true, connectionId: id, name: connectionName });
   } catch (error) {
-    res.status(400).json({ 
-      connected: false, 
-      error: error.message 
+    res.status(400).json({
+      connected: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/connections/:id
+ * Update an existing connection
+ */
+router.put('/connections/:id', async (req, res) => {
+  const { id } = req.params;
+  const { url, sslMode, name } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: 'Connection string is required' });
+  }
+
+  try {
+    const { name: connectionName } = await updateConnection(id, url, sslMode || 'prefer', name);
+    res.json({ updated: true, connectionId: id, name: connectionName });
+  } catch (error) {
+    res.status(400).json({
+      updated: false,
+      error: error.message
     });
   }
 });
@@ -73,7 +96,7 @@ router.get('/connections', (req, res) => {
  */
 router.post('/disconnect', async (req, res) => {
   const connectionId = req.body.connectionId || req.headers['x-connection-id'];
-  
+
   if (!connectionId) {
     return res.status(400).json({ error: 'Connection ID required' });
   }
@@ -95,7 +118,7 @@ router.get('/status', async (req, res) => {
   if (!connectionId) {
     return res.json({ connected: false });
   }
-  
+
   try {
     const connected = await checkConnection(connectionId);
     res.json({ connected });

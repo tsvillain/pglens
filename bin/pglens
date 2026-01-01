@@ -8,27 +8,46 @@ const os = require('os');
 const { spawn } = require('child_process');
 
 const PID_FILE = path.join(os.homedir(), '.pglens.pid');
+const PORT_FILE = path.join(os.homedir(), '.pglens.port');
 
 program
   .name('pglens')
   .description('A simple PostgreSQL database viewer tool')
   .version('1.0.0');
 
+function getRunningPort() {
+  if (fs.existsSync(PORT_FILE)) {
+    try {
+      return parseInt(fs.readFileSync(PORT_FILE, 'utf8'));
+    } catch (e) {
+      return null;
+    }
+  }
+  return null;
+}
+
 program
   .command('start')
   .description('Start the pglens server in background')
-  .action(() => {
+  .action(async () => {
     // Check if already running
     if (fs.existsSync(PID_FILE)) {
       try {
         const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
         process.kill(pid, 0); // Check if process exists
         console.log(`pglens is already running (PID: ${pid})`);
-        console.log('✓ Server running on http://localhost:54321');
+
+        const port = getRunningPort();
+        if (port) {
+          console.log(`✓ Server running on http://localhost:${port}`);
+        } else {
+          console.log('  Server URL unknown (check logs)');
+        }
         return;
       } catch (e) {
         // Stale PID file, remove it
         fs.unlinkSync(PID_FILE);
+        if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
       }
     }
 
@@ -40,12 +59,36 @@ program
 
     // Save PID
     fs.writeFileSync(PID_FILE, child.pid.toString());
-    
-    console.log('✓ Server running on http://localhost:54321');
-    console.log(`  Background process started (PID: ${child.pid})`);
-    
+
     // Unref to allow parent to exit
     child.unref();
+
+    console.log(`  Background process started (PID: ${child.pid})`);
+
+    // Wait for server to start and acquire port
+    let attempts = 0;
+    const maxAttempts = 20;
+    const checkInterval = 100;
+
+    process.stdout.write('  Waiting for server...');
+
+    const interval = setInterval(() => {
+      const port = getRunningPort();
+      if (port) {
+        clearInterval(interval);
+        process.stdout.write('\r\x1b[K'); // Clear line
+        console.log(`✓ Server running on http://localhost:${port}`);
+        process.exit(0);
+      }
+
+      attempts++;
+      if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        process.stdout.write('\r\x1b[K'); // Clear line
+        console.log('✓ Server started (could not determine port, check logs)');
+        process.exit(0);
+      }
+    }, checkInterval);
   });
 
 // Hidden command that actually runs the server
@@ -68,13 +111,43 @@ program
       const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
       process.kill(pid, 'SIGTERM');
       fs.unlinkSync(PID_FILE);
+      if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
       console.log('pglens stopped');
     } catch (e) {
       console.error(`Error stopping pglens: ${e.message}`);
       // Clean up if process not found
       if (e.code === 'ESRCH') {
         fs.unlinkSync(PID_FILE);
+        if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
       }
+    }
+  });
+
+program
+  .command('url')
+  .description('Show the URL where pglens is running')
+  .action(() => {
+    if (!fs.existsSync(PID_FILE)) {
+      console.log('pglens is not running');
+      return;
+    }
+
+    // Verify process is actually running
+    try {
+      const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
+      process.kill(pid, 0);
+    } catch (e) {
+      console.log('pglens is not running (stale PID file)');
+      fs.unlinkSync(PID_FILE);
+      if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
+      return;
+    }
+
+    const port = getRunningPort();
+    if (port) {
+      console.log(`http://localhost:${port}`);
+    } else {
+      console.log('Could not determine server URL.');
     }
   });
 
