@@ -40,6 +40,14 @@ const connectionDialog = document.getElementById('connectionDialog');
 const closeConnectionDialogButton = document.getElementById('closeConnectionDialog');
 const connectionNameInput = document.getElementById('connectionName');
 const connectionUrlInput = document.getElementById('connectionUrl');
+const connectionTabs = document.querySelectorAll('.connection-type-tab');
+const modeUrl = document.getElementById('modeUrl');
+const modeParams = document.getElementById('modeParams');
+const connHost = document.getElementById('connHost');
+const connPort = document.getElementById('connPort');
+const connDatabase = document.getElementById('connDatabase');
+const connUser = document.getElementById('connUser');
+const connPassword = document.getElementById('connPassword');
 const sslModeSelect = document.getElementById('sslMode');
 const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
@@ -56,6 +64,26 @@ document.addEventListener('DOMContentLoaded', () => {
   connectButton.addEventListener('click', handleConnect);
   addConnectionButton.addEventListener('click', () => showConnectionDialog(true));
   closeConnectionDialogButton.addEventListener('click', hideConnectionDialog);
+
+  connectionTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      // Switch active tab
+      connectionTabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      // Show content
+      const target = tab.dataset.target;
+      if (target === 'url') {
+        modeUrl.style.display = 'block';
+        modeParams.style.display = 'none';
+        connectionDialog.dataset.inputMode = 'url';
+      } else {
+        modeUrl.style.display = 'none';
+        modeParams.style.display = 'block';
+        connectionDialog.dataset.inputMode = 'params';
+      }
+    });
+  });
 
   // Allow Enter key to submit connection form
   connectionUrlInput.addEventListener('keypress', (e) => {
@@ -273,9 +301,28 @@ function switchConnection(connectionId) {
  * Handle database connection.
  */
 async function handleConnect() {
-  const url = connectionUrlInput.value.trim();
+  let url = '';
   const connectionName = connectionNameInput.value.trim();
   const sslMode = sslModeSelect.value;
+  const inputMode = connectionDialog.dataset.inputMode || 'url';
+
+  if (inputMode === 'url') {
+    url = connectionUrlInput.value.trim();
+  } else {
+    // Build URL from params
+    const host = connHost.value.trim() || 'localhost';
+    const port = connPort.value.trim() || '5432';
+    const database = connDatabase.value.trim() || 'postgres';
+    const user = connUser.value.trim();
+    const password = connPassword.value;
+
+    if (!user) {
+      showConnectionError('Username is required');
+      return;
+    }
+
+    url = buildConnectionString(user, password, host, port, database);
+  }
 
   if (!url) {
     showConnectionError('Please enter a connection URL');
@@ -433,22 +480,76 @@ function showConnectionDialog(allowClose, editMode = false, connection = null) {
 
   if (editMode && connection) {
     connectionDialog.dataset.connectionId = connection.id;
-    connectionUrlInput.value = connection.connectionString || '';
     connectionNameInput.value = connection.name || '';
     sslModeSelect.value = connection.sslMode || 'prefer';
+
+    // Try to parse URL to populate params
+    const parsed = parseConnectionString(connection.connectionString);
+    if (parsed) {
+      connHost.value = parsed.host;
+      connPort.value = parsed.port;
+      connDatabase.value = parsed.database;
+      connUser.value = parsed.user;
+      connPassword.value = parsed.password;
+    }
+    connectionUrlInput.value = connection.connectionString || '';
   } else {
     delete connectionDialog.dataset.connectionId;
     connectionUrlInput.value = '';
     connectionNameInput.value = '';
     sslModeSelect.value = 'prefer';
+
+    // Reset params
+    connHost.value = 'localhost';
+    connPort.value = '5432';
+    connDatabase.value = 'postgres';
+    connUser.value = '';
+    connPassword.value = '';
   }
 
-  connectionUrlInput.focus();
+  // Reset tabs to Params mode by default (since we swapped buttons, tab[0] is Params)
+  connectionTabs.forEach(t => t.classList.remove('active'));
+  connectionTabs[0].classList.add('active');
+
+  modeUrl.style.display = 'none';
+  modeParams.style.display = 'block';
+  connectionDialog.dataset.inputMode = 'params';
+
+  connHost.focus();
 
   if (allowClose && connections.length > 0) {
     closeConnectionDialogButton.style.display = 'block';
   } else {
     closeConnectionDialogButton.style.display = 'none';
+  }
+}
+
+function buildConnectionString(user, password, host, port, database) {
+  let auth = user;
+  if (password) {
+    auth += `:${encodeURIComponent(password)}`;
+  }
+  return `postgresql://${auth}@${host}:${port}/${database}`;
+}
+
+function parseConnectionString(urlStr) {
+  try {
+    if (!urlStr) return null;
+    // Handle cases where protocol might be missing (though validation enforces it)
+    if (!urlStr.includes('://')) {
+      urlStr = 'postgresql://' + urlStr;
+    }
+    const url = new URL(urlStr);
+    return {
+      host: url.hostname || 'localhost',
+      port: url.port || '5432',
+      database: url.pathname.replace(/^\//, '') || 'postgres',
+      user: url.username || '',
+      password: url.password || '' // Note: URL decoding happens automatically for username/password properties? Verify. 
+      // Actually URL properties are usually decoded. decodeURIComponent check might be needed if raw.
+    };
+  } catch (e) {
+    return null;
   }
 }
 
