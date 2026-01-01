@@ -930,8 +930,12 @@ async function loadTableData() {
       tab.limit = 100; // Default limit for existing tabs
     }
     let queryString = `page=${tab.page}&limit=${tab.limit}`;
-    if (tab.hasPrimaryKey && tab.cursor && tab.page > 1) {
-      // Use cursor for forward navigation (more efficient than OFFSET)
+    if (tab.sortColumn) {
+      queryString += `&sortColumn=${encodeURIComponent(tab.sortColumn)}&sortDirection=${tab.sortDirection}`;
+    }
+
+    if (tab.hasPrimaryKey && tab.cursor && tab.page > 1 && !tab.sortColumn) {
+      // Use cursor for forward navigation (only if using default sort)
       queryString += `&cursor=${encodeURIComponent(tab.cursor)}`;
     }
 
@@ -1196,9 +1200,10 @@ function renderTable(data) {
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
-  const sortedRows = getSortedRows(data.rows, tab);
+  // Server-side sorting, so rows are already sorted
+  const rows = data.rows || [];
 
-  sortedRows.forEach(row => {
+  rows.forEach(row => {
     const tr = document.createElement('tr');
     visibleColumns.forEach(column => {
       const td = document.createElement('td');
@@ -1493,9 +1498,11 @@ function handleSort(column) {
     tab.sortDirection = 'asc';
   }
 
-  if (tab.data) {
-    renderTable(tab.data);
-  }
+  // Reload data from server with new sort
+  tab.page = 1; // Reset to page 1 on sort change
+  tab.cursor = null;
+  tab.cursorHistory = [];
+  loadTableData();
 }
 
 /**

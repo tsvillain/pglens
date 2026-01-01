@@ -375,6 +375,8 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
     const page = parseInt(req.query.page || '1', 10);
     const limit = parseInt(req.query.limit || '100', 10);
     const cursor = req.query.cursor;
+    const sortColumn = req.query.sortColumn ? req.query.sortColumn : null;
+    const sortDirection = req.query.sortDirection === 'desc' ? 'DESC' : 'ASC';
 
     if (page < 1 || limit < 1) {
       return res.status(400).json({ error: 'Page and limit must be positive integers' });
@@ -384,6 +386,11 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
     const primaryKeyColumn = await getPrimaryKeyColumn(pool, tableName);
     const columnMetadata = await getColumnMetadata(pool, tableName);
 
+    // Validate sortColumn if provided
+    if (sortColumn && !columnMetadata[sortColumn]) {
+      return res.status(400).json({ error: 'Invalid sort column' });
+    }
+
     const countQuery = `SELECT COUNT(*) as total FROM "${tableName}"`;
     const countResult = await pool.query(countQuery);
     const totalCount = parseInt(countResult.rows[0].total, 10);
@@ -392,7 +399,22 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
     let dataResult;
     let nextCursor = null;
 
-    if (primaryKeyColumn && cursor) {
+    if (sortColumn) {
+      // Custom Sorting: Use OFFSET-based pagination
+      // Always add primary key (if exists) as secondary sort for stability
+      const offset = (page - 1) * limit;
+      let orderByClause = `ORDER BY "${sortColumn}" ${sortDirection}`;
+
+      if (primaryKeyColumn && sortColumn !== primaryKeyColumn) {
+        orderByClause += `, "${primaryKeyColumn}" ASC`;
+      }
+
+      const query = `SELECT * FROM "${tableName}" ${orderByClause} LIMIT $1 OFFSET $2`;
+      dataResult = await pool.query(query, [limit, offset]);
+
+      // Cursor not valid for custom sorts in this simple implementation
+      nextCursor = null;
+    } else if (primaryKeyColumn && cursor) {
       // Cursor-based pagination: WHERE id > cursor (most efficient for forward navigation)
       const cursorQuery = `SELECT * FROM "${tableName}" WHERE "${primaryKeyColumn}" > $1 ORDER BY "${primaryKeyColumn}" ASC LIMIT $2`;
       const cursorParams = [cursor, limit];
@@ -430,7 +452,7 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
       }
       dataResult = await pool.query(query, queryParams);
 
-      // Calculate cursor for next page if primary key exists
+      // Calculate cursor for next page if primary key exists (only if default sort)
       if (primaryKeyColumn && dataResult.rows.length > 0) {
         const lastRow = dataResult.rows[dataResult.rows.length - 1];
         nextCursor = lastRow[primaryKeyColumn];
