@@ -1,31 +1,124 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>pglens - PostgreSQL Database Viewer</title>
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <div class="app">
-      <div class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-          <div class="sidebar-header-top">
-            <div class="sidebar-header-title">
-              <h2>Tables</h2>
-              <span class="table-count" id="tableCount">0</span>
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>pglens - PostgreSQL Database Viewer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Asimovian&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <div class="app">
+    <!-- Connection Dialog -->
+    <div class="connection-dialog-overlay" id="connectionDialog" style="display: none;">
+      <div class="connection-dialog">
+        <div class="connection-dialog-header">
+          <h2>Connect to Database</h2>
+          <button class="close-dialog-button" id="closeConnectionDialog" style="display: none;">×</button>
+        </div>
+        <div class="connection-dialog-body">
+          <div class="connection-type-tabs">
+            <button class="connection-type-tab active" data-target="params">Parameters</button>
+            <button class="connection-type-tab" data-target="url">Connection URL</button>
+          </div>
+
+          <div class="form-group">
+            <label for="connectionName">Connection Name (Optional)</label>
+            <input type="text" id="connectionName" placeholder="e.g., Production DB, Local Dev" autocomplete="off" />
+          </div>
+
+          <!-- URL Mode -->
+          <div id="modeUrl" class="connection-mode-content">
+            <div class="form-group">
+              <label for="connectionUrl">Connection URL</label>
+              <input type="text" id="connectionUrl" placeholder="postgresql://user:password@localhost:5432/dbname"
+                autocomplete="off" />
             </div>
+          </div>
+
+          <!-- Parameters Mode -->
+          <div id="modeParams" class="connection-mode-content" style="display: none;">
+            <div class="form-row">
+              <div class="form-group flex-2">
+                <label for="connHost">Host</label>
+                <input type="text" id="connHost" placeholder="localhost" value="localhost" />
+              </div>
+              <div class="form-group flex-1">
+                <label for="connPort">Port</label>
+                <input type="number" id="connPort" placeholder="5432" value="5432" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="connDatabase">Database</label>
+              <input type="text" id="connDatabase" placeholder="postgres" value="postgres" />
+            </div>
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="connUser">Username</label>
+                <input type="text" id="connUser" placeholder="postgres" />
+              </div>
+              <div class="form-group flex-1">
+                <label for="connPassword">Password</label>
+                <input type="password" id="connPassword" placeholder="password" />
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="sslMode">SSL Mode</label>
+            <select id="sslMode">
+              <option value="prefer" selected>Prefer (Default)</option>
+              <option value="require">Require</option>
+              <option value="disable">Disable</option>
+              <option value="verify-ca">Verify CA</option>
+              <option value="verify-full">Verify Full</option>
+            </select>
+          </div>
+          <div class="error-message" id="connectionError" style="display: none;"></div>
+        </div>
+        <div class="connection-dialog-footer">
+          <button class="button-primary" id="connectButton">Connect</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-header-top">
+          <div class="sidebar-header-title">
+            <h2>pglens</h2>
+          </div>
+          <div class="sidebar-actions">
             <button class="sidebar-toggle" id="sidebarToggle" title="Minimize sidebar">
               <span class="toggle-icon">◀</span>
             </button>
           </div>
+        </div>
+
+        <!-- Connections Section -->
+        <div class="connections-section">
+          <div class="section-header">
+            <h3>Connections</h3>
+            <button class="icon-button add-connection-button" id="addConnectionButton" title="Add Connection">
+              <span class="icon">+</span>
+            </button>
+          </div>
+          <ul class="connections-list" id="connectionsList">
+            <!-- Connections will be added here -->
+          </ul>
+        </div>
+
+        <!-- Tables Section -->
+        <div class="tables-section">
+          <div class="section-header">
+            <h3>Tables <span class="table-count" id="tableCount">0</span></h3>
+          </div>
           <div class="sidebar-search-container">
-            <input 
-              type="text" 
-              class="sidebar-search" 
-              id="sidebarSearch" 
-              placeholder="Search tables..."
-            />
+            <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="Search tables..." />
             <div class="theme-selector">
               <button class="theme-button" id="themeButton" title="Theme">
                 <span class="theme-icon">🌓</span>
@@ -37,23 +130,28 @@
               </div>
             </div>
           </div>
-        </div>
-        <div class="sidebar-content">
-          <div class="loading">Loading tables...</div>
-        </div>
-      </div>
-      <div class="main-content">
-        <div class="tabs-container" id="tabsContainer" style="display: none;">
-          <div class="tabs-bar" id="tabsBar"></div>
-        </div>
-        <div class="table-view" id="tableView">
-          <div class="empty-state">
-            <p>Select a table from the sidebar to view its data</p>
+          <div class="sidebar-content" id="sidebarContent">
+            <div class="loading">Loading tables...</div>
           </div>
         </div>
-        <div class="pagination" id="pagination" style="display: none;"></div>
       </div>
     </div>
-    <script src="app.js"></script>
-  </body>
+    <div class="main-content">
+      <div class="tabs-container" id="tabsContainer" style="display: none;">
+        <div class="tabs-bar" id="tabsBar"></div>
+      </div>
+      <div class="table-view" id="tableView">
+        <div class="empty-state">
+          <p>Select a table from the sidebar to view its data</p>
+        </div>
+      </div>
+      <div class="pagination" id="pagination" style="display: none;"></div>
+    </div>
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+      <div class="loading-spinner"></div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+
 </html>

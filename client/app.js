@@ -3,6 +3,7 @@
  * 
  * Main client-side application for viewing PostgreSQL database tables.
  * Features:
+ * - Multi-database connection support
  * - Multi-tab table viewing
  * - Client-side sorting and column management
  * - Cursor-based pagination for large tables
@@ -11,13 +12,18 @@
  */
 
 // Application state
-let tabs = []; // Array of tab objects: { tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate }
+let connections = []; // Array of active connections: { id, name, connectionString, sslMode }
+let activeConnectionId = null; // Currently active connection ID
+let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate }
 let activeTabIndex = -1; // Currently active tab index
-let allTables = []; // All available tables from the database
+let allTables = []; // All available tables from the current database connection
 let searchQuery = ''; // Current search filter for tables
 let currentTheme = 'system'; // Current theme: 'light', 'dark', or 'system'
+
+// UI Elements
 const sidebar = document.getElementById('sidebar');
-const sidebarContent = sidebar.querySelector('.sidebar-content');
+const sidebarContent = document.getElementById('sidebarContent');
+const connectionsList = document.getElementById('connectionsList');
 const tableCount = document.getElementById('tableCount');
 const sidebarToggle = document.getElementById('sidebarToggle');
 const sidebarSearch = document.getElementById('sidebarSearch');
@@ -27,6 +33,25 @@ const tabsContainer = document.getElementById('tabsContainer');
 const tabsBar = document.getElementById('tabsBar');
 const tableView = document.getElementById('tableView');
 const pagination = document.getElementById('pagination');
+const addConnectionButton = document.getElementById('addConnectionButton');
+
+// Connection UI Elements
+const connectionDialog = document.getElementById('connectionDialog');
+const closeConnectionDialogButton = document.getElementById('closeConnectionDialog');
+const connectionNameInput = document.getElementById('connectionName');
+const connectionUrlInput = document.getElementById('connectionUrl');
+const connectionTabs = document.querySelectorAll('.connection-type-tab');
+const modeUrl = document.getElementById('modeUrl');
+const modeParams = document.getElementById('modeParams');
+const connHost = document.getElementById('connHost');
+const connPort = document.getElementById('connPort');
+const connDatabase = document.getElementById('connDatabase');
+const connUser = document.getElementById('connUser');
+const connPassword = document.getElementById('connPassword');
+const sslModeSelect = document.getElementById('sslMode');
+const connectButton = document.getElementById('connectButton');
+const connectionError = document.getElementById('connectionError');
+const loadingOverlay = document.getElementById('loadingOverlay');
 
 /**
  * Initialize the application when DOM is ready.
@@ -34,7 +59,39 @@ const pagination = document.getElementById('pagination');
  */
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  loadTables();
+  fetchConnections(); // Check status and load connections
+
+  // Connection Event Listeners
+  connectButton.addEventListener('click', handleConnect);
+  addConnectionButton.addEventListener('click', () => showConnectionDialog(true));
+  closeConnectionDialogButton.addEventListener('click', hideConnectionDialog);
+
+  connectionTabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      // Switch active tab
+      connectionTabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      // Show content
+      const target = tab.dataset.target;
+      if (target === 'url') {
+        modeUrl.style.display = 'block';
+        modeParams.style.display = 'none';
+        connectionDialog.dataset.inputMode = 'url';
+      } else {
+        modeUrl.style.display = 'none';
+        modeParams.style.display = 'block';
+        connectionDialog.dataset.inputMode = 'params';
+      }
+    });
+  });
+
+  // Allow Enter key to submit connection form
+  connectionUrlInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      handleConnect();
+    }
+  });
 
   sidebarToggle.addEventListener('click', () => {
     if (tabs.length > 0) {
@@ -129,7 +186,7 @@ function updateThemeIcon() {
 }
 
 function updateSidebarToggleState() {
-  if (tabs.length === 0) {
+  if (tabs.length === 0 && connections.length === 0) {
     sidebarToggle.disabled = true;
     sidebarToggle.classList.add('disabled');
     sidebar.classList.remove('minimized');
@@ -140,13 +197,397 @@ function updateSidebarToggleState() {
 }
 
 /**
- * Load all tables from the database via API.
+ * Fetch active connections from API.
+ */
+async function fetchConnections() {
+  try {
+    const response = await fetch('/api/connections');
+    const data = await response.json();
+
+    connections = data.connections || [];
+
+    if (connections.length > 0) {
+      if (!activeConnectionId || !connections.find(c => c.id === activeConnectionId)) {
+        activeConnectionId = connections[0].id;
+      }
+      renderConnectionsList();
+      loadTables();
+      hideConnectionDialog();
+    } else {
+      showConnectionDialog(false);
+    }
+  } catch (error) {
+    console.error('Failed to fetch connections:', error);
+    showConnectionDialog(false);
+  }
+}
+
+/**
+ * Render the list of active connections in the sidebar.
+ */
+function renderConnectionsList() {
+  connectionsList.innerHTML = '';
+
+  connections.forEach(conn => {
+    const li = document.createElement('li');
+    li.className = 'connection-item';
+    if (conn.id === activeConnectionId) {
+      li.classList.add('active');
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'connection-name';
+    nameSpan.textContent = conn.name;
+    nameSpan.title = 'Click to edit connection';
+    nameSpan.style.cursor = 'pointer';
+    nameSpan.addEventListener('click', (e) => {
+      e.stopPropagation();
+      handleConnectionEdit(conn);
+    });
+
+    // Add click event for the li to switch connection if not clicking name or close
+    li.addEventListener('click', (e) => {
+      if (e.target !== nameSpan && e.target !== disconnectBtn) {
+        switchConnection(conn.id);
+      }
+    });
+
+    const disconnectBtn = document.createElement('button');
+    disconnectBtn.className = 'connection-disconnect';
+    disconnectBtn.innerHTML = '×';
+    disconnectBtn.title = 'Disconnect';
+    disconnectBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      handleDisconnect(conn.id);
+    });
+
+    li.appendChild(nameSpan);
+    li.appendChild(disconnectBtn);
+    connectionsList.appendChild(li);
+  });
+}
+
+/**
+ * Switch the active connection.
+ * @param {string} connectionId - The connection ID to switch to
+ */
+function switchConnection(connectionId) {
+  if (activeConnectionId === connectionId) return;
+
+  activeConnectionId = connectionId;
+  renderConnectionsList();
+  loadTables();
+
+  // Clear tables view if no tab from this connection is active
+  const currentTab = getActiveTab();
+  if (currentTab && currentTab.connectionId !== activeConnectionId) {
+    // Try to find the last active tab for this connection
+    const tabIndex = tabs.findIndex(t => t.connectionId === activeConnectionId);
+    if (tabIndex !== -1) {
+      switchToTab(tabIndex);
+    } else {
+      // No tabs for this connection, show empty state
+      tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+      pagination.style.display = 'none';
+
+      // Deselect all tabs visually
+      const tabElements = tabsBar.querySelectorAll('.tab');
+      tabElements.forEach(el => el.classList.remove('active'));
+      activeTabIndex = -1;
+    }
+  }
+}
+
+/**
+ * Handle database connection.
+ */
+async function handleConnect() {
+  let url = '';
+  const connectionName = connectionNameInput.value.trim();
+  const sslMode = sslModeSelect.value;
+  const inputMode = connectionDialog.dataset.inputMode || 'url';
+
+  if (inputMode === 'url') {
+    url = connectionUrlInput.value.trim();
+  } else {
+    // Build URL from params
+    const host = connHost.value.trim() || 'localhost';
+    const port = connPort.value.trim() || '5432';
+    const database = connDatabase.value.trim() || 'postgres';
+    const user = connUser.value.trim();
+    const password = connPassword.value;
+
+    if (!user) {
+      showConnectionError('Username is required');
+      return;
+    }
+
+    url = buildConnectionString(user, password, host, port, database);
+  }
+
+  if (!url) {
+    showConnectionError('Please enter a connection URL');
+    return;
+  }
+
+  // Validate URL format
+  try {
+    if (!url.startsWith('postgres://') && !url.startsWith('postgresql://')) {
+      showConnectionError('URL must start with postgres:// or postgresql://');
+      return;
+    }
+
+    const urlObj = new URL(url);
+    if (!urlObj.pathname || urlObj.pathname === '/') {
+      showConnectionError('URL must include a database name');
+      return;
+    }
+  } catch (e) {
+    showConnectionError('Invalid URL format');
+    return;
+  }
+
+  try {
+    setConnectingState(true);
+
+
+    let urlPath = '/api/connect';
+    let method = 'POST';
+
+    if (connectionDialog.dataset.mode === 'edit') {
+      const id = connectionDialog.dataset.connectionId;
+      urlPath = `/api/connections/${id}`;
+      method = 'PUT';
+    }
+
+    const response = await fetch(urlPath, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, sslMode, name: connectionName || undefined })
+    });
+
+    const data = await response.json();
+
+    if (response.ok) {
+      if (data.connected || data.updated) {
+        // If updated, update local array
+        if (data.updated) {
+          const index = connections.findIndex(c => c.id === data.connectionId);
+          if (index !== -1) {
+            connections[index] = {
+              ...connections[index],
+              name: data.name,
+              connectionString: url,
+              sslMode: sslMode
+            };
+          }
+        } else {
+          // New connection
+          // Check if this connection ID already exists in our list (backend might return existing one)
+          const existingIndex = connections.findIndex(c => c.id === data.connectionId);
+          if (existingIndex === -1) {
+            connections.push({
+              id: data.connectionId,
+              name: data.name,
+              connectionString: url,
+              sslMode: sslMode
+            });
+          } else {
+            console.log('Connection already exists, switching to it');
+          }
+        }
+
+        activeConnectionId = data.connectionId;
+
+        renderConnectionsList();
+        loadTables();
+        hideConnectionDialog();
+        // Don't clear inputs here, will clear on show
+      }
+    } else {
+      showConnectionError(data.error || 'Failed to connect');
+    }
+  } catch (error) {
+    showConnectionError(error.message);
+  } finally {
+    setConnectingState(false);
+  }
+}
+
+/**
+ * Handle database disconnection.
+ * @param {string} connectionId - ID of connection to disconnect
+ */
+async function handleDisconnect(connectionId) {
+  if (!confirm('Are you sure you want to disconnect? Associated tabs will be closed.')) {
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connectionId })
+    });
+
+    if (response.ok) {
+      // Remove from local state
+      connections = connections.filter(c => c.id !== connectionId);
+
+      // Close associated tabs
+      const tabsToRemove = [];
+      tabs.forEach((tab, index) => {
+        if (tab.connectionId === connectionId) {
+          tabsToRemove.push(index);
+        }
+      });
+
+      // Remove tabs in reverse order to maintain indices
+      for (let i = tabsToRemove.length - 1; i >= 0; i--) {
+        closeTab(tabsToRemove[i]);
+      }
+
+      if (connections.length === 0) {
+        activeConnectionId = null;
+        sidebarContent.innerHTML = '';
+        tableCount.textContent = '0';
+        renderConnectionsList();
+        showConnectionDialog(false);
+      } else {
+        if (activeConnectionId === connectionId) {
+          // Switch to another connection (the first one)
+          activeConnectionId = connections[0].id;
+          loadTables();
+        }
+        renderConnectionsList();
+      }
+    }
+  } catch (error) {
+    console.error('Failed to disconnect:', error);
+  }
+}
+
+
+
+function showConnectionDialog(allowClose, editMode = false, connection = null) {
+  connectionDialog.style.display = 'flex';
+  connectionError.style.display = 'none';
+
+  const title = connectionDialog.querySelector('h2');
+  title.textContent = editMode ? 'Edit Connection' : 'Connect to Database';
+  connectButton.textContent = editMode ? 'Save' : 'Connect';
+
+  connectionDialog.dataset.mode = editMode ? 'edit' : 'add';
+
+  if (editMode && connection) {
+    connectionDialog.dataset.connectionId = connection.id;
+    connectionNameInput.value = connection.name || '';
+    sslModeSelect.value = connection.sslMode || 'prefer';
+
+    // Try to parse URL to populate params
+    const parsed = parseConnectionString(connection.connectionString);
+    if (parsed) {
+      connHost.value = parsed.host;
+      connPort.value = parsed.port;
+      connDatabase.value = parsed.database;
+      connUser.value = parsed.user;
+      connPassword.value = parsed.password;
+    }
+    connectionUrlInput.value = connection.connectionString || '';
+  } else {
+    delete connectionDialog.dataset.connectionId;
+    connectionUrlInput.value = '';
+    connectionNameInput.value = '';
+    sslModeSelect.value = 'prefer';
+
+    // Reset params
+    connHost.value = 'localhost';
+    connPort.value = '5432';
+    connDatabase.value = 'postgres';
+    connUser.value = '';
+    connPassword.value = '';
+  }
+
+  // Reset tabs to Params mode by default (since we swapped buttons, tab[0] is Params)
+  connectionTabs.forEach(t => t.classList.remove('active'));
+  connectionTabs[0].classList.add('active');
+
+  modeUrl.style.display = 'none';
+  modeParams.style.display = 'block';
+  connectionDialog.dataset.inputMode = 'params';
+
+  connHost.focus();
+
+  if (allowClose && connections.length > 0) {
+    closeConnectionDialogButton.style.display = 'block';
+  } else {
+    closeConnectionDialogButton.style.display = 'none';
+  }
+}
+
+function buildConnectionString(user, password, host, port, database) {
+  let auth = user;
+  if (password) {
+    auth += `:${encodeURIComponent(password)}`;
+  }
+  return `postgresql://${auth}@${host}:${port}/${database}`;
+}
+
+function parseConnectionString(urlStr) {
+  try {
+    if (!urlStr) return null;
+    // Handle cases where protocol might be missing (though validation enforces it)
+    if (!urlStr.includes('://')) {
+      urlStr = 'postgresql://' + urlStr;
+    }
+    const url = new URL(urlStr);
+    return {
+      host: url.hostname || 'localhost',
+      port: url.port || '5432',
+      database: url.pathname.replace(/^\//, '') || 'postgres',
+      user: url.username || '',
+      password: url.password || '' // Note: URL decoding happens automatically for username/password properties? Verify. 
+      // Actually URL properties are usually decoded. decodeURIComponent check might be needed if raw.
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function handleConnectionEdit(connection) {
+  showConnectionDialog(true, true, connection);
+}
+
+function hideConnectionDialog() {
+  connectionDialog.style.display = 'none';
+}
+
+function showConnectionError(message) {
+  connectionError.textContent = message;
+  connectionError.style.display = 'block';
+}
+
+function setConnectingState(isConnecting) {
+  connectButton.disabled = isConnecting;
+  connectButton.textContent = isConnecting ? 'Connecting...' : 'Connect';
+  connectionNameInput.disabled = isConnecting;
+  connectionUrlInput.disabled = isConnecting;
+  sslModeSelect.disabled = isConnecting;
+}
+
+/**
+ * Load all tables from the active database via API.
  * Fetches table list and updates the sidebar.
  */
 async function loadTables() {
+  if (!activeConnectionId) return;
+
   try {
     sidebarContent.innerHTML = '<div class="loading">Loading tables...</div>';
-    const response = await fetch('/api/tables');
+
+    const response = await fetch('/api/tables', {
+      headers: { 'x-connection-id': activeConnectionId }
+    });
     const data = await response.json();
 
     if (data.error) {
@@ -225,7 +666,11 @@ function escapeHtml(text) {
 }
 
 function updateSidebarActiveState() {
-  const activeTable = getActiveTab()?.tableName;
+  const activeTab = getActiveTab();
+
+  // Only highlight sidebar if active tab belongs to active connection
+  const activeTable = (activeTab && activeTab.connectionId === activeConnectionId) ? activeTab.tableName : null;
+
   if (!activeTable) {
     const tableItems = sidebarContent.querySelectorAll('.table-list li');
     tableItems.forEach(item => item.classList.remove('active'));
@@ -252,12 +697,18 @@ function updateSidebarActiveState() {
  * @param {string} tableName - Name of the table to open
  */
 function handleTableSelect(tableName) {
-  const existingTabIndex = tabs.findIndex(tab => tab.tableName === tableName);
+  if (!activeConnectionId) return;
+
+  // Check if tab already exists for this table AND connection
+  const existingTabIndex = tabs.findIndex(tab =>
+    tab.tableName === tableName && tab.connectionId === activeConnectionId
+  );
 
   if (existingTabIndex !== -1) {
     switchToTab(existingTabIndex);
   } else {
     const newTab = {
+      connectionId: activeConnectionId,
       tableName: tableName,
       page: 1,
       totalCount: 0,
@@ -269,7 +720,8 @@ function handleTableSelect(tableName) {
       cursor: null, // Cursor for cursor-based pagination
       cursorHistory: [], // History for backward navigation
       hasPrimaryKey: false, // Whether table has primary key
-      isApproximate: false // Whether count is approximate (for large tables)
+      isApproximate: false, // Whether count is approximate (for large tables)
+      limit: 100 // Rows per page
     };
     tabs.push(newTab);
     activeTabIndex = tabs.length - 1;
@@ -287,14 +739,12 @@ function switchToTab(index) {
   activeTabIndex = index;
   const tab = tabs[activeTabIndex];
 
-  const tableItems = sidebarContent.querySelectorAll('.table-list li');
-  tableItems.forEach(item => {
-    if (item.textContent === tab.tableName) {
-      item.classList.add('active');
-    } else {
-      item.classList.remove('active');
-    }
-  });
+  // Switch connection if tab belongs to different connection
+  if (tab.connectionId !== activeConnectionId) {
+    activeConnectionId = tab.connectionId;
+    renderConnectionsList();
+    loadTables();
+  }
 
   renderTabs();
   updateSidebarActiveState();
@@ -312,29 +762,41 @@ function closeTab(index, event) {
     event.stopPropagation();
   }
 
-  if (tabs.length <= 1) {
-    tabs = [];
+  if (index < 0 || index >= tabs.length) return;
+
+  const tabWasActive = (index === activeTabIndex);
+  tabs.splice(index, 1);
+
+  if (tabs.length === 0) {
     activeTabIndex = -1;
     tabsContainer.style.display = 'none';
     tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
     pagination.style.display = 'none';
-
-    const tableItems = sidebarContent.querySelectorAll('.table-list li');
-    tableItems.forEach(item => item.classList.remove('active'));
-
+    updateSidebarActiveState();
     updateSidebarToggleState();
     return;
   }
 
-  tabs.splice(index, 1);
-
+  // Adjust activeTabIndex
   if (activeTabIndex >= index) {
     activeTabIndex--;
-    if (activeTabIndex < 0) activeTabIndex = 0;
+  }
+  if (activeTabIndex < 0) {
+    activeTabIndex = 0;
   }
 
-  if (index === activeTabIndex || activeTabIndex >= tabs.length) {
-    activeTabIndex = Math.max(0, tabs.length - 1);
+  // If we closed the active tab, switch to the new active one
+  if (tabWasActive) {
+    // Ensure index is within bounds
+    if (activeTabIndex >= tabs.length) activeTabIndex = tabs.length - 1;
+
+    const newActiveTab = tabs[activeTabIndex];
+    // Switch connection if needed
+    if (newActiveTab && newActiveTab.connectionId !== activeConnectionId) {
+      activeConnectionId = newActiveTab.connectionId;
+      renderConnectionsList();
+      loadTables();
+    }
   }
 
   renderTabs();
@@ -347,9 +809,7 @@ function closeTab(index, event) {
     } else {
       loadTableData();
     }
-
     updateSidebarActiveState();
-    updateSidebarToggleState();
   }
 }
 
@@ -372,6 +832,14 @@ function renderTabs() {
   tabs.forEach((tab, index) => {
     const tabElement = document.createElement('div');
     tabElement.className = `tab ${index === activeTabIndex ? 'active' : ''}`;
+    // Add connection indicator for tab if multiple connections exist
+    if (connections.length > 1) {
+      const conn = connections.find(c => c.id === tab.connectionId);
+      if (conn) {
+        tabElement.title = `${tab.tableName} (${conn.name})`;
+      }
+    }
+
     tabElement.addEventListener('click', () => switchToTab(index));
 
     const tabLabel = document.createElement('span');
@@ -396,9 +864,7 @@ function closeAllTabs() {
   tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
   pagination.style.display = 'none';
 
-  const tableItems = sidebarContent.querySelectorAll('.table-list li');
-  tableItems.forEach(item => item.classList.remove('active'));
-
+  updateSidebarActiveState();
   updateSidebarToggleState();
 }
 
@@ -413,7 +879,8 @@ function handleRefresh() {
 
   tab.data = null;
 
-  const refreshIcon = document.querySelector('.refresh-icon');
+  const refreshButton = document.querySelector('#refreshButton');
+  const refreshIcon = refreshButton ? refreshButton.querySelector('.refresh-icon') : null;
   if (refreshIcon) {
     refreshIcon.classList.add('spinning');
     setTimeout(() => {
@@ -455,16 +922,26 @@ async function loadTableData() {
   if (!tab) return;
 
   try {
-    tableView.innerHTML = '<div class="loading-state"><p>Loading data from ' + tab.tableName + '...</p></div>';
+    showLoading();
+    // tableView.innerHTML = '<div class="loading-state"><p>Loading data from ' + tab.tableName + '...</p></div>';
 
     // Build query with cursor-based pagination if available
-    let queryString = `page=${tab.page}&limit=100`;
-    if (tab.hasPrimaryKey && tab.cursor && tab.page > 1) {
-      // Use cursor for forward navigation (more efficient than OFFSET)
+    if (!tab.limit) {
+      tab.limit = 100; // Default limit for existing tabs
+    }
+    let queryString = `page=${tab.page}&limit=${tab.limit}`;
+    if (tab.sortColumn) {
+      queryString += `&sortColumn=${encodeURIComponent(tab.sortColumn)}&sortDirection=${tab.sortDirection}`;
+    }
+
+    if (tab.hasPrimaryKey && tab.cursor && tab.page > 1 && !tab.sortColumn) {
+      // Use cursor for forward navigation (only if using default sort)
       queryString += `&cursor=${encodeURIComponent(tab.cursor)}`;
     }
 
-    const response = await fetch(`/api/tables/${tab.tableName}?${queryString}`);
+    const response = await fetch(`/api/tables/${tab.tableName}?${queryString}`, {
+      headers: { 'x-connection-id': tab.connectionId }
+    });
     const data = await response.json();
 
     if (data.error) {
@@ -499,6 +976,8 @@ async function loadTableData() {
   } catch (error) {
     tableView.innerHTML = '<div class="error-state"><p>Error: ' + error.message + '</p></div>';
     pagination.style.display = 'none';
+  } finally {
+    hideLoading();
   }
 }
 
@@ -508,32 +987,79 @@ function renderTable(data) {
 
   const columns = Object.keys(data.rows[0] || {});
 
+  if (!tab.limit) {
+    tab.limit = 100; // Default limit for existing tabs
+  }
+
   const tableHeader = document.createElement('div');
   tableHeader.className = 'table-header';
+  const startRow = ((tab.page - 1) * tab.limit) + 1;
+  const endRow = Math.min(tab.page * tab.limit, tab.totalCount);
+  const totalRows = tab.totalCount;
+
   tableHeader.innerHTML = `
     <div class="table-header-left">
       <h2>${tab.tableName}</h2>
-      <button class="refresh-button" id="refreshButton" title="Refresh data">
-        <span class="refresh-icon">↻</span>
-      </button>
-      <div class="column-selector">
-        <button class="column-button" id="columnButton" title="Show/Hide columns">
-          <span class="column-label" id="columnLabel">Columns</span>
+      <div class="table-header-actions">
+        <button class="refresh-button" id="refreshButton" title="Refresh data">
+          <svg class="refresh-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8 2V6M8 14V10M2 8H6M10 8H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M2.5 5.5C3.1 4.2 4.1 3.2 5.4 2.6M13.5 10.5C12.9 11.8 11.9 12.8 10.6 13.4M5.5 2.5C4.2 3.1 3.2 4.1 2.6 5.4M10.5 13.5C11.8 12.9 12.8 11.9 13.4 10.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span class="refresh-text">Refresh</span>
         </button>
-        <div class="column-menu" id="columnMenu" style="display: none;">
-          <div class="column-menu-header">Columns</div>
-          <div class="column-menu-options" id="columnMenuOptions"></div>
+        <div class="limit-selector">
+          <select id="limitSelect" class="limit-select" title="Rows per page">
+            <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
+            <option value="50" ${tab.limit === 50 ? 'selected' : ''}>50 rows</option>
+            <option value="100" ${tab.limit === 100 ? 'selected' : ''}>100 rows</option>
+            <option value="200" ${tab.limit === 200 ? 'selected' : ''}>200 rows</option>
+            <option value="500" ${tab.limit === 500 ? 'selected' : ''}>500 rows</option>
+          </select>
+        </div>
+        <div class="column-selector">
+          <button class="column-button" id="columnButton" title="Show/Hide columns">
+            <svg class="column-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 2H13C13.5523 2 14 2.44772 14 3V13C14 13.5523 13.5523 14 13 14H3C2.44772 14 2 13.5523 2 13V3C2 2.44772 2.44772 2 3 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M6 2V14M10 2V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span class="column-label" id="columnLabel">Columns</span>
+          </button>
+          <div class="column-menu" id="columnMenu" style="display: none;">
+            <div class="column-menu-header">Columns</div>
+            <div class="column-menu-options" id="columnMenuOptions"></div>
+          </div>
         </div>
       </div>
     </div>
-    <span class="row-info">
-      Showing ${((tab.page - 1) * 100) + 1}-${Math.min(tab.page * 100, tab.totalCount)} of ${tab.totalCount}${tab.isApproximate ? ' (approx.)' : ''} rows
-    </span>
+    <div class="row-info-container">
+      <span class="row-info">
+        <span class="row-info-range">${startRow.toLocaleString()}–${endRow.toLocaleString()}</span>
+        <span class="row-info-separator">of</span>
+        <span class="row-info-total">${totalRows.toLocaleString()}</span>
+        ${tab.isApproximate ? '<span class="row-info-approx">(approx.)</span>' : ''}
+      </span>
+    </div>
   `;
 
   const refreshButton = tableHeader.querySelector('#refreshButton');
   if (refreshButton) {
     refreshButton.addEventListener('click', handleRefresh);
+  }
+
+  const limitSelect = tableHeader.querySelector('#limitSelect');
+  if (limitSelect) {
+    limitSelect.addEventListener('change', (e) => {
+      const newLimit = parseInt(e.target.value, 10);
+      if (tab.limit !== newLimit) {
+        tab.limit = newLimit;
+        tab.page = 1; // Reset to first page when limit changes
+        tab.cursor = null; // Reset cursor
+        tab.cursorHistory = [];
+        tab.data = null; // Clear cache
+        loadTableData();
+      }
+    });
   }
 
   if (!tab.hiddenColumns) {
@@ -674,9 +1200,10 @@ function renderTable(data) {
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
-  const sortedRows = getSortedRows(data.rows, tab);
+  // Server-side sorting, so rows are already sorted
+  const rows = data.rows || [];
 
-  sortedRows.forEach(row => {
+  rows.forEach(row => {
     const tr = document.createElement('tr');
     visibleColumns.forEach(column => {
       const td = document.createElement('td');
@@ -696,7 +1223,7 @@ function renderTable(data) {
         : 'NULL';
       td.dataset.columnName = column;
 
-      td.addEventListener('dblclick', (e) => {
+      td.addEventListener('click', (e) => {
         e.stopPropagation();
         showCellContentPopup(column, value);
       });
@@ -971,9 +1498,11 @@ function handleSort(column) {
     tab.sortDirection = 'asc';
   }
 
-  if (tab.data) {
-    renderTable(tab.data);
-  }
+  // Reload data from server with new sort
+  tab.page = 1; // Reset to page 1 on sort change
+  tab.cursor = null;
+  tab.cursorHistory = [];
+  loadTableData();
 }
 
 /**
@@ -1036,7 +1565,10 @@ function renderPagination() {
   const tab = getActiveTab();
   if (!tab) return;
 
-  const limit = 100;
+  if (!tab.limit) {
+    tab.limit = 100; // Default limit for existing tabs
+  }
+  const limit = tab.limit;
   const totalPages = Math.ceil(tab.totalCount / limit);
 
   if (totalPages <= 1) {
@@ -1049,24 +1581,41 @@ function renderPagination() {
   const hasPrevious = tab.page > 1;
   const hasNext = tab.page < totalPages;
 
+  const startRow = ((tab.page - 1) * limit) + 1;
+  const endRow = Math.min(tab.page * limit, tab.totalCount);
+
   pagination.innerHTML = `
-    <button 
-      class="pagination-button" 
-      ${!hasPrevious ? 'disabled' : ''}
-      onclick="handlePageChange(${tab.page - 1})"
-    >
-      Previous
-    </button>
-    <span class="pagination-info">
-      Page ${tab.page} of ${totalPages}
-    </span>
-    <button 
-      class="pagination-button" 
-      ${!hasNext ? 'disabled' : ''}
-      onclick="handlePageChange(${tab.page + 1})"
-    >
-      Next
-    </button>
+    <div class="pagination-content">
+      <button 
+        class="pagination-button pagination-button-prev" 
+        ${!hasPrevious ? 'disabled' : ''}
+        onclick="handlePageChange(${tab.page - 1})"
+        title="Previous page"
+      >
+        <svg class="pagination-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>Previous</span>
+      </button>
+      <div class="pagination-info-container">
+        <span class="pagination-info">
+          <span class="pagination-page">Page <strong>${tab.page}</strong> of <strong>${totalPages}</strong></span>
+          <span class="pagination-separator">•</span>
+          <span class="pagination-rows">${startRow.toLocaleString()}–${endRow.toLocaleString()} of ${tab.totalCount.toLocaleString()}</span>
+        </span>
+      </div>
+      <button 
+        class="pagination-button pagination-button-next" 
+        ${!hasNext ? 'disabled' : ''}
+        onclick="handlePageChange(${tab.page + 1})"
+        title="Next page"
+      >
+        <span>Next</span>
+        <svg class="pagination-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M6 12L10 8L6 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
   `;
 }
 
@@ -1305,9 +1854,6 @@ function showCellContentPopup(column, value) {
   const formattedContent = formatted.content;
   const isJson = formatted.isJson;
   const isDateTime = formatted.isDateTime;
-  const dateValue = formatted.dateValue;
-
-  let currentTimezone = getCurrentTimezone();
 
   const header = document.createElement('div');
   header.className = 'cell-popup-header';
@@ -1320,66 +1866,41 @@ function showCellContentPopup(column, value) {
   const headerActions = document.createElement('div');
   headerActions.className = 'cell-popup-actions';
 
-  let timezoneSelect = null;
-  if (isDateTime && dateValue) {
-    timezoneSelect = document.createElement('select');
-    timezoneSelect.className = 'cell-popup-timezone';
-    timezoneSelect.title = 'Select timezone';
-
-    const timezones = getCommonTimezones();
-    timezones.forEach(tz => {
-      const option = document.createElement('option');
-      option.value = tz.value;
-      option.textContent = tz.label;
-      if (tz.value === currentTimezone) {
-        option.selected = true;
-      }
-      timezoneSelect.appendChild(option);
-    });
-
-    headerActions.appendChild(timezoneSelect);
-  }
-
   const copyButton = document.createElement('button');
   copyButton.className = 'cell-popup-copy';
   copyButton.innerHTML = '📋';
   copyButton.title = 'Copy to clipboard';
 
   const updateContent = () => {
+    let contentToDisplay = '';
+    let contentToCopy = '';
+
     if (value === null || value === undefined) {
       content.classList.add('null-content');
       content.classList.remove('json-value-popup', 'datetime-value-popup');
-      content.textContent = 'NULL';
+      contentToDisplay = 'NULL';
+      contentToCopy = 'NULL';
     } else if (isJson) {
-      const formatted = formatCellContentForPopup(value, currentTimezone);
+      const formatted = formatCellContentForPopup(value);
       content.classList.add('json-value-popup');
       content.classList.remove('null-content', 'datetime-value-popup');
-      content.textContent = formatted.content;
-    } else if (isDateTime && dateValue) {
+      contentToDisplay = formatted.content;
+      contentToCopy = formatted.content;
+    } else if (isDateTime) {
+      // Display original date/time value without timezone conversion
       content.classList.add('datetime-value-popup');
       content.classList.remove('null-content', 'json-value-popup');
-
-      // Show multiple timezone formats
-      const localTz = formatDateTimeInTimezone(dateValue, getCurrentTimezone());
-      const utcTz = formatDateTimeInTimezone(dateValue, 'UTC');
-      const selectedTz = formatDateTimeInTimezone(dateValue, currentTimezone);
-
-      let displayText = `Local (${getCurrentTimezone()}): ${localTz}\n`;
-      displayText += `UTC: ${utcTz}\n`;
-      if (currentTimezone !== getCurrentTimezone() && currentTimezone !== 'UTC') {
-        displayText += `Selected (${currentTimezone}): ${selectedTz}`;
-      }
-
-      content.textContent = displayText;
+      contentToDisplay = String(value);
+      contentToCopy = String(value);
     } else {
-      const formatted = formatCellContentForPopup(value, currentTimezone);
+      const formatted = formatCellContentForPopup(value);
       content.classList.remove('null-content', 'json-value-popup', 'datetime-value-popup');
-      content.textContent = formatted.content;
+      contentToDisplay = formatted.content;
+      contentToCopy = formatted.content;
     }
 
-    // Update copy button to use current formatted content
-    const finalFormatted = formatCellContentForPopup(value, currentTimezone);
-    copyButton._formattedContent = finalFormatted.content;
+    content.textContent = contentToDisplay;
+    copyButton._formattedContent = contentToCopy;
   };
 
   copyButton.addEventListener('click', async () => {
@@ -1424,13 +1945,6 @@ function showCellContentPopup(column, value) {
 
   updateContent();
 
-  if (timezoneSelect) {
-    timezoneSelect.addEventListener('change', (e) => {
-      currentTimezone = e.target.value;
-      updateContent();
-    });
-  }
-
   body.appendChild(content);
 
   dialog.appendChild(header);
@@ -1460,5 +1974,17 @@ function closeCellContentPopup() {
       document.removeEventListener('keydown', overlay._escapeHandler);
     }
     overlay.remove();
+  }
+}
+
+function showLoading() {
+  if (loadingOverlay) {
+    loadingOverlay.style.display = 'flex';
+  }
+}
+
+function hideLoading() {
+  if (loadingOverlay) {
+    loadingOverlay.style.display = 'none';
   }
 }

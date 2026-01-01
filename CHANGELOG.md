@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-01-01
+
+### Added
+
+- **Server-Side Sorting**: Table sorting is now performed on the database server, ensuring correct ordering across all data pages.
+- **Connection Parameters Mode**: New tabbed interface in connection dialog allowing separate input for Host, Port, User, Password, and Database.
+- **Global Loading Overlay**: Blocks user interaction during data fetching to prevent race conditions.
+- **Dynamic Port Selection**: Server automatically finds an available port if 54321 is busy.
+- **`pglens url` Command**: CLI command to display the currently running server URL.
+- **Database Query Timeout**: Enforced 30-second timeout on all database operations.
+
+### Changed
+
+- Connection dialog now defaults to "Parameters" input mode for better usability.
+- Switched to offset-based pagination when a custom sort order is active.
+- Improved connection error handling and validation.
+
 ## [1.1.0] - 2025-11-21
 
 ### Added

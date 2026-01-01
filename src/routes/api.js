@@ -14,9 +14,118 @@
  */
 
 const express = require('express');
-const { getPool } = require('../db/connection');
+const { getPool, createPool, closePool, checkConnection, getConnections, updateConnection } = require('../db/connection');
 
 const router = express.Router();
+
+/**
+ * Middleware to check if connected to database
+ */
+const requireConnection = async (req, res, next) => {
+  const connectionId = req.headers['x-connection-id'];
+  if (!connectionId) {
+    return res.status(400).json({ error: 'Connection ID header required' });
+  }
+
+  const pool = getPool(connectionId);
+  if (!pool) {
+    return res.status(503).json({ error: 'Not connected to database or invalid connection ID' });
+  }
+
+  req.pool = pool;
+  next();
+};
+
+/**
+ * POST /api/connect
+ * Connect to a PostgreSQL database
+ */
+router.post('/connect', async (req, res) => {
+  const { url, sslMode, name } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: 'Connection string is required' });
+  }
+
+  try {
+    const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name);
+    res.json({ connected: true, connectionId: id, name: connectionName });
+  } catch (error) {
+    res.status(400).json({
+      connected: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/connections/:id
+ * Update an existing connection
+ */
+router.put('/connections/:id', async (req, res) => {
+  const { id } = req.params;
+  const { url, sslMode, name } = req.body;
+
+  if (!url) {
+    return res.status(400).json({ error: 'Connection string is required' });
+  }
+
+  try {
+    const { name: connectionName } = await updateConnection(id, url, sslMode || 'prefer', name);
+    res.json({ updated: true, connectionId: id, name: connectionName });
+  } catch (error) {
+    res.status(400).json({
+      updated: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/connections
+ * List active connections
+ */
+router.get('/connections', (req, res) => {
+  const connections = getConnections();
+  res.json({ connections });
+});
+
+/**
+ * POST /api/disconnect
+ * Disconnect from a database
+ */
+router.post('/disconnect', async (req, res) => {
+  const connectionId = req.body.connectionId || req.headers['x-connection-id'];
+
+  if (!connectionId) {
+    return res.status(400).json({ error: 'Connection ID required' });
+  }
+
+  try {
+    await closePool(connectionId);
+    res.json({ connected: false });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/status
+ * Check connection status
+ */
+router.get('/status', async (req, res) => {
+  const connectionId = req.headers['x-connection-id'];
+  if (!connectionId) {
+    return res.json({ connected: false });
+  }
+
+  try {
+    const connected = await checkConnection(connectionId);
+    res.json({ connected });
+  } catch (error) {
+    res.json({ connected: false, error: error.message });
+  }
+});
 
 /**
  * Sanitize table name to prevent SQL injection.
@@ -40,9 +149,9 @@ function sanitizeTableName(tableName) {
  * 
  * Response: { tables: string[] }
  */
-router.get('/tables', async (req, res) => {
+router.get('/tables', requireConnection, async (req, res) => {
   try {
-    const pool = getPool();
+    const pool = req.pool;
     const result = await pool.query(`
       SELECT table_name 
       FROM information_schema.tables 
@@ -202,7 +311,7 @@ async function getColumnMetadata(pool, tableName) {
       SELECT column_name, data_type
       FROM information_schema.columns
       WHERE table_schema = 'public'
-        AND table_name = $1
+      AND table_name = $1
       ORDER BY ordinal_position;
     `;
     const result = await pool.query(metadataQuery, [tableName]);
@@ -260,20 +369,27 @@ async function getColumnMetadata(pool, tableName) {
  *     - isUnique: boolean
  * }
  */
-router.get('/tables/:tableName', async (req, res) => {
+router.get('/tables/:tableName', requireConnection, async (req, res) => {
   try {
     const tableName = sanitizeTableName(req.params.tableName);
     const page = parseInt(req.query.page || '1', 10);
     const limit = parseInt(req.query.limit || '100', 10);
     const cursor = req.query.cursor;
+    const sortColumn = req.query.sortColumn ? req.query.sortColumn : null;
+    const sortDirection = req.query.sortDirection === 'desc' ? 'DESC' : 'ASC';
 
     if (page < 1 || limit < 1) {
       return res.status(400).json({ error: 'Page and limit must be positive integers' });
     }
 
-    const pool = getPool();
+    const pool = req.pool;
     const primaryKeyColumn = await getPrimaryKeyColumn(pool, tableName);
     const columnMetadata = await getColumnMetadata(pool, tableName);
+
+    // Validate sortColumn if provided
+    if (sortColumn && !columnMetadata[sortColumn]) {
+      return res.status(400).json({ error: 'Invalid sort column' });
+    }
 
     const countQuery = `SELECT COUNT(*) as total FROM "${tableName}"`;
     const countResult = await pool.query(countQuery);
@@ -283,7 +399,22 @@ router.get('/tables/:tableName', async (req, res) => {
     let dataResult;
     let nextCursor = null;
 
-    if (primaryKeyColumn && cursor) {
+    if (sortColumn) {
+      // Custom Sorting: Use OFFSET-based pagination
+      // Always add primary key (if exists) as secondary sort for stability
+      const offset = (page - 1) * limit;
+      let orderByClause = `ORDER BY "${sortColumn}" ${sortDirection}`;
+
+      if (primaryKeyColumn && sortColumn !== primaryKeyColumn) {
+        orderByClause += `, "${primaryKeyColumn}" ASC`;
+      }
+
+      const query = `SELECT * FROM "${tableName}" ${orderByClause} LIMIT $1 OFFSET $2`;
+      dataResult = await pool.query(query, [limit, offset]);
+
+      // Cursor not valid for custom sorts in this simple implementation
+      nextCursor = null;
+    } else if (primaryKeyColumn && cursor) {
       // Cursor-based pagination: WHERE id > cursor (most efficient for forward navigation)
       const cursorQuery = `SELECT * FROM "${tableName}" WHERE "${primaryKeyColumn}" > $1 ORDER BY "${primaryKeyColumn}" ASC LIMIT $2`;
       const cursorParams = [cursor, limit];
@@ -321,7 +452,7 @@ router.get('/tables/:tableName', async (req, res) => {
       }
       dataResult = await pool.query(query, queryParams);
 
-      // Calculate cursor for next page if primary key exists
+      // Calculate cursor for next page if primary key exists (only if default sort)
       if (primaryKeyColumn && dataResult.rows.length > 0) {
         const lastRow = dataResult.rows[dataResult.rows.length - 1];
         nextCursor = lastRow[primaryKeyColumn];
@@ -346,4 +477,3 @@ router.get('/tables/:tableName', async (req, res) => {
 });
 
 module.exports = router;
-

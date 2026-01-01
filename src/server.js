@@ -19,43 +19,85 @@ const apiRoutes = require('./routes/api');
 
 /**
  * Start the Express server.
- * @param {string} connectionString - PostgreSQL connection string
- * @param {number} port - Port number to listen on
- * @param {string} sslMode - SSL mode for database connection
  */
-function startServer(connectionString, port, sslMode) {
+const fs = require('fs');
+const os = require('os');
+const net = require('net');
+
+const PORT_FILE = path.join(os.homedir(), '.pglens.port');
+
+/**
+ * Check if a port is in use.
+ * @param {number} port 
+ * @returns {Promise<boolean>}
+ */
+function isPortInUse(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+    server.once('listening', () => {
+      server.close();
+      resolve(false);
+    });
+    server.listen(port);
+  });
+}
+
+/**
+ * Start the Express server.
+ */
+async function startServer() {
   const app = express();
+  let port = 54321;
+
+  // Try to find an available port starting from 54321
+  if (await isPortInUse(port)) {
+    port = 0; // Let OS choose a random available port
+  }
 
   app.use(cors());
   app.use(express.json());
 
-  createPool(connectionString, sslMode)
-    .then(() => {
-      app.use('/api', apiRoutes);
+  app.use('/api', apiRoutes);
 
-      const clientPath = path.join(__dirname, '../client');
-      app.use(express.static(clientPath));
+  const clientPath = path.join(__dirname, '../client');
+  app.use(express.static(clientPath));
 
-      app.get('*', (_, res) => {
-        res.sendFile(path.join(clientPath, 'index.html'));
-      });
+  app.get('*', (_, res) => {
+    res.sendFile(path.join(clientPath, 'index.html'));
+  });
 
-      app.listen(port, () => {
-        console.log(`✓ Server running on http://localhost:${port}`);
-        console.log(`  Open your browser to view your database`);
-      });
+  const server = app.listen(port, () => {
+    const actualPort = server.address().port;
+    console.log(`✓ Server running on http://localhost:${actualPort}`);
+    console.log(`  Open your browser to view your database`);
 
-      process.on('SIGINT', () => {
-        console.log('\nShutting down...');
-        closePool().then(() => {
-          process.exit(0);
-        });
-      });
-    })
-    .catch((error) => {
-      console.error('Failed to start server:', error.message);
-      process.exit(1);
+    // Write port to file for CLI to read
+    fs.writeFileSync(PORT_FILE, actualPort.toString());
+  });
+
+  const shutdown = () => {
+    console.log('\nShutting down...');
+    if (fs.existsSync(PORT_FILE)) {
+      try {
+        fs.unlinkSync(PORT_FILE);
+      } catch (e) {
+        // Ignore removal errors
+      }
+    }
+    closePool().then(() => {
+      process.exit(0);
     });
+  };
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 module.exports = { startServer };
