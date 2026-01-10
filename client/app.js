@@ -14,7 +14,7 @@
 // Application state
 let connections = []; // Array of active connections: { id, name, connectionString, sslMode }
 let activeConnectionId = null; // Currently active connection ID
-let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate }
+let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate, abortController }
 let activeTabIndex = -1; // Currently active tab index
 let allTables = []; // All available tables from the current database connection
 let searchQuery = ''; // Current search filter for tables
@@ -721,7 +721,8 @@ function handleTableSelect(tableName) {
       cursorHistory: [], // History for backward navigation
       hasPrimaryKey: false, // Whether table has primary key
       isApproximate: false, // Whether count is approximate (for large tables)
-      limit: 100 // Rows per page
+      limit: 100, // Rows per page
+      abortController: null // Controller for cancelling requests
     };
     tabs.push(newTab);
     activeTabIndex = tabs.length - 1;
@@ -921,9 +922,18 @@ async function loadTableData() {
   const tab = getActiveTab();
   if (!tab) return;
 
+  // Cancel any pending request for this tab
+  if (tab.abortController) {
+    tab.abortController.abort();
+    tab.abortController = null;
+  }
+
   try {
-    showLoading();
-    // tableView.innerHTML = '<div class="loading-state"><p>Loading data from ' + tab.tableName + '...</p></div>';
+
+    renderShimmerTable(tab);
+
+    tab.abortController = new AbortController();
+    const signal = tab.abortController.signal;
 
     // Build query with cursor-based pagination if available
     if (!tab.limit) {
@@ -940,7 +950,8 @@ async function loadTableData() {
     }
 
     const response = await fetch(`/api/tables/${tab.tableName}?${queryString}`, {
-      headers: { 'x-connection-id': tab.connectionId }
+      headers: { 'x-connection-id': tab.connectionId },
+      signal: signal
     });
     const data = await response.json();
 
@@ -964,6 +975,8 @@ async function loadTableData() {
       tab.cursor = data.nextCursor;
     }
 
+    tab.abortController = null; // Request finished successfully
+
     if (!data.rows || data.rows.length === 0) {
       tableView.innerHTML = '<div class="empty-state"><p>Table ' + tab.tableName + ' is empty</p></div>';
       pagination.style.display = 'none';
@@ -974,12 +987,197 @@ async function loadTableData() {
     renderTable(data);
     renderPagination();
   } catch (error) {
-    tableView.innerHTML = '<div class="error-state"><p>Error: ' + error.message + '</p></div>';
-    pagination.style.display = 'none';
+    if (error.name === 'AbortError') {
+      console.log('Request cancelled');
+    } else {
+      tableView.innerHTML = '<div class="error-state"><p>Error: ' + error.message + '</p></div>';
+      pagination.style.display = 'none';
+    }
   } finally {
-    hideLoading();
   }
 }
+
+function handleCancelLoading(tab) {
+  if (tab && tab.abortController) {
+    tab.abortController.abort();
+    tab.abortController = null;
+    if (tab.data) {
+      renderTable(tab.data);
+      renderPagination();
+    } else {
+      tableView.innerHTML = '<div class="empty-state"><p>Loading cancelled</p></div>';
+      pagination.style.display = 'none';
+    }
+  }
+}
+
+function renderTableHeader(tab, columns = [], isShimmer = false) {
+  const tableHeader = document.createElement('div');
+  tableHeader.className = 'table-header';
+
+  let rangeInfo = '';
+  if (isShimmer) {
+    rangeInfo = '<span class="skeleton" style="width: 150px; display: inline-block;"></span>';
+  } else {
+    const startRow = ((tab.page - 1) * tab.limit) + 1;
+    const endRow = Math.min(tab.page * tab.limit, tab.totalCount);
+    const totalRows = tab.totalCount;
+
+    rangeInfo = `
+      <span class="row-info-range">${startRow.toLocaleString()}–${endRow.toLocaleString()}</span>
+      <span class="row-info-separator">of</span>
+      <span class="row-info-total">${totalRows.toLocaleString()}</span>
+      ${tab.isApproximate ? '<span class="row-info-approx">(approx.)</span>' : ''}
+    `;
+  }
+
+  let actions = '';
+  if (isShimmer) {
+    actions = `
+      <button class="cancel-button" id="cancelButton">
+        <span>Cancel</span>
+      </button>
+    `;
+  } else {
+    actions = `
+      <button class="refresh-button" id="refreshButton" title="Refresh data">
+        <svg class="refresh-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8 2V6M8 14V10M2 8H6M10 8H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M2.5 5.5C3.1 4.2 4.1 3.2 5.4 2.6M13.5 10.5C12.9 11.8 11.9 12.8 10.6 13.4M5.5 2.5C4.2 3.1 3.2 4.1 2.6 5.4M10.5 13.5C11.8 12.9 12.8 11.9 13.4 10.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <span class="refresh-text">Refresh</span>
+      </button>
+      <div class="limit-selector">
+        <select id="limitSelect" class="limit-select" title="Rows per page">
+          <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
+          <option value="50" ${tab.limit === 50 ? 'selected' : ''}>50 rows</option>
+          <option value="100" ${tab.limit === 100 ? 'selected' : ''}>100 rows</option>
+          <option value="200" ${tab.limit === 200 ? 'selected' : ''}>200 rows</option>
+          <option value="500" ${tab.limit === 500 ? 'selected' : ''}>500 rows</option>
+        </select>
+      </div>
+      <div class="column-selector">
+        <button class="column-button" id="columnButton" title="Show/Hide columns">
+          <svg class="column-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 2H13C13.5523 2 14 2.44772 14 3V13C14 13.5523 13.5523 14 13 14H3C2.44772 14 2 13.5523 2 13V3C2 2.44772 2.44772 2 3 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M6 2V14M10 2V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span class="column-label" id="columnLabel">Columns</span>
+        </button>
+        <div class="column-menu" id="columnMenu" style="display: none;">
+          <div class="column-menu-header">Columns</div>
+          <div class="column-menu-options" id="columnMenuOptions"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  tableHeader.innerHTML = `
+    <div class="table-header-left">
+      <h2>${tab.tableName}</h2>
+      <div class="table-header-actions">
+        ${actions}
+      </div>
+    </div>
+    <div class="row-info-container">
+      <span class="row-info">
+        ${rangeInfo}
+      </span>
+    </div>
+  `;
+
+  if (isShimmer) {
+    const cancelButton = tableHeader.querySelector('#cancelButton');
+    if (cancelButton) {
+      cancelButton.addEventListener('click', () => handleCancelLoading(tab));
+    }
+  } else {
+    const refreshButton = tableHeader.querySelector('#refreshButton');
+    if (refreshButton) {
+      refreshButton.addEventListener('click', handleRefresh);
+    }
+
+    const limitSelect = tableHeader.querySelector('#limitSelect');
+    if (limitSelect) {
+      limitSelect.addEventListener('change', (e) => {
+        const newLimit = parseInt(e.target.value, 10);
+        if (tab.limit !== newLimit) {
+          tab.limit = newLimit;
+          tab.page = 1;
+          tab.cursor = null;
+          tab.cursorHistory = [];
+          tab.data = null;
+          loadTableData();
+        }
+      });
+    }
+
+    if (!tab.hiddenColumns) tab.hiddenColumns = [];
+    if (!tab.columnWidths) tab.columnWidths = {};
+
+    setupColumnSelector(tab, columns, tableHeader);
+    updateColumnButtonLabel(tab, columns, tableHeader);
+  }
+
+  return tableHeader;
+}
+
+function renderShimmerTable(tab) {
+  let columns = [];
+  if (tab.data && tab.data.rows && tab.data.rows.length > 0) {
+    columns = Object.keys(tab.data.rows[0]);
+  } else {
+    columns = ['Column 1', 'Column 2', 'Column 3', 'Column 4', 'Column 5'];
+  }
+
+  const tableHeader = renderTableHeader(tab, columns, true);
+  const tableContainer = document.createElement('div');
+  tableContainer.className = 'table-container';
+
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+
+  // Render header placeholders
+  columns.forEach(col => {
+    const th = document.createElement('th');
+    th.className = 'resizable';
+    const skeleton = document.createElement('div');
+    skeleton.className = 'skeleton';
+    skeleton.style.width = '80px';
+    th.appendChild(skeleton);
+    headerRow.appendChild(th);
+  });
+
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  // Render generic shimmer rows
+  for (let i = 0; i < 10; i++) {
+    const tr = document.createElement('tr');
+    tr.className = 'shimmer-row';
+    columns.forEach(() => {
+      const td = document.createElement('td');
+      const skeleton = document.createElement('div');
+      skeleton.className = 'skeleton shimmer-cell';
+      td.appendChild(skeleton);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+
+  table.appendChild(tbody);
+  tableContainer.appendChild(table);
+
+  tableView.innerHTML = '';
+  tableView.appendChild(tableHeader);
+  tableView.appendChild(tableContainer);
+
+  // Hide pagination during loading
+  pagination.style.display = 'none';
+}
+
 
 function renderTable(data) {
   const tab = getActiveTab();
@@ -991,88 +1189,7 @@ function renderTable(data) {
     tab.limit = 100; // Default limit for existing tabs
   }
 
-  const tableHeader = document.createElement('div');
-  tableHeader.className = 'table-header';
-  const startRow = ((tab.page - 1) * tab.limit) + 1;
-  const endRow = Math.min(tab.page * tab.limit, tab.totalCount);
-  const totalRows = tab.totalCount;
-
-  tableHeader.innerHTML = `
-    <div class="table-header-left">
-      <h2>${tab.tableName}</h2>
-      <div class="table-header-actions">
-        <button class="refresh-button" id="refreshButton" title="Refresh data">
-          <svg class="refresh-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M8 2V6M8 14V10M2 8H6M10 8H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M2.5 5.5C3.1 4.2 4.1 3.2 5.4 2.6M13.5 10.5C12.9 11.8 11.9 12.8 10.6 13.4M5.5 2.5C4.2 3.1 3.2 4.1 2.6 5.4M10.5 13.5C11.8 12.9 12.8 11.9 13.4 10.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          <span class="refresh-text">Refresh</span>
-        </button>
-        <div class="limit-selector">
-          <select id="limitSelect" class="limit-select" title="Rows per page">
-            <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
-            <option value="50" ${tab.limit === 50 ? 'selected' : ''}>50 rows</option>
-            <option value="100" ${tab.limit === 100 ? 'selected' : ''}>100 rows</option>
-            <option value="200" ${tab.limit === 200 ? 'selected' : ''}>200 rows</option>
-            <option value="500" ${tab.limit === 500 ? 'selected' : ''}>500 rows</option>
-          </select>
-        </div>
-        <div class="column-selector">
-          <button class="column-button" id="columnButton" title="Show/Hide columns">
-            <svg class="column-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3 2H13C13.5523 2 14 2.44772 14 3V13C14 13.5523 13.5523 14 13 14H3C2.44772 14 2 13.5523 2 13V3C2 2.44772 2.44772 2 3 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M6 2V14M10 2V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            <span class="column-label" id="columnLabel">Columns</span>
-          </button>
-          <div class="column-menu" id="columnMenu" style="display: none;">
-            <div class="column-menu-header">Columns</div>
-            <div class="column-menu-options" id="columnMenuOptions"></div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="row-info-container">
-      <span class="row-info">
-        <span class="row-info-range">${startRow.toLocaleString()}–${endRow.toLocaleString()}</span>
-        <span class="row-info-separator">of</span>
-        <span class="row-info-total">${totalRows.toLocaleString()}</span>
-        ${tab.isApproximate ? '<span class="row-info-approx">(approx.)</span>' : ''}
-      </span>
-    </div>
-  `;
-
-  const refreshButton = tableHeader.querySelector('#refreshButton');
-  if (refreshButton) {
-    refreshButton.addEventListener('click', handleRefresh);
-  }
-
-  const limitSelect = tableHeader.querySelector('#limitSelect');
-  if (limitSelect) {
-    limitSelect.addEventListener('change', (e) => {
-      const newLimit = parseInt(e.target.value, 10);
-      if (tab.limit !== newLimit) {
-        tab.limit = newLimit;
-        tab.page = 1; // Reset to first page when limit changes
-        tab.cursor = null; // Reset cursor
-        tab.cursorHistory = [];
-        tab.data = null; // Clear cache
-        loadTableData();
-      }
-    });
-  }
-
-  if (!tab.hiddenColumns) {
-    tab.hiddenColumns = [];
-  }
-
-  if (!tab.columnWidths) {
-    tab.columnWidths = {};
-  }
-
-  setupColumnSelector(tab, columns, tableHeader);
-  updateColumnButtonLabel(tab, columns, tableHeader);
-
+  const tableHeader = renderTableHeader(tab, columns);
   const tableContainer = document.createElement('div');
   tableContainer.className = 'table-container';
 
@@ -1198,6 +1315,7 @@ function renderTable(data) {
 
   thead.appendChild(headerRow);
   table.appendChild(thead);
+
 
   const tbody = document.createElement('tbody');
   // Server-side sorting, so rows are already sorted
