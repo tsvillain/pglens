@@ -14,7 +14,7 @@
 // Application state
 let connections = []; // Array of active connections: { id, name, connectionString, sslMode }
 let activeConnectionId = null; // Currently active connection ID
-let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate }
+let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate, abortController }
 let activeTabIndex = -1; // Currently active tab index
 let allTables = []; // All available tables from the current database connection
 let searchQuery = ''; // Current search filter for tables
@@ -34,6 +34,13 @@ const tabsBar = document.getElementById('tabsBar');
 const tableView = document.getElementById('tableView');
 const pagination = document.getElementById('pagination');
 const addConnectionButton = document.getElementById('addConnectionButton');
+const landingPage = document.getElementById('landingPage');
+const connectionsGrid = document.getElementById('connectionsGrid');
+const connectionSearch = document.getElementById('connectionSearch');
+const newConnectionBtn = document.getElementById('newConnectionBtn');
+const sidebarTitle = document.querySelector('.sidebar-header-title');
+const connectionsSection = document.querySelector('.connections-section');
+const tablesSection = document.querySelector('.tables-section');
 
 // Connection UI Elements
 const connectionDialog = document.getElementById('connectionDialog');
@@ -59,11 +66,22 @@ const loadingOverlay = document.getElementById('loadingOverlay');
  */
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+
+  if (sidebarTitle) {
+    sidebarTitle.style.cursor = 'pointer';
+    sidebarTitle.addEventListener('click', showLandingPage);
+  }
+
   fetchConnections(); // Check status and load connections
 
   // Connection Event Listeners
   connectButton.addEventListener('click', handleConnect);
-  addConnectionButton.addEventListener('click', () => showConnectionDialog(true));
+
+  // Sidebar Add Button -> Redirect to Landing Page
+  addConnectionButton.addEventListener('click', () => {
+    showLandingPage();
+  });
+
   closeConnectionDialogButton.addEventListener('click', hideConnectionDialog);
 
   connectionTabs.forEach(tab => {
@@ -133,6 +151,18 @@ document.addEventListener('DOMContentLoaded', () => {
       applyTheme();
     }
   });
+
+  // Search Connections
+  if (connectionSearch) {
+    connectionSearch.addEventListener('input', () => {
+      renderLandingPage();
+    });
+  }
+
+  // New Connection Button
+  if (newConnectionBtn) {
+    newConnectionBtn.addEventListener('click', () => showConnectionDialog(true));
+  }
 });
 
 /**
@@ -206,15 +236,18 @@ async function fetchConnections() {
 
     connections = data.connections || [];
 
-    if (connections.length > 0) {
-      if (!activeConnectionId || !connections.find(c => c.id === activeConnectionId)) {
-        activeConnectionId = connections[0].id;
-      }
-      renderConnectionsList();
+    renderConnectionsList();
+    hideConnectionDialog();
+
+    // If active connection is invalid (e.g. deleted), clear it
+    if (activeConnectionId && !connections.find(c => c.id === activeConnectionId)) {
+      activeConnectionId = null;
+    }
+
+    if (activeConnectionId) {
       loadTables();
-      hideConnectionDialog();
     } else {
-      showConnectionDialog(false);
+      showLandingPage();
     }
   } catch (error) {
     console.error('Failed to fetch connections:', error);
@@ -223,9 +256,27 @@ async function fetchConnections() {
 }
 
 /**
+ * Update sidebar visibility based on connections state.
+ */
+function updateSidebarVisibility() {
+  if (connections.length === 0) {
+    if (connectionsSection) connectionsSection.style.display = 'none';
+    if (tablesSection) tablesSection.style.display = 'none';
+  } else {
+    if (connectionsSection) connectionsSection.style.display = 'flex';
+
+    // Only show tables section if we have an active connection selected
+    if (tablesSection) {
+      tablesSection.style.display = activeConnectionId ? 'flex' : 'none';
+    }
+  }
+}
+
+/**
  * Render the list of active connections in the sidebar.
  */
 function renderConnectionsList() {
+  updateSidebarVisibility();
   connectionsList.innerHTML = '';
 
   connections.forEach(conn => {
@@ -238,31 +289,17 @@ function renderConnectionsList() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'connection-name';
     nameSpan.textContent = conn.name;
-    nameSpan.title = 'Click to edit connection';
-    nameSpan.style.cursor = 'pointer';
-    nameSpan.addEventListener('click', (e) => {
-      e.stopPropagation();
-      handleConnectionEdit(conn);
-    });
+    nameSpan.title = 'Switch to this connection';
 
-    // Add click event for the li to switch connection if not clicking name or close
-    li.addEventListener('click', (e) => {
-      if (e.target !== nameSpan && e.target !== disconnectBtn) {
-        switchConnection(conn.id);
-      }
-    });
-
-    const disconnectBtn = document.createElement('button');
-    disconnectBtn.className = 'connection-disconnect';
-    disconnectBtn.innerHTML = '×';
-    disconnectBtn.title = 'Disconnect';
-    disconnectBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      handleDisconnect(conn.id);
-    });
+    // Actions removed as per user request. Management is done on Landing Page.
 
     li.appendChild(nameSpan);
-    li.appendChild(disconnectBtn);
+
+    // Add click event for the whole li to switch connection
+    li.addEventListener('click', () => {
+      switchConnection(conn.id);
+    });
+
     connectionsList.appendChild(li);
   });
 }
@@ -272,9 +309,24 @@ function renderConnectionsList() {
  * @param {string} connectionId - The connection ID to switch to
  */
 function switchConnection(connectionId) {
+  if (isAppBusy()) {
+    if (confirm('A query is currently loading. Do you want to cancel it and switch connections?')) {
+      cancelAllActiveRequests();
+    } else {
+      return;
+    }
+  }
   if (activeConnectionId === connectionId) return;
 
   activeConnectionId = connectionId;
+
+  // Hide landing page, show table view
+  landingPage.style.display = 'none';
+  tableView.style.display = 'flex';
+  if (tabs.length > 0) {
+    tabsContainer.style.display = 'block';
+  }
+
   renderConnectionsList();
   loadTables();
 
@@ -286,8 +338,8 @@ function switchConnection(connectionId) {
     if (tabIndex !== -1) {
       switchToTab(tabIndex);
     } else {
-      // No tabs for this connection, show empty state
-      tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+      // No tabs for this connection, show shimmer while loading
+      renderShimmerDashboard();
       pagination.style.display = 'none';
 
       // Deselect all tabs visually
@@ -397,11 +449,14 @@ async function handleConnect() {
           }
         }
 
-        activeConnectionId = data.connectionId;
+        // Don't auto-select the new connection. Show landing page.
+        activeConnectionId = null;
 
         renderConnectionsList();
-        loadTables();
+        renderLandingPage(); // Update grid
         hideConnectionDialog();
+        showLandingPage();
+
         // Don't clear inputs here, will clear on show
       }
     } else {
@@ -452,7 +507,8 @@ async function handleDisconnect(connectionId) {
         sidebarContent.innerHTML = '';
         tableCount.textContent = '0';
         renderConnectionsList();
-        showConnectionDialog(false);
+        renderLandingPage();
+        updateSidebarVisibility(); // Ensure sidebar hides
       } else {
         if (activeConnectionId === connectionId) {
           // Switch to another connection (the first one)
@@ -460,6 +516,7 @@ async function handleDisconnect(connectionId) {
           loadTables();
         }
         renderConnectionsList();
+        renderLandingPage(); // Update grid
       }
     }
   } catch (error) {
@@ -468,6 +525,235 @@ async function handleDisconnect(connectionId) {
 }
 
 
+
+function showLandingPage() {
+  // Check if safe to navigate
+  if (isAppBusy()) { // Assuming isAppBusy and cancelAllActiveRequests are defined elsewhere
+    if (!confirm('A query is currently loading. Do you want to cancel it and go to the home page?')) {
+      return;
+    }
+    cancelAllActiveRequests();
+  }
+
+  // Hide other views
+  tableView.style.display = 'none';
+  tabsContainer.style.display = 'none';
+  pagination.style.display = 'none';
+
+  // Show landing page
+  landingPage.style.display = 'flex';
+
+  // clear active connection selection
+  activeConnectionId = null;
+  renderConnectionsList();
+
+  // Render grid
+  renderLandingPage();
+}
+
+function renderLandingPage() {
+  connectionsGrid.innerHTML = '';
+
+  const query = connectionSearch ? connectionSearch.value.toLowerCase().trim() : '';
+
+
+  if (!query) {
+    const addCard = document.createElement('div');
+    addCard.className = 'connection-card add-new-card';
+    addCard.innerHTML = `
+      <div class="add-new-icon-circle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </div>
+      <div class="add-new-text">Add Connection</div>
+      <div class="add-desc">Connect to a new database instance</div>
+    `;
+    addCard.addEventListener('click', () => {
+      showConnectionDialog(true);
+    });
+    connectionsGrid.appendChild(addCard);
+  }
+
+  // Filter connections
+  const filteredConnections = connections.filter(conn => {
+    if (!query) return true;
+    const searchStr = `${conn.name} ${conn.connectionString}`.toLowerCase();
+    return searchStr.includes(query);
+  });
+
+  // Render existing connections
+  filteredConnections.forEach(conn => {
+    const card = document.createElement('div');
+    card.className = 'connection-card';
+
+    // Parse info
+    const parsed = parseConnectionString(conn.connectionString);
+    const hostDisplay = parsed ? parsed.host : 'localhost';
+    const portDisplay = parsed ? parsed.port : '5432';
+    const dbDisplay = parsed ? parsed.database : 'postgres';
+    const isSsl = conn.sslMode && conn.sslMode !== 'disable';
+
+
+
+    card.innerHTML = `
+      <div class="card-context-actions">
+         <button class="context-btn edit" title="Edit">✎</button>
+         <button class="context-btn delete" title="Disconnect">×</button>
+      </div>
+
+      <div class="card-top">
+        <div class="card-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
+            <line x1="4" y1="22" x2="4" y2="15"></line>
+          </svg>
+        </div>
+      </div>
+
+      <div class="card-info">
+        <h3>${conn.name}</h3>
+        <p>PostgreSQL • ${dbDisplay}</p>
+      </div>
+
+      <div class="host-block">
+        <span class="host-label">HOST</span>
+        <div class="host-value">${hostDisplay}:${portDisplay}</div>
+        ${isSsl ? '<span class="host-label" style="margin-top:4px;color:#10b981">SSL ENCRYPTED</span>' : ''}
+      </div>
+
+      <div class="card-actions-wrapper">
+        <button class="connect-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+          </svg>
+          Connect
+        </button>
+      </div>
+    `;
+
+    // Click behavior
+    card.addEventListener('click', (e) => {
+      // Don't trigger if clicking actions
+      if (e.target.closest('.context-btn')) return;
+      switchConnection(conn.id);
+    });
+
+    // Connect Button
+    card.querySelector('.connect-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchConnection(conn.id);
+    });
+
+    // Edit Action
+    const editBtn = card.querySelector('.edit');
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      handleConnectionEdit(conn);
+    });
+
+    // Disconnect Action
+    const deleteBtn = card.querySelector('.delete');
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm(`Are you sure you want to disconnect from ${conn.name}?`)) {
+        handleDisconnect(conn.id);
+      }
+    });
+    connectionsGrid.appendChild(card);
+  });
+
+  if (filteredConnections.length === 0 && query) {
+    const noResults = document.createElement('div');
+    noResults.style.gridColumn = '1 / -1';
+    noResults.style.textAlign = 'center';
+    noResults.style.padding = '40px';
+    noResults.style.color = 'var(--text-secondary)';
+    noResults.innerHTML = `No connections found matching "${query}"`;
+    connectionsGrid.appendChild(noResults);
+  }
+}
+
+function renderTableDashboard() {
+  tableView.innerHTML = '';
+
+  const dashboard = document.createElement('div');
+  dashboard.className = 'table-dashboard';
+
+  const header = document.createElement('div');
+  header.className = 'table-dashboard-header';
+  header.innerHTML = `
+    <h2>Tables</h2>
+    <p>${allTables.length} tables available in this database.</p>
+  `;
+  dashboard.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'tables-grid';
+
+  allTables.forEach(table => {
+    const card = document.createElement('div');
+    card.className = 'table-card';
+    card.innerHTML = `
+      <div class="table-card-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </div>
+      <div class="table-card-info">
+        <div class="table-card-name" title="${table}">${table}</div>
+        <div class="table-card-schema">public</div>
+      </div>
+    `;
+
+    card.addEventListener('click', () => {
+      handleTableSelect(table);
+    });
+
+    grid.appendChild(card);
+  });
+
+  dashboard.appendChild(grid);
+  tableView.appendChild(dashboard);
+}
+
+function renderShimmerDashboard() {
+  tableView.innerHTML = '';
+
+  const dashboard = document.createElement('div');
+  dashboard.className = 'table-dashboard';
+
+  const header = document.createElement('div');
+  header.className = 'table-dashboard-header';
+  header.innerHTML = `
+    <h2>Tables</h2>
+    <div class="skeleton-text short" style="width: 200px; margin-top: 8px;"></div>
+  `;
+  dashboard.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'tables-grid';
+
+  // Render 16 skeleton cards
+  for (let i = 0; i < 16; i++) {
+    const card = document.createElement('div');
+    card.className = 'table-card skeleton-card';
+    card.innerHTML = `
+      <div class="skeleton-icon"></div>
+      <div class="table-card-info">
+        <div class="skeleton-text" style="width: ${60 + Math.random() * 30}%"></div>
+        <div class="skeleton-text short" style="width: 40%"></div>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+
+  dashboard.appendChild(grid);
+  tableView.appendChild(dashboard);
+}
 
 function showConnectionDialog(allowClose, editMode = false, connection = null) {
   connectionDialog.style.display = 'flex';
@@ -518,7 +804,7 @@ function showConnectionDialog(allowClose, editMode = false, connection = null) {
 
   connHost.focus();
 
-  if (allowClose && connections.length > 0) {
+  if (allowClose) {
     closeConnectionDialogButton.style.display = 'block';
   } else {
     closeConnectionDialogButton.style.display = 'none';
@@ -546,7 +832,7 @@ function parseConnectionString(urlStr) {
       port: url.port || '5432',
       database: url.pathname.replace(/^\//, '') || 'postgres',
       user: url.username || '',
-      password: url.password || '' // Note: URL decoding happens automatically for username/password properties? Verify. 
+      password: url.password || '' // Note: URL decoding happens automatically for username/password properties? Verify.
       // Actually URL properties are usually decoded. decodeURIComponent check might be needed if raw.
     };
   } catch (e) {
@@ -585,6 +871,12 @@ async function loadTables() {
   try {
     sidebarContent.innerHTML = '<div class="loading">Loading tables...</div>';
 
+    // Only show shimmer if we aren't already looking at a table for this connection
+    const existingTab = getActiveTab();
+    if (!existingTab || existingTab.connectionId !== activeConnectionId) {
+      renderShimmerDashboard();
+    }
+
     const response = await fetch('/api/tables', {
       headers: { 'x-connection-id': activeConnectionId }
     });
@@ -597,7 +889,19 @@ async function loadTables() {
     allTables = data.tables;
     tableCount.textContent = allTables.length;
 
+    // If no tables, show message
+    if (allTables.length === 0) {
+      tableView.innerHTML = '<div class="no-data-message">No tables found in this database</div>';
+      return;
+    }
+
     filterAndRenderTables();
+
+    // Only show dashboard if we aren't already looking at a table for this connection
+    const currentTab = getActiveTab();
+    if (!currentTab || currentTab.connectionId !== activeConnectionId) {
+      renderTableDashboard();
+    }
   } catch (error) {
     sidebarContent.innerHTML = `<div class="error">Error: ${error.message}</div>`;
   }
@@ -699,6 +1003,14 @@ function updateSidebarActiveState() {
 function handleTableSelect(tableName) {
   if (!activeConnectionId) return;
 
+  if (isAppBusy()) {
+    if (confirm('A query is currently loading. Do you want to cancel it and open this table?')) {
+      cancelAllActiveRequests();
+    } else {
+      return;
+    }
+  }
+
   // Check if tab already exists for this table AND connection
   const existingTabIndex = tabs.findIndex(tab =>
     tab.tableName === tableName && tab.connectionId === activeConnectionId
@@ -721,7 +1033,8 @@ function handleTableSelect(tableName) {
       cursorHistory: [], // History for backward navigation
       hasPrimaryKey: false, // Whether table has primary key
       isApproximate: false, // Whether count is approximate (for large tables)
-      limit: 100 // Rows per page
+      limit: 100, // Rows per page
+      abortController: null // Controller for cancelling requests
     };
     tabs.push(newTab);
     activeTabIndex = tabs.length - 1;
@@ -735,6 +1048,14 @@ function handleTableSelect(tableName) {
 
 function switchToTab(index) {
   if (index < 0 || index >= tabs.length) return;
+
+  if (isAppBusy() && index !== activeTabIndex) {
+    if (confirm('A query is currently loading. Do you want to cancel it and switch tabs?')) {
+      cancelAllActiveRequests();
+    } else {
+      return;
+    }
+  }
 
   activeTabIndex = index;
   const tab = tabs[activeTabIndex];
@@ -770,8 +1091,14 @@ function closeTab(index, event) {
   if (tabs.length === 0) {
     activeTabIndex = -1;
     tabsContainer.style.display = 'none';
-    tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+    if (activeConnectionId) {
+      renderTableDashboard();
+    } else {
+      tableView.innerHTML = '';
+      showLandingPage();
+    }
     pagination.style.display = 'none';
+
     updateSidebarActiveState();
     updateSidebarToggleState();
     return;
@@ -829,14 +1156,24 @@ function renderTabs() {
   closeAllButton.addEventListener('click', closeAllTabs);
   tabsBar.appendChild(closeAllButton);
 
+  // Check if we have tabs from multiple different connections
+  const uniqueConnIds = new Set(tabs.map(t => t.connectionId));
+  const showServerBadge = uniqueConnIds.size > 1;
+
   tabs.forEach((tab, index) => {
     const tabElement = document.createElement('div');
     tabElement.className = `tab ${index === activeTabIndex ? 'active' : ''}`;
-    // Add connection indicator for tab if multiple connections exist
-    if (connections.length > 1) {
+
+    // Add connection indicator for tab if multiple connections exist in open tabs
+    if (showServerBadge) {
       const conn = connections.find(c => c.id === tab.connectionId);
       if (conn) {
         tabElement.title = `${tab.tableName} (${conn.name})`;
+
+        const badge = document.createElement('span');
+        badge.className = 'tab-server-badge';
+        badge.textContent = conn.name;
+        tabElement.appendChild(badge);
       }
     }
 
@@ -861,7 +1198,7 @@ function closeAllTabs() {
   tabs = [];
   activeTabIndex = -1;
   tabsContainer.style.display = 'none';
-  tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+  renderTableDashboard();
   pagination.style.display = 'none';
 
   updateSidebarActiveState();
@@ -921,9 +1258,18 @@ async function loadTableData() {
   const tab = getActiveTab();
   if (!tab) return;
 
+  // Cancel any pending request for this tab
+  if (tab.abortController) {
+    tab.abortController.abort();
+    tab.abortController = null;
+  }
+
   try {
-    showLoading();
-    // tableView.innerHTML = '<div class="loading-state"><p>Loading data from ' + tab.tableName + '...</p></div>';
+
+    renderShimmerTable(tab);
+
+    tab.abortController = new AbortController();
+    const signal = tab.abortController.signal;
 
     // Build query with cursor-based pagination if available
     if (!tab.limit) {
@@ -940,7 +1286,8 @@ async function loadTableData() {
     }
 
     const response = await fetch(`/api/tables/${tab.tableName}?${queryString}`, {
-      headers: { 'x-connection-id': tab.connectionId }
+      headers: { 'x-connection-id': tab.connectionId },
+      signal: signal
     });
     const data = await response.json();
 
@@ -964,115 +1311,227 @@ async function loadTableData() {
       tab.cursor = data.nextCursor;
     }
 
-    if (!data.rows || data.rows.length === 0) {
-      tableView.innerHTML = '<div class="empty-state"><p>Table ' + tab.tableName + ' is empty</p></div>';
-      pagination.style.display = 'none';
+    tab.abortController = null; // Request finished successfully
+
+    if (!data.rows) {
+
       tab.data = null;
+      tableView.innerHTML = '<div class="error-state"><p>Invalid data received</p></div>';
       return;
     }
 
     renderTable(data);
     renderPagination();
   } catch (error) {
-    tableView.innerHTML = '<div class="error-state"><p>Error: ' + error.message + '</p></div>';
-    pagination.style.display = 'none';
+    if (error.name === 'AbortError') {
+      console.log('Request cancelled');
+    } else {
+      tableView.innerHTML = '<div class="error-state"><p>Error: ' + error.message + '</p></div>';
+      pagination.style.display = 'none';
+    }
   } finally {
-    hideLoading();
   }
 }
 
-function renderTable(data) {
-  const tab = getActiveTab();
-  if (!tab) return;
+function handleCancelLoading(tab) {
+  if (tab && tab.abortController) {
+    tab.abortController.abort();
+    tab.abortController = null;
 
-  const columns = Object.keys(data.rows[0] || {});
-
-  if (!tab.limit) {
-    tab.limit = 100; // Default limit for existing tabs
+    if (tab.data) {
+      renderTable(tab.data);
+      renderPagination();
+    } else {
+      // No previous data (fresh load), close the tab
+      const index = tabs.indexOf(tab);
+      if (index !== -1) {
+        closeTab(index);
+      }
+    }
   }
+}
 
+function renderTableHeader(tab, columns = [], isShimmer = false) {
   const tableHeader = document.createElement('div');
   tableHeader.className = 'table-header';
-  const startRow = ((tab.page - 1) * tab.limit) + 1;
-  const endRow = Math.min(tab.page * tab.limit, tab.totalCount);
-  const totalRows = tab.totalCount;
+
+  let rangeInfo = '';
+  if (isShimmer) {
+    rangeInfo = '<span class="skeleton" style="width: 150px; display: inline-block;"></span>';
+  } else {
+    const startRow = ((tab.page - 1) * tab.limit) + 1;
+    const endRow = Math.min(tab.page * tab.limit, tab.totalCount);
+    const totalRows = tab.totalCount;
+
+    rangeInfo = `
+      <span class="row-info-range">${startRow.toLocaleString()}–${endRow.toLocaleString()}</span>
+      <span class="row-info-separator">of</span>
+      <span class="row-info-total">${totalRows.toLocaleString()}</span>
+      ${tab.isApproximate ? '<span class="row-info-approx">(approx.)</span>' : ''}
+    `;
+  }
+
+  let actions = '';
+  if (isShimmer) {
+    actions = `
+      <button class="cancel-button" id="cancelButton">
+        <span>Cancel</span>
+      </button>
+    `;
+  } else {
+    actions = `
+      <button class="refresh-button" id="refreshButton" title="Refresh data">
+        <svg class="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+          <path d="M21 3v5h-5"></path>
+        </svg>
+        <span class="refresh-text">Refresh</span>
+      </button>
+      <div class="limit-selector">
+        <select id="limitSelect" class="limit-select" title="Rows per page">
+          <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
+          <option value="50" ${tab.limit === 50 ? 'selected' : ''}>50 rows</option>
+          <option value="100" ${tab.limit === 100 ? 'selected' : ''}>100 rows</option>
+          <option value="200" ${tab.limit === 200 ? 'selected' : ''}>200 rows</option>
+          <option value="500" ${tab.limit === 500 ? 'selected' : ''}>500 rows</option>
+        </select>
+      </div>
+      <div class="column-selector">
+        <button class="column-button" id="columnButton" title="Show/Hide columns">
+          <svg class="column-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 2H13C13.5523 2 14 2.44772 14 3V13C14 13.5523 13.5523 14 13 14H3C2.44772 14 2 13.5523 2 13V3C2 2.44772 2.44772 2 3 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M6 2V14M10 2V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span class="column-label" id="columnLabel">Columns</span>
+        </button>
+        <div class="column-menu" id="columnMenu" style="display: none;">
+          <div class="column-menu-header">Columns</div>
+          <div class="column-menu-options" id="columnMenuOptions"></div>
+        </div>
+      </div>
+    `;
+  }
 
   tableHeader.innerHTML = `
     <div class="table-header-left">
       <h2>${tab.tableName}</h2>
       <div class="table-header-actions">
-        <button class="refresh-button" id="refreshButton" title="Refresh data">
-          <svg class="refresh-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M8 2V6M8 14V10M2 8H6M10 8H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M2.5 5.5C3.1 4.2 4.1 3.2 5.4 2.6M13.5 10.5C12.9 11.8 11.9 12.8 10.6 13.4M5.5 2.5C4.2 3.1 3.2 4.1 2.6 5.4M10.5 13.5C11.8 12.9 12.8 11.9 13.4 10.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          <span class="refresh-text">Refresh</span>
-        </button>
-        <div class="limit-selector">
-          <select id="limitSelect" class="limit-select" title="Rows per page">
-            <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
-            <option value="50" ${tab.limit === 50 ? 'selected' : ''}>50 rows</option>
-            <option value="100" ${tab.limit === 100 ? 'selected' : ''}>100 rows</option>
-            <option value="200" ${tab.limit === 200 ? 'selected' : ''}>200 rows</option>
-            <option value="500" ${tab.limit === 500 ? 'selected' : ''}>500 rows</option>
-          </select>
-        </div>
-        <div class="column-selector">
-          <button class="column-button" id="columnButton" title="Show/Hide columns">
-            <svg class="column-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3 2H13C13.5523 2 14 2.44772 14 3V13C14 13.5523 13.5523 14 13 14H3C2.44772 14 2 13.5523 2 13V3C2 2.44772 2.44772 2 3 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              <path d="M6 2V14M10 2V14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            <span class="column-label" id="columnLabel">Columns</span>
-          </button>
-          <div class="column-menu" id="columnMenu" style="display: none;">
-            <div class="column-menu-header">Columns</div>
-            <div class="column-menu-options" id="columnMenuOptions"></div>
-          </div>
-        </div>
+        ${actions}
       </div>
     </div>
     <div class="row-info-container">
       <span class="row-info">
-        <span class="row-info-range">${startRow.toLocaleString()}–${endRow.toLocaleString()}</span>
-        <span class="row-info-separator">of</span>
-        <span class="row-info-total">${totalRows.toLocaleString()}</span>
-        ${tab.isApproximate ? '<span class="row-info-approx">(approx.)</span>' : ''}
+        ${rangeInfo}
       </span>
     </div>
   `;
 
-  const refreshButton = tableHeader.querySelector('#refreshButton');
-  if (refreshButton) {
-    refreshButton.addEventListener('click', handleRefresh);
+  if (isShimmer) {
+    const cancelButton = tableHeader.querySelector('#cancelButton');
+    if (cancelButton) {
+      cancelButton.addEventListener('click', () => handleCancelLoading(tab));
+    }
+  } else {
+    const refreshButton = tableHeader.querySelector('#refreshButton');
+    if (refreshButton) {
+      refreshButton.addEventListener('click', handleRefresh);
+    }
+
+    const limitSelect = tableHeader.querySelector('#limitSelect');
+    if (limitSelect) {
+      limitSelect.addEventListener('change', (e) => {
+        const newLimit = parseInt(e.target.value, 10);
+        if (tab.limit !== newLimit) {
+          tab.limit = newLimit;
+          tab.page = 1;
+          tab.cursor = null;
+          tab.cursorHistory = [];
+          tab.data = null;
+          loadTableData();
+        }
+      });
+    }
+
+    if (!tab.hiddenColumns) tab.hiddenColumns = [];
+    if (!tab.columnWidths) tab.columnWidths = {};
+
+    setupColumnSelector(tab, columns, tableHeader);
+    updateColumnButtonLabel(tab, columns, tableHeader);
   }
 
-  const limitSelect = tableHeader.querySelector('#limitSelect');
-  if (limitSelect) {
-    limitSelect.addEventListener('change', (e) => {
-      const newLimit = parseInt(e.target.value, 10);
-      if (tab.limit !== newLimit) {
-        tab.limit = newLimit;
-        tab.page = 1; // Reset to first page when limit changes
-        tab.cursor = null; // Reset cursor
-        tab.cursorHistory = [];
-        tab.data = null; // Clear cache
-        loadTableData();
-      }
+  return tableHeader;
+}
+
+function renderShimmerTable(tab) {
+  let columns = [];
+  if (tab.data && tab.data.rows && tab.data.rows.length > 0) {
+    columns = Object.keys(tab.data.rows[0]);
+  } else {
+    columns = ['Column 1', 'Column 2', 'Column 3', 'Column 4', 'Column 5'];
+  }
+
+  const tableHeader = renderTableHeader(tab, columns, true);
+  const tableContainer = document.createElement('div');
+  tableContainer.className = 'table-container';
+
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+
+  // Render header placeholders
+  columns.forEach(col => {
+    const th = document.createElement('th');
+    th.className = 'resizable';
+    const skeleton = document.createElement('div');
+    skeleton.className = 'skeleton';
+    skeleton.style.width = '80px';
+    th.appendChild(skeleton);
+    headerRow.appendChild(th);
+  });
+
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  // Render generic shimmer rows
+  for (let i = 0; i < 10; i++) {
+    const tr = document.createElement('tr');
+    tr.className = 'shimmer-row';
+    columns.forEach(() => {
+      const td = document.createElement('td');
+      const skeleton = document.createElement('div');
+      skeleton.className = 'skeleton shimmer-cell';
+      td.appendChild(skeleton);
+      tr.appendChild(td);
     });
+    tbody.appendChild(tr);
   }
 
-  if (!tab.hiddenColumns) {
-    tab.hiddenColumns = [];
+  table.appendChild(tbody);
+  tableContainer.appendChild(table);
+
+  tableView.innerHTML = '';
+  tableView.appendChild(tableHeader);
+  tableView.appendChild(tableContainer);
+
+  // Hide pagination during loading
+  pagination.style.display = 'none';
+}
+
+
+function renderTable(data) {
+  const tab = getActiveTab();
+  if (!tab) return;
+
+  const columns = (data.rows && data.rows.length > 0)
+    ? Object.keys(data.rows[0])
+    : (data.columns ? Object.keys(data.columns) : []);
+
+  if (!tab.limit) {
+    tab.limit = 100; // Default limit for existing tabs
   }
 
-  if (!tab.columnWidths) {
-    tab.columnWidths = {};
-  }
-
-  setupColumnSelector(tab, columns, tableHeader);
-  updateColumnButtonLabel(tab, columns, tableHeader);
-
+  const tableHeader = renderTableHeader(tab, columns);
   const tableContainer = document.createElement('div');
   tableContainer.className = 'table-container';
 
@@ -1198,6 +1657,7 @@ function renderTable(data) {
 
   thead.appendChild(headerRow);
   table.appendChild(thead);
+
 
   const tbody = document.createElement('tbody');
   // Server-side sorting, so rows are already sorted
@@ -1975,6 +2435,18 @@ function closeCellContentPopup() {
     }
     overlay.remove();
   }
+}
+
+function isAppBusy() {
+  return tabs.some(tab => tab.abortController !== null);
+}
+
+function cancelAllActiveRequests() {
+  tabs.forEach(tab => {
+    if (tab.abortController) {
+      handleCancelLoading(tab);
+    }
+  });
 }
 
 function showLoading() {

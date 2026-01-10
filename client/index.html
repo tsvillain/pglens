@@ -146,6 +146,32 @@
         </div>
       </div>
       <div class="pagination" id="pagination" style="display: none;"></div>
+
+      <div class="landing-page" id="landingPage" style="display: none;">
+        <div class="landing-header-bar">
+          <div class="search-container">
+            <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="connectionSearch" placeholder="Search connections by host, database name or type..."
+              autocomplete="off">
+          </div>
+          <button class="button-primary new-connection-btn" id="newConnectionBtn">
+            <span class="icon">+</span> New Connection
+          </button>
+        </div>
+
+        <div class="landing-section-header">
+          <h2>All Connections</h2>
+          <p>Manage and access your database instances.</p>
+        </div>
+
+        <div class="connections-grid" id="connectionsGrid">
+          <!-- Connection cards will be rendered here -->
+        </div>
+      </div>
     </div>
     <div class="loading-overlay" id="loadingOverlay" style="display: none;">
       <div class="loading-spinner"></div>
