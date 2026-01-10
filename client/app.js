@@ -337,10 +337,14 @@ function switchConnection(connectionId) {
     // Try to find the last active tab for this connection
     const tabIndex = tabs.findIndex(t => t.connectionId === activeConnectionId);
     if (tabIndex !== -1) {
-      switchToTab(tabIndex);
+      if (activeTabIndex === -1) {
+        renderTableDashboard();
+      } else {
+        switchToTab(activeTabIndex);
+      }
     } else {
       // No tabs for this connection, show empty state
-      tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+      renderTableDashboard();
       pagination.style.display = 'none';
 
       // Deselect all tabs visually
@@ -653,7 +657,6 @@ function renderLandingPage() {
         handleDisconnect(conn.id);
       }
     });
-
     connectionsGrid.appendChild(card);
   });
 
@@ -666,6 +669,86 @@ function renderLandingPage() {
     noResults.innerHTML = `No connections found matching "${query}"`;
     connectionsGrid.appendChild(noResults);
   }
+}
+
+function renderTableDashboard() {
+  tableView.innerHTML = '';
+
+  const dashboard = document.createElement('div');
+  dashboard.className = 'table-dashboard';
+
+  const header = document.createElement('div');
+  header.className = 'table-dashboard-header';
+  header.innerHTML = `
+    <h2>Tables</h2>
+    <p>${allTables.length} tables available in this database.</p>
+  `;
+  dashboard.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'tables-grid';
+
+  allTables.forEach(table => {
+    const card = document.createElement('div');
+    card.className = 'table-card';
+    card.innerHTML = `
+      <div class="table-card-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </div>
+      <div class="table-card-info">
+        <div class="table-card-name" title="${table}">${table}</div>
+        <div class="table-card-schema">public</div>
+      </div>
+    `;
+
+    card.addEventListener('click', () => {
+      handleTableSelect(table);
+    });
+
+    grid.appendChild(card);
+  });
+
+  dashboard.appendChild(grid);
+  tableView.appendChild(dashboard);
+}
+
+function renderShimmerDashboard() {
+  tableView.innerHTML = '';
+
+  const dashboard = document.createElement('div');
+  dashboard.className = 'table-dashboard';
+
+  const header = document.createElement('div');
+  header.className = 'table-dashboard-header';
+  header.innerHTML = `
+    <h2>Tables</h2>
+    <div class="skeleton-text short" style="width: 200px; margin-top: 8px;"></div>
+  `;
+  dashboard.appendChild(header);
+
+  const grid = document.createElement('div');
+  grid.className = 'tables-grid';
+
+  // Render 16 skeleton cards
+  for (let i = 0; i < 16; i++) {
+    const card = document.createElement('div');
+    card.className = 'table-card skeleton-card';
+    card.innerHTML = `
+      <div class="skeleton-icon"></div>
+      <div class="table-card-info">
+        <div class="skeleton-text" style="width: ${60 + Math.random() * 30}%"></div>
+        <div class="skeleton-text short" style="width: 40%"></div>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+
+  dashboard.appendChild(grid);
+  tableView.appendChild(dashboard);
 }
 
 function showConnectionDialog(allowClose, editMode = false, connection = null) {
@@ -745,7 +828,7 @@ function parseConnectionString(urlStr) {
       port: url.port || '5432',
       database: url.pathname.replace(/^\//, '') || 'postgres',
       user: url.username || '',
-      password: url.password || '' // Note: URL decoding happens automatically for username/password properties? Verify. 
+      password: url.password || '' // Note: URL decoding happens automatically for username/password properties? Verify.
       // Actually URL properties are usually decoded. decodeURIComponent check might be needed if raw.
     };
   } catch (e) {
@@ -783,6 +866,7 @@ async function loadTables() {
 
   try {
     sidebarContent.innerHTML = '<div class="loading">Loading tables...</div>';
+    renderShimmerDashboard();
 
     const response = await fetch('/api/tables', {
       headers: { 'x-connection-id': activeConnectionId }
@@ -796,7 +880,14 @@ async function loadTables() {
     allTables = data.tables;
     tableCount.textContent = allTables.length;
 
+    // If no tables, show message
+    if (allTables.length === 0) {
+      tableView.innerHTML = '<div class="no-data-message">No tables found in this database</div>';
+      return;
+    }
+
     filterAndRenderTables();
+    renderTableDashboard();
   } catch (error) {
     sidebarContent.innerHTML = `<div class="error">Error: ${error.message}</div>`;
   }
@@ -986,8 +1077,14 @@ function closeTab(index, event) {
   if (tabs.length === 0) {
     activeTabIndex = -1;
     tabsContainer.style.display = 'none';
-    tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+    if (activeConnectionId) {
+      renderTableDashboard();
+    } else {
+      tableView.innerHTML = '';
+      showLandingPage();
+    }
     pagination.style.display = 'none';
+
     updateSidebarActiveState();
     updateSidebarToggleState();
     return;
@@ -1087,7 +1184,7 @@ function closeAllTabs() {
   tabs = [];
   activeTabIndex = -1;
   tabsContainer.style.display = 'none';
-  tableView.innerHTML = '<div class="empty-state"><p>Select a table from the sidebar to view its data</p></div>';
+  renderTableDashboard();
   pagination.style.display = 'none';
 
   updateSidebarActiveState();
@@ -1202,10 +1299,10 @@ async function loadTableData() {
 
     tab.abortController = null; // Request finished successfully
 
-    if (!data.rows || data.rows.length === 0) {
-      tableView.innerHTML = '<div class="empty-state"><p>Table ' + tab.tableName + ' is empty</p></div>';
-      pagination.style.display = 'none';
+    if (!data.rows) {
+
       tab.data = null;
+      tableView.innerHTML = '<div class="error-state"><p>Invalid data received</p></div>';
       return;
     }
 
@@ -1412,7 +1509,9 @@ function renderTable(data) {
   const tab = getActiveTab();
   if (!tab) return;
 
-  const columns = Object.keys(data.rows[0] || {});
+  const columns = (data.rows && data.rows.length > 0)
+    ? Object.keys(data.rows[0])
+    : (data.columns ? Object.keys(data.columns) : []);
 
   if (!tab.limit) {
     tab.limit = 100; // Default limit for existing tabs

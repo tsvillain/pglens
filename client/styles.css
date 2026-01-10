@@ -2105,3 +2105,131 @@ html[data-theme="dark"] .loading-overlay {
 .cancel-button:active {
   transform: scale(0.98);
 }
+
+/* Table Dashboard */
+.table-dashboard {
+  padding: var(--space-8);
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-dashboard-header {
+  margin-bottom: var(--space-6);
+}
+
+.table-dashboard-header h2 {
+  font-size: 1.5rem;
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-1);
+}
+
+.table-dashboard-header p {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.tables-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-4);
+}
+
+.table-card {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.table-card:hover {
+  border-color: var(--color-primary);
+  background-color: var(--bg-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.table-card-icon {
+  width: 32px;
+  height: 32px;
+  background-color: var(--bg-base);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+
+.table-card:hover .table-card-icon {
+  color: var(--color-primary);
+}
+
+.table-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.table-card-name {
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
+.table-card-schema {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Skeleton Table Card */
+.table-card.skeleton-card {
+  pointer-events: none;
+  cursor: default;
+  border-color: transparent;
+}
+
+.table-card.skeleton-card:hover {
+  transform: none;
+  background-color: var(--bg-elevated);
+  box-shadow: none;
+}
+
+.skeleton-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(90deg,
+      var(--bg-hover) 25%,
+      var(--bg-active) 37%,
+      var(--bg-hover) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+
+.skeleton-text {
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg,
+      var(--bg-hover) 25%,
+      var(--bg-active) 37%,
+      var(--bg-hover) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+  margin-bottom: 4px;
+}
+
+.skeleton-text.short {
+  width: 60%;
+  height: 10px;
+}
