@@ -238,22 +238,25 @@ function renderConnectionsList() {
     const nameSpan = document.createElement('span');
     nameSpan.className = 'connection-name';
     nameSpan.textContent = conn.name;
-    nameSpan.title = 'Click to edit connection';
-    nameSpan.style.cursor = 'pointer';
-    nameSpan.addEventListener('click', (e) => {
+    nameSpan.title = 'Switch to this connection';
+
+    // Actions container
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'connection-actions';
+
+    // Edit Button
+    const editBtn = document.createElement('button');
+    editBtn.className = 'connection-action-btn edit';
+    editBtn.innerHTML = '✎';
+    editBtn.title = 'Edit Connection';
+    editBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       handleConnectionEdit(conn);
     });
 
-    // Add click event for the li to switch connection if not clicking name or close
-    li.addEventListener('click', (e) => {
-      if (e.target !== nameSpan && e.target !== disconnectBtn) {
-        switchConnection(conn.id);
-      }
-    });
-
+    // Disconnect Button
     const disconnectBtn = document.createElement('button');
-    disconnectBtn.className = 'connection-disconnect';
+    disconnectBtn.className = 'connection-action-btn delete';
     disconnectBtn.innerHTML = '×';
     disconnectBtn.title = 'Disconnect';
     disconnectBtn.addEventListener('click', (e) => {
@@ -261,8 +264,20 @@ function renderConnectionsList() {
       handleDisconnect(conn.id);
     });
 
+    actionsDiv.appendChild(editBtn);
+    actionsDiv.appendChild(disconnectBtn);
+
     li.appendChild(nameSpan);
-    li.appendChild(disconnectBtn);
+    li.appendChild(actionsDiv);
+
+    // Add click event for the whole li to switch connection
+    li.addEventListener('click', (e) => {
+      // If clicking actions, don't switch (handled by stopPropagation above, but good to be safe)
+      if (!actionsDiv.contains(e.target)) {
+        switchConnection(conn.id);
+      }
+    });
+
     connectionsList.appendChild(li);
   });
 }
@@ -272,6 +287,13 @@ function renderConnectionsList() {
  * @param {string} connectionId - The connection ID to switch to
  */
 function switchConnection(connectionId) {
+  if (isAppBusy()) {
+    if (confirm('A query is currently loading. Do you want to cancel it and switch connections?')) {
+      cancelAllActiveRequests();
+    } else {
+      return;
+    }
+  }
   if (activeConnectionId === connectionId) return;
 
   activeConnectionId = connectionId;
@@ -699,6 +721,14 @@ function updateSidebarActiveState() {
 function handleTableSelect(tableName) {
   if (!activeConnectionId) return;
 
+  if (isAppBusy()) {
+    if (confirm('A query is currently loading. Do you want to cancel it and open this table?')) {
+      cancelAllActiveRequests();
+    } else {
+      return;
+    }
+  }
+
   // Check if tab already exists for this table AND connection
   const existingTabIndex = tabs.findIndex(tab =>
     tab.tableName === tableName && tab.connectionId === activeConnectionId
@@ -736,6 +766,14 @@ function handleTableSelect(tableName) {
 
 function switchToTab(index) {
   if (index < 0 || index >= tabs.length) return;
+
+  if (isAppBusy() && index !== activeTabIndex) {
+    if (confirm('A query is currently loading. Do you want to cancel it and switch tabs?')) {
+      cancelAllActiveRequests();
+    } else {
+      return;
+    }
+  }
 
   activeTabIndex = index;
   const tab = tabs[activeTabIndex];
@@ -830,14 +868,24 @@ function renderTabs() {
   closeAllButton.addEventListener('click', closeAllTabs);
   tabsBar.appendChild(closeAllButton);
 
+  // Check if we have tabs from multiple different connections
+  const uniqueConnIds = new Set(tabs.map(t => t.connectionId));
+  const showServerBadge = uniqueConnIds.size > 1;
+
   tabs.forEach((tab, index) => {
     const tabElement = document.createElement('div');
     tabElement.className = `tab ${index === activeTabIndex ? 'active' : ''}`;
-    // Add connection indicator for tab if multiple connections exist
-    if (connections.length > 1) {
+
+    // Add connection indicator for tab if multiple connections exist in open tabs
+    if (showServerBadge) {
       const conn = connections.find(c => c.id === tab.connectionId);
       if (conn) {
         tabElement.title = `${tab.tableName} (${conn.name})`;
+
+        const badge = document.createElement('span');
+        badge.className = 'tab-server-badge';
+        badge.textContent = conn.name;
+        tabElement.appendChild(badge);
       }
     }
 
@@ -1001,12 +1049,16 @@ function handleCancelLoading(tab) {
   if (tab && tab.abortController) {
     tab.abortController.abort();
     tab.abortController = null;
+
     if (tab.data) {
       renderTable(tab.data);
       renderPagination();
     } else {
-      tableView.innerHTML = '<div class="empty-state"><p>Loading cancelled</p></div>';
-      pagination.style.display = 'none';
+      // No previous data (fresh load), close the tab
+      const index = tabs.indexOf(tab);
+      if (index !== -1) {
+        closeTab(index);
+      }
     }
   }
 }
@@ -1041,9 +1093,9 @@ function renderTableHeader(tab, columns = [], isShimmer = false) {
   } else {
     actions = `
       <button class="refresh-button" id="refreshButton" title="Refresh data">
-        <svg class="refresh-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M8 2V6M8 14V10M2 8H6M10 8H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          <path d="M2.5 5.5C3.1 4.2 4.1 3.2 5.4 2.6M13.5 10.5C12.9 11.8 11.9 12.8 10.6 13.4M5.5 2.5C4.2 3.1 3.2 4.1 2.6 5.4M10.5 13.5C11.8 12.9 12.8 11.9 13.4 10.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <svg class="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+          <path d="M21 3v5h-5"></path>
         </svg>
         <span class="refresh-text">Refresh</span>
       </button>
@@ -2093,6 +2145,18 @@ function closeCellContentPopup() {
     }
     overlay.remove();
   }
+}
+
+function isAppBusy() {
+  return tabs.some(tab => tab.abortController !== null);
+}
+
+function cancelAllActiveRequests() {
+  tabs.forEach(tab => {
+    if (tab.abortController) {
+      handleCancelLoading(tab);
+    }
+  });
 }
 
 function showLoading() {
