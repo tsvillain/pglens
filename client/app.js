@@ -39,6 +39,8 @@ const connectionsGrid = document.getElementById('connectionsGrid');
 const connectionSearch = document.getElementById('connectionSearch');
 const newConnectionBtn = document.getElementById('newConnectionBtn');
 const sidebarTitle = document.querySelector('.sidebar-header-title');
+const connectionsSection = document.querySelector('.connections-section');
+const tablesSection = document.querySelector('.tables-section');
 
 // Connection UI Elements
 const connectionDialog = document.getElementById('connectionDialog');
@@ -74,7 +76,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Connection Event Listeners
   connectButton.addEventListener('click', handleConnect);
-  addConnectionButton.addEventListener('click', () => showConnectionDialog(true));
+
+  // Sidebar Add Button -> Redirect to Landing Page
+  addConnectionButton.addEventListener('click', () => {
+    showLandingPage();
+  });
+
   closeConnectionDialogButton.addEventListener('click', hideConnectionDialog);
 
   connectionTabs.forEach(tab => {
@@ -229,15 +236,18 @@ async function fetchConnections() {
 
     connections = data.connections || [];
 
-    if (connections.length > 0) {
-      if (!activeConnectionId || !connections.find(c => c.id === activeConnectionId)) {
-        activeConnectionId = connections[0].id;
-      }
-      renderConnectionsList();
+    renderConnectionsList();
+    hideConnectionDialog();
+
+    // If active connection is invalid (e.g. deleted), clear it
+    if (activeConnectionId && !connections.find(c => c.id === activeConnectionId)) {
+      activeConnectionId = null;
+    }
+
+    if (activeConnectionId) {
       loadTables();
-      hideConnectionDialog();
     } else {
-      showConnectionDialog(false);
+      showLandingPage();
     }
   } catch (error) {
     console.error('Failed to fetch connections:', error);
@@ -246,9 +256,27 @@ async function fetchConnections() {
 }
 
 /**
+ * Update sidebar visibility based on connections state.
+ */
+function updateSidebarVisibility() {
+  if (connections.length === 0) {
+    if (connectionsSection) connectionsSection.style.display = 'none';
+    if (tablesSection) tablesSection.style.display = 'none';
+  } else {
+    if (connectionsSection) connectionsSection.style.display = 'flex';
+
+    // Only show tables section if we have an active connection selected
+    if (tablesSection) {
+      tablesSection.style.display = activeConnectionId ? 'flex' : 'none';
+    }
+  }
+}
+
+/**
  * Render the list of active connections in the sidebar.
  */
 function renderConnectionsList() {
+  updateSidebarVisibility();
   connectionsList.innerHTML = '';
 
   connections.forEach(conn => {
@@ -263,42 +291,13 @@ function renderConnectionsList() {
     nameSpan.textContent = conn.name;
     nameSpan.title = 'Switch to this connection';
 
-    // Actions container
-    const actionsDiv = document.createElement('div');
-    actionsDiv.className = 'connection-actions';
-
-    // Edit Button
-    const editBtn = document.createElement('button');
-    editBtn.className = 'connection-action-btn edit';
-    editBtn.innerHTML = '✎';
-    editBtn.title = 'Edit Connection';
-    editBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      handleConnectionEdit(conn);
-    });
-
-    // Disconnect Button
-    const disconnectBtn = document.createElement('button');
-    disconnectBtn.className = 'connection-action-btn delete';
-    disconnectBtn.innerHTML = '×';
-    disconnectBtn.title = 'Disconnect';
-    disconnectBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      handleDisconnect(conn.id);
-    });
-
-    actionsDiv.appendChild(editBtn);
-    actionsDiv.appendChild(disconnectBtn);
+    // Actions removed as per user request. Management is done on Landing Page.
 
     li.appendChild(nameSpan);
-    li.appendChild(actionsDiv);
 
     // Add click event for the whole li to switch connection
-    li.addEventListener('click', (e) => {
-      // If clicking actions, don't switch (handled by stopPropagation above, but good to be safe)
-      if (!actionsDiv.contains(e.target)) {
-        switchConnection(conn.id);
-      }
+    li.addEventListener('click', () => {
+      switchConnection(conn.id);
     });
 
     connectionsList.appendChild(li);
@@ -450,11 +449,14 @@ async function handleConnect() {
           }
         }
 
-        activeConnectionId = data.connectionId;
+        // Don't auto-select the new connection. Show landing page.
+        activeConnectionId = null;
 
         renderConnectionsList();
-        loadTables();
+        renderLandingPage(); // Update grid
         hideConnectionDialog();
+        showLandingPage();
+
         // Don't clear inputs here, will clear on show
       }
     } else {
@@ -505,7 +507,8 @@ async function handleDisconnect(connectionId) {
         sidebarContent.innerHTML = '';
         tableCount.textContent = '0';
         renderConnectionsList();
-        showConnectionDialog(false);
+        renderLandingPage();
+        updateSidebarVisibility(); // Ensure sidebar hides
       } else {
         if (activeConnectionId === connectionId) {
           // Switch to another connection (the first one)
@@ -513,6 +516,7 @@ async function handleDisconnect(connectionId) {
           loadTables();
         }
         renderConnectionsList();
+        renderLandingPage(); // Update grid
       }
     }
   } catch (error) {
@@ -538,6 +542,10 @@ function showLandingPage() {
 
   // Show landing page
   landingPage.style.display = 'flex';
+
+  // clear active connection selection
+  activeConnectionId = null;
+  renderConnectionsList();
 
   // Render grid
   renderLandingPage();
@@ -796,7 +804,7 @@ function showConnectionDialog(allowClose, editMode = false, connection = null) {
 
   connHost.focus();
 
-  if (allowClose && connections.length > 0) {
+  if (allowClose) {
     closeConnectionDialogButton.style.display = 'block';
   } else {
     closeConnectionDialogButton.style.display = 'none';
@@ -862,7 +870,12 @@ async function loadTables() {
 
   try {
     sidebarContent.innerHTML = '<div class="loading">Loading tables...</div>';
-    renderShimmerDashboard();
+
+    // Only show shimmer if we aren't already looking at a table for this connection
+    const existingTab = getActiveTab();
+    if (!existingTab || existingTab.connectionId !== activeConnectionId) {
+      renderShimmerDashboard();
+    }
 
     const response = await fetch('/api/tables', {
       headers: { 'x-connection-id': activeConnectionId }
