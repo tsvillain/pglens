@@ -34,6 +34,11 @@ const tabsBar = document.getElementById('tabsBar');
 const tableView = document.getElementById('tableView');
 const pagination = document.getElementById('pagination');
 const addConnectionButton = document.getElementById('addConnectionButton');
+const landingPage = document.getElementById('landingPage');
+const connectionsGrid = document.getElementById('connectionsGrid');
+const connectionSearch = document.getElementById('connectionSearch');
+const newConnectionBtn = document.getElementById('newConnectionBtn');
+const sidebarTitle = document.querySelector('.sidebar-header-title');
 
 // Connection UI Elements
 const connectionDialog = document.getElementById('connectionDialog');
@@ -59,6 +64,12 @@ const loadingOverlay = document.getElementById('loadingOverlay');
  */
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+
+  if (sidebarTitle) {
+    sidebarTitle.style.cursor = 'pointer';
+    sidebarTitle.addEventListener('click', showLandingPage);
+  }
+
   fetchConnections(); // Check status and load connections
 
   // Connection Event Listeners
@@ -133,6 +144,18 @@ document.addEventListener('DOMContentLoaded', () => {
       applyTheme();
     }
   });
+
+  // Search Connections
+  if (connectionSearch) {
+    connectionSearch.addEventListener('input', () => {
+      renderLandingPage();
+    });
+  }
+
+  // New Connection Button
+  if (newConnectionBtn) {
+    newConnectionBtn.addEventListener('click', () => showConnectionDialog(true));
+  }
 });
 
 /**
@@ -297,6 +320,14 @@ function switchConnection(connectionId) {
   if (activeConnectionId === connectionId) return;
 
   activeConnectionId = connectionId;
+
+  // Hide landing page, show table view
+  landingPage.style.display = 'none';
+  tableView.style.display = 'flex';
+  if (tabs.length > 0) {
+    tabsContainer.style.display = 'block';
+  }
+
   renderConnectionsList();
   loadTables();
 
@@ -490,6 +521,152 @@ async function handleDisconnect(connectionId) {
 }
 
 
+
+function showLandingPage() {
+  // Check if safe to navigate
+  if (isAppBusy()) { // Assuming isAppBusy and cancelAllActiveRequests are defined elsewhere
+    if (!confirm('A query is currently loading. Do you want to cancel it and go to the home page?')) {
+      return;
+    }
+    cancelAllActiveRequests();
+  }
+
+  // Hide other views
+  tableView.style.display = 'none';
+  tabsContainer.style.display = 'none';
+  pagination.style.display = 'none';
+
+  // Show landing page
+  landingPage.style.display = 'flex';
+
+  // Render grid
+  renderLandingPage();
+}
+
+function renderLandingPage() {
+  connectionsGrid.innerHTML = '';
+
+  const query = connectionSearch ? connectionSearch.value.toLowerCase().trim() : '';
+
+
+  if (!query) {
+    const addCard = document.createElement('div');
+    addCard.className = 'connection-card add-new-card';
+    addCard.innerHTML = `
+      <div class="add-new-icon-circle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </div>
+      <div class="add-new-text">Add Connection</div>
+      <div class="add-desc">Connect to a new database instance</div>
+    `;
+    addCard.addEventListener('click', () => {
+      showConnectionDialog(true);
+    });
+    connectionsGrid.appendChild(addCard);
+  }
+
+  // Filter connections
+  const filteredConnections = connections.filter(conn => {
+    if (!query) return true;
+    const searchStr = `${conn.name} ${conn.connectionString}`.toLowerCase();
+    return searchStr.includes(query);
+  });
+
+  // Render existing connections
+  filteredConnections.forEach(conn => {
+    const card = document.createElement('div');
+    card.className = 'connection-card';
+
+    // Parse info
+    const parsed = parseConnectionString(conn.connectionString);
+    const hostDisplay = parsed ? parsed.host : 'localhost';
+    const portDisplay = parsed ? parsed.port : '5432';
+    const dbDisplay = parsed ? parsed.database : 'postgres';
+    const isSsl = conn.sslMode && conn.sslMode !== 'disable';
+
+
+
+    card.innerHTML = `
+      <div class="card-context-actions">
+         <button class="context-btn edit" title="Edit">✎</button>
+         <button class="context-btn delete" title="Disconnect">×</button>
+      </div>
+
+      <div class="card-top">
+        <div class="card-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path>
+            <line x1="4" y1="22" x2="4" y2="15"></line>
+          </svg>
+        </div>
+      </div>
+
+      <div class="card-info">
+        <h3>${conn.name}</h3>
+        <p>PostgreSQL • ${dbDisplay}</p>
+      </div>
+
+      <div class="host-block">
+        <span class="host-label">HOST</span>
+        <div class="host-value">${hostDisplay}:${portDisplay}</div>
+        ${isSsl ? '<span class="host-label" style="margin-top:4px;color:#10b981">SSL ENCRYPTED</span>' : ''}
+      </div>
+
+      <div class="card-actions-wrapper">
+        <button class="connect-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"></path>
+          </svg>
+          Connect
+        </button>
+      </div>
+    `;
+
+    // Click behavior
+    card.addEventListener('click', (e) => {
+      // Don't trigger if clicking actions
+      if (e.target.closest('.context-btn')) return;
+      switchConnection(conn.id);
+    });
+
+    // Connect Button
+    card.querySelector('.connect-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      switchConnection(conn.id);
+    });
+
+    // Edit Action
+    const editBtn = card.querySelector('.edit');
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      handleConnectionEdit(conn);
+    });
+
+    // Disconnect Action
+    const deleteBtn = card.querySelector('.delete');
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm(`Are you sure you want to disconnect from ${conn.name}?`)) {
+        handleDisconnect(conn.id);
+      }
+    });
+
+    connectionsGrid.appendChild(card);
+  });
+
+  if (filteredConnections.length === 0 && query) {
+    const noResults = document.createElement('div');
+    noResults.style.gridColumn = '1 / -1';
+    noResults.style.textAlign = 'center';
+    noResults.style.padding = '40px';
+    noResults.style.color = 'var(--text-secondary)';
+    noResults.innerHTML = `No connections found matching "${query}"`;
+    connectionsGrid.appendChild(noResults);
+  }
+}
 
 function showConnectionDialog(allowClose, editMode = false, connection = null) {
   connectionDialog.style.display = 'flex';
