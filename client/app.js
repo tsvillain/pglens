@@ -337,14 +337,10 @@ function switchConnection(connectionId) {
     // Try to find the last active tab for this connection
     const tabIndex = tabs.findIndex(t => t.connectionId === activeConnectionId);
     if (tabIndex !== -1) {
-      if (activeTabIndex === -1) {
-        renderTableDashboard();
-      } else {
-        switchToTab(activeTabIndex);
-      }
+      switchToTab(tabIndex);
     } else {
-      // No tabs for this connection, show empty state
-      renderTableDashboard();
+      // No tabs for this connection, show shimmer while loading
+      renderShimmerDashboard();
       pagination.style.display = 'none';
 
       // Deselect all tabs visually
@@ -887,7 +883,12 @@ async function loadTables() {
     }
 
     filterAndRenderTables();
-    renderTableDashboard();
+
+    // Only show dashboard if we aren't already looking at a table for this connection
+    const currentTab = getActiveTab();
+    if (!currentTab || currentTab.connectionId !== activeConnectionId) {
+      renderTableDashboard();
+    }
   } catch (error) {
     sidebarContent.innerHTML = `<div class="error">Error: ${error.message}</div>`;
   }
