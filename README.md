@@ -54,13 +54,16 @@ pglens url
 
 ### Connect to a Database
 
-1. Open `http://localhost:54321`
-2. Click the **+** icon in the sidebar
+### Connect to a Database
+
+1. Open `http://localhost:54321` to see the **All Connections** landing page.
+2. Click the **Add Connection** card or the **+** icon in the grid.
 3. Enter your connection details using one of the tabs:
    - **Parameters** (Default): Enter Host, Port, Database, User, and Password separately.
    - **Connection URL**: Paste a standard PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/db`).
 4. Select the **SSL Mode** appropriate for your server.
-5. Click **Connect**.
+5. Click **Connect**. The server will be added to your grid.
+6. Click the server card to open the **Explorer**.
 
 ### Stop the Server
 

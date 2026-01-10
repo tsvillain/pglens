@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-01-11
+
+### Added
+- **Default Landing Page**: The app now defaults to an "All Connections" grid view on startup.
+- **Simplified Sidebar**: Connection management (Edit/Delete) is now centralized on the Landing Page.
+- **Smart View Switching**: Table list and search are hidden until a server is explicitly selected.
+
+### Changed
+- **Navigation Flow**: "Add Connection" and Logo clicks efficiently return you to the Landing Page.
+- **Auto-Connect Disabled**: Adding a new connection returns to the grid instead of auto-opening the server.
+
+### Fixed
+- **View Persistence**: Reconnecting to an active server no longer overwrites open tabs with a loading screen.
+- **Connection Updates**: Fixed issue where the connection grid would not update immediately after adding a server.
+
 ## [2.0.0] - 2026-01-01
 
 ### Added
