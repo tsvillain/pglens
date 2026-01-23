@@ -60,6 +60,19 @@ const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
 const loadingOverlay = document.getElementById('loadingOverlay');
 
+// Spotlight Elements
+const spotlightOverlay = document.getElementById('spotlightOverlay');
+const spotlightInput = document.getElementById('spotlightInput');
+const spotlightResults = document.getElementById('spotlightResults');
+let spotlightSelectedIndex = -1;
+let spotlightMatches = [];
+
+// Schema Dialog UI Elements
+const schemaDialog = document.getElementById('schemaDialog');
+const closeSchemaDialogBtn = document.getElementById('closeSchemaDialog');
+const closeSchemaButton = document.getElementById('closeSchemaButton');
+const schemaTableContainer = document.getElementById('schemaTableContainer');
+
 /**
  * Initialize the application when DOM is ready.
  * Sets up event listeners and loads initial data.
@@ -112,9 +125,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   sidebarToggle.addEventListener('click', () => {
-    if (tabs.length > 0) {
-      sidebar.classList.toggle('minimized');
-    }
+    sidebar.classList.toggle('minimized');
+    updateSidebarToggleState();
   });
 
   updateSidebarToggleState();
@@ -162,6 +174,66 @@ document.addEventListener('DOMContentLoaded', () => {
   // New Connection Button
   if (newConnectionBtn) {
     newConnectionBtn.addEventListener('click', () => showConnectionDialog(true));
+  }
+
+  // Schema Dialog Listeners
+  if (closeSchemaDialogBtn) {
+    closeSchemaDialogBtn.addEventListener('click', hideSchemaDialog);
+  }
+  if (closeSchemaButton) {
+    closeSchemaButton.addEventListener('click', hideSchemaDialog);
+  }
+
+  // Close schema dialog on outside click
+  if (schemaDialog) {
+    schemaDialog.addEventListener('click', (e) => {
+      if (e.target === schemaDialog) {
+        hideSchemaDialog();
+      }
+    });
+  }
+
+  // Spotlight Search Shortcut (Cmd+K / Ctrl+K)
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      // Only toggle if tables are loaded
+      if (allTables && allTables.length > 0) {
+        toggleSpotlight();
+      }
+    }
+
+    // Spotlight Navigation
+    if (spotlightOverlay.style.display !== 'none') {
+      if (e.key === 'Escape') {
+        toggleSpotlight(false);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        navigateSpotlight(1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        navigateSpotlight(-1);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        executeSpotlightSelection();
+      }
+    }
+  });
+
+  // Spotlight Input Listener
+  if (spotlightInput) {
+    spotlightInput.addEventListener('input', (e) => {
+      filterSpotlight(e.target.value);
+    });
+  }
+
+  // Close spotlight on overlay click
+  if (spotlightOverlay) {
+    spotlightOverlay.addEventListener('click', (e) => {
+      if (e.target === spotlightOverlay) {
+        toggleSpotlight(false);
+      }
+    });
   }
 });
 
@@ -216,11 +288,7 @@ function updateThemeIcon() {
 }
 
 function updateSidebarToggleState() {
-  if (tabs.length === 0 && connections.length === 0) {
-    sidebarToggle.disabled = true;
-    sidebarToggle.classList.add('disabled');
-    sidebar.classList.remove('minimized');
-  } else {
+  if (sidebarToggle) {
     sidebarToggle.disabled = false;
     sidebarToggle.classList.remove('disabled');
   }
@@ -286,6 +354,26 @@ function renderConnectionsList() {
       li.classList.add('active');
     }
 
+    // Generate Initials
+    let initials = '';
+    if (conn.name) {
+      const parts = conn.name.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        initials = (parts[0][0] + parts[1][0]).toUpperCase();
+      } else if (conn.name.length >= 2) {
+        initials = conn.name.substring(0, 2).toUpperCase();
+      } else {
+        initials = conn.name.substring(0, 1).toUpperCase();
+      }
+    } else {
+      initials = 'DB';
+    }
+
+    const initialsDiv = document.createElement('div');
+    initialsDiv.className = 'connection-initials';
+    initialsDiv.textContent = initials;
+    li.appendChild(initialsDiv);
+
     const nameSpan = document.createElement('span');
     nameSpan.className = 'connection-name';
     nameSpan.textContent = conn.name;
@@ -301,6 +389,9 @@ function renderConnectionsList() {
     });
 
     connectionsList.appendChild(li);
+
+    // Add tooltip for minimized state
+    li.title = conn.name;
   });
 }
 
@@ -1299,6 +1390,7 @@ async function loadTableData() {
     tab.hasPrimaryKey = data.hasPrimaryKey || false;
     tab.isApproximate = data.isApproximate || false;
     tab.data = data; // Cache data for client-side sorting
+    tab.columns = data.columns; // Store column metadata for schema view
 
     // Update cursor for next page navigation
     if (data.nextCursor) {
@@ -1387,6 +1479,14 @@ function renderTableHeader(tab, columns = [], isShimmer = false) {
         </svg>
         <span class="refresh-text">Refresh</span>
       </button>
+      <button class="menu-button" id="schemaButton" title="View Schema">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="3" y1="9" x2="21" y2="9"></line>
+          <line x1="9" y1="21" x2="9" y2="9"></line>
+        </svg>
+        <span>Schema</span>
+      </button>
       <div class="limit-selector">
         <select id="limitSelect" class="limit-select" title="Rows per page">
           <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
@@ -1437,6 +1537,13 @@ function renderTableHeader(tab, columns = [], isShimmer = false) {
       refreshButton.addEventListener('click', handleRefresh);
     }
 
+    const schemaButton = tableHeader.querySelector('#schemaButton');
+    if (schemaButton) {
+      schemaButton.addEventListener('click', () => {
+        showSchemaModal(tab.tableName, tab.columns);
+      });
+    }
+
     const limitSelect = tableHeader.querySelector('#limitSelect');
     if (limitSelect) {
       limitSelect.addEventListener('change', (e) => {
@@ -1479,6 +1586,14 @@ function renderShimmerTable(tab) {
   const headerRow = document.createElement('tr');
 
   // Render header placeholders
+  const rowNumTh = document.createElement('th');
+  rowNumTh.className = 'row-number-header';
+  const rowNumSkeleton = document.createElement('div');
+  rowNumSkeleton.className = 'skeleton';
+  rowNumSkeleton.style.width = '30px';
+  rowNumTh.appendChild(rowNumSkeleton);
+  headerRow.appendChild(rowNumTh);
+
   columns.forEach(col => {
     const th = document.createElement('th');
     th.className = 'resizable';
@@ -1497,6 +1612,15 @@ function renderShimmerTable(tab) {
   for (let i = 0; i < 10; i++) {
     const tr = document.createElement('tr');
     tr.className = 'shimmer-row';
+
+    // Row number shimmer cell
+    const rowNumTd = document.createElement('td');
+    const rowNumSkeleton = document.createElement('div');
+    rowNumSkeleton.className = 'skeleton shimmer-cell';
+    rowNumSkeleton.style.width = '20px';
+    rowNumTd.appendChild(rowNumSkeleton);
+    tr.appendChild(rowNumTd);
+
     columns.forEach(() => {
       const td = document.createElement('td');
       const skeleton = document.createElement('div');
@@ -1541,6 +1665,12 @@ function renderTable(data) {
 
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
+
+  // Add Row Number Header
+  const rowNumTh = document.createElement('th');
+  rowNumTh.className = 'row-number-header';
+  rowNumTh.textContent = '#';
+  headerRow.appendChild(rowNumTh);
 
   visibleColumns.forEach((column, index) => {
     const th = document.createElement('th');
@@ -1663,8 +1793,16 @@ function renderTable(data) {
   // Server-side sorting, so rows are already sorted
   const rows = data.rows || [];
 
-  rows.forEach(row => {
+  rows.forEach((row, rowIndex) => {
     const tr = document.createElement('tr');
+
+    // Add Row Number Cell
+    const rowNumTd = document.createElement('td');
+    rowNumTd.className = 'row-number-cell';
+    const rowNumber = ((tab.page - 1) * tab.limit) + rowIndex + 1;
+    rowNumTd.textContent = rowNumber.toLocaleString();
+    tr.appendChild(rowNumTd);
+
     visibleColumns.forEach(column => {
       const td = document.createElement('td');
 
@@ -2459,4 +2597,178 @@ function hideLoading() {
   if (loadingOverlay) {
     loadingOverlay.style.display = 'none';
   }
+}
+
+/**
+ * Show the schema modal for a table.
+ * @param {string} tableName - Name of the table
+ * @param {Object} columns - Column metadata
+ */
+function showSchemaModal(tableName, columns) {
+  const title = schemaDialog.querySelector('h2');
+  title.textContent = `Schema: ${tableName}`;
+
+  renderSchemaTable(columns);
+  schemaDialog.style.display = 'flex';
+}
+
+function hideSchemaDialog() {
+  schemaDialog.style.display = 'none';
+}
+
+/**
+ * Render the schema table inside the modal.
+ * @param {Object} columns - Column metadata
+ */
+function renderSchemaTable(columns) {
+  schemaTableContainer.innerHTML = '';
+
+  const table = document.createElement('table');
+  table.className = 'schema-table';
+
+  const thead = document.createElement('thead');
+  thead.innerHTML = `
+    <tr>
+      <th>Column</th>
+      <th>Type</th>
+      <th>Key</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+
+  Object.entries(columns).forEach(([name, meta]) => {
+    const tr = document.createElement('tr');
+
+    // Key Badges
+    let keyBadges = '';
+    if (meta.isPrimaryKey) {
+      keyBadges += '<span class="schema-badge pk">PK</span> ';
+    }
+    if (meta.isForeignKey) {
+      keyBadges += '<span class="schema-badge fk">FK</span> ';
+    }
+    if (meta.isUnique && !meta.isPrimaryKey) {
+      keyBadges += '<span class="schema-badge unique">UQ</span> ';
+    }
+
+    // FK Reference
+    let fkRef = '';
+    if (meta.isForeignKey && meta.foreignKeyRef) {
+      fkRef = `<div class="fk-ref">→ ${meta.foreignKeyRef.table}(${meta.foreignKeyRef.column})</div>`;
+    }
+
+    tr.innerHTML = `
+      <td style="font-weight: 500">${name}</td>
+      <td style="color: var(--text-secondary); font-family: monospace">${meta.dataType}</td>
+      <td>
+        ${keyBadges}
+        ${fkRef}
+      </td>
+    `;
+
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+  schemaTableContainer.appendChild(table);
+}
+
+// Spotlight Functions
+function toggleSpotlight(show) {
+  if (show === undefined) {
+    show = spotlightOverlay.style.display === 'none';
+  }
+
+  if (show) {
+    spotlightOverlay.style.display = 'flex';
+    spotlightInput.value = '';
+    spotlightInput.focus();
+    filterSpotlight('');
+  } else {
+    spotlightOverlay.style.display = 'none';
+  }
+}
+
+function filterSpotlight(query) {
+  spotlightResults.innerHTML = '';
+  spotlightSelectedIndex = 0;
+
+  if (!allTables || allTables.length === 0) {
+    spotlightResults.innerHTML = '<div class="spotlight-empty">No tables available</div>';
+    spotlightMatches = [];
+    return;
+  }
+
+  const lowerQuery = query.toLowerCase().trim();
+  spotlightMatches = allTables.filter(t => t.toLowerCase().includes(lowerQuery));
+
+  if (spotlightMatches.length === 0) {
+    spotlightResults.innerHTML = '<div class="spotlight-empty">No tables found</div>';
+    return;
+  }
+
+  spotlightMatches.forEach((table, index) => {
+    const div = document.createElement('div');
+    div.className = `spotlight-result-item ${index === 0 ? 'selected' : ''}`;
+    div.dataset.index = index;
+
+    div.innerHTML = `
+      <div class="spotlight-result-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </div>
+      <div class="spotlight-result-info">
+        <span class="spotlight-result-name">${table}</span>
+        <span class="spotlight-result-schema">public</span>
+      </div>
+    `;
+
+    div.addEventListener('mousemove', () => {
+      setSpotlightSelection(index);
+    });
+
+    div.addEventListener('click', () => {
+      openSpotlightTable(table);
+    });
+
+    spotlightResults.appendChild(div);
+  });
+}
+
+function navigateSpotlight(direction) {
+  if (spotlightMatches.length === 0) return;
+
+  let newIndex = spotlightSelectedIndex + direction;
+  if (newIndex < 0) newIndex = spotlightMatches.length - 1;
+  if (newIndex >= spotlightMatches.length) newIndex = 0;
+
+  setSpotlightSelection(newIndex);
+}
+
+function setSpotlightSelection(index) {
+  spotlightSelectedIndex = index;
+  const items = spotlightResults.querySelectorAll('.spotlight-result-item');
+  items.forEach(item => item.classList.remove('selected'));
+
+  const selectedItem = items[index];
+  if (selectedItem) {
+    selectedItem.classList.add('selected');
+    selectedItem.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function executeSpotlightSelection() {
+  if (spotlightSelectedIndex >= 0 && spotlightSelectedIndex < spotlightMatches.length) {
+    openSpotlightTable(spotlightMatches[spotlightSelectedIndex]);
+  }
+}
+
+function openSpotlightTable(tableName) {
+  toggleSpotlight(false);
+  handleTableSelect(tableName);
 }
