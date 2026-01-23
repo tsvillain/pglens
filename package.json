@@ -2,12 +2,18 @@
   "name": "pglens",
   "version": "2.1.0",
   "description": "A simple PostgreSQL database viewer tool",
-  "main": "src/server.js",
+  "main": "electron/main.js",
   "bin": {
     "pglens": "./bin/pglens"
   },
   "scripts": {
-    "start": "node bin/pglens"
+    "start": "node bin/pglens",
+    "electron:start": "electron .",
+    "electron:build": "electron-builder",
+    "dist": "npm run electron:build",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
   },
   "keywords": [
     "postgresql",
@@ -20,6 +26,42 @@
     "type": "git",
     "url": "https://github.com/tsvillain/pglens.git"
   },
+  "build": {
+    "appId": "com.tsvillain.pglens",
+    "productName": "pglens",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "package.json",
+      "electron/**/*",
+      "src/**/*",
+      "client/**/*",
+      "bin/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "electron/assets/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "icon": "electron/assets/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "linux": {
+      "icon": "electron/assets/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
+  },
   "bugs": {
     "url": "https://github.com/tsvillain/pglens/issues"
   },
@@ -30,5 +72,9 @@
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "postgres": "^3.4.3"
+  },
+  "devDependencies": {
+    "electron": "^40.0.0",
+    "electron-builder": "^26.4.0"
   }
 }

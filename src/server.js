@@ -52,7 +52,7 @@ function isPortInUse(port) {
 /**
  * Start the Express server.
  */
-async function startServer() {
+async function startServer({ standalone = true } = {}) {
   const app = express();
   let port = 54321;
 
@@ -73,31 +73,38 @@ async function startServer() {
     res.sendFile(path.join(clientPath, 'index.html'));
   });
 
-  const server = app.listen(port, () => {
-    const actualPort = server.address().port;
-    console.log(`✓ Server running on http://localhost:${actualPort}`);
-    console.log(`  Open your browser to view your database`);
-
-    // Write port to file for CLI to read
-    fs.writeFileSync(PORT_FILE, actualPort.toString());
-  });
-
-  const shutdown = () => {
-    console.log('\nShutting down...');
-    if (fs.existsSync(PORT_FILE)) {
-      try {
-        fs.unlinkSync(PORT_FILE);
-      } catch (e) {
-        // Ignore removal errors
+  return new Promise((resolve) => {
+    const server = app.listen(port, () => {
+      const actualPort = server.address().port;
+      if (standalone) {
+        console.log(`✓ Server running on http://localhost:${actualPort}`);
+        console.log(`  Open your browser to view your database`);
+        
+        // Write port to file for CLI to read
+        fs.writeFileSync(PORT_FILE, actualPort.toString());
       }
-    }
-    closePool().then(() => {
-      process.exit(0);
+      resolve(actualPort);
     });
-  };
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+    const shutdown = () => {
+      if (standalone) console.log('\nShutting down...');
+      if (fs.existsSync(PORT_FILE)) {
+        try {
+          fs.unlinkSync(PORT_FILE);
+        } catch (e) {
+          // Ignore removal errors
+        }
+      }
+      closePool().then(() => {
+        if (standalone) process.exit(0);
+      });
+    };
+
+    if (standalone) {
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    }
+  });
 }
 
 module.exports = { startServer };
