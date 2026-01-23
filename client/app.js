@@ -1479,6 +1479,14 @@ function renderShimmerTable(tab) {
   const headerRow = document.createElement('tr');
 
   // Render header placeholders
+  const rowNumTh = document.createElement('th');
+  rowNumTh.className = 'row-number-header';
+  const rowNumSkeleton = document.createElement('div');
+  rowNumSkeleton.className = 'skeleton';
+  rowNumSkeleton.style.width = '30px';
+  rowNumTh.appendChild(rowNumSkeleton);
+  headerRow.appendChild(rowNumTh);
+
   columns.forEach(col => {
     const th = document.createElement('th');
     th.className = 'resizable';
@@ -1497,6 +1505,15 @@ function renderShimmerTable(tab) {
   for (let i = 0; i < 10; i++) {
     const tr = document.createElement('tr');
     tr.className = 'shimmer-row';
+    
+    // Row number shimmer cell
+    const rowNumTd = document.createElement('td');
+    const rowNumSkeleton = document.createElement('div');
+    rowNumSkeleton.className = 'skeleton shimmer-cell';
+    rowNumSkeleton.style.width = '20px';
+    rowNumTd.appendChild(rowNumSkeleton);
+    tr.appendChild(rowNumTd);
+
     columns.forEach(() => {
       const td = document.createElement('td');
       const skeleton = document.createElement('div');
@@ -1541,6 +1558,12 @@ function renderTable(data) {
 
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
+
+  // Add Row Number Header
+  const rowNumTh = document.createElement('th');
+  rowNumTh.className = 'row-number-header';
+  rowNumTh.textContent = '#';
+  headerRow.appendChild(rowNumTh);
 
   visibleColumns.forEach((column, index) => {
     const th = document.createElement('th');
@@ -1663,8 +1686,16 @@ function renderTable(data) {
   // Server-side sorting, so rows are already sorted
   const rows = data.rows || [];
 
-  rows.forEach(row => {
+  rows.forEach((row, rowIndex) => {
     const tr = document.createElement('tr');
+
+    // Add Row Number Cell
+    const rowNumTd = document.createElement('td');
+    rowNumTd.className = 'row-number-cell';
+    const rowNumber = ((tab.page - 1) * tab.limit) + rowIndex + 1;
+    rowNumTd.textContent = rowNumber.toLocaleString();
+    tr.appendChild(rowNumTd);
+
     visibleColumns.forEach(column => {
       const td = document.createElement('td');
 

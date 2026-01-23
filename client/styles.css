@@ -2233,3 +2233,38 @@ html[data-theme="dark"] .loading-overlay {
   width: 60%;
   height: 10px;
 }
+
+/* Row Numbers */
+.row-number-header {
+  width: 50px;
+  min-width: 50px;
+  text-align: right;
+  padding-right: var(--space-3);
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-xs);
+  border-right: 1px solid var(--border-subtle);
+  position: sticky;
+  left: 0;
+  background-color: var(--bg-elevated);
+  z-index: 10;
+}
+
+.row-number-cell {
+  width: 50px;
+  min-width: 50px;
+  text-align: right;
+  padding-right: var(--space-3);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  border-right: 1px solid var(--border-subtle);
+  position: sticky;
+  left: 0;
+  background-color: var(--bg-base);
+  z-index: 9;
+}
+
+tr:hover .row-number-cell {
+  background-color: var(--bg-hover);
+}
