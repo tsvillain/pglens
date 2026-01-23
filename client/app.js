@@ -60,6 +60,13 @@ const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
 const loadingOverlay = document.getElementById('loadingOverlay');
 
+// Spotlight Elements
+const spotlightOverlay = document.getElementById('spotlightOverlay');
+const spotlightInput = document.getElementById('spotlightInput');
+const spotlightResults = document.getElementById('spotlightResults');
+let spotlightSelectedIndex = -1;
+let spotlightMatches = [];
+
 // Schema Dialog UI Elements
 const schemaDialog = document.getElementById('schemaDialog');
 const closeSchemaDialogBtn = document.getElementById('closeSchemaDialog');
@@ -118,9 +125,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   sidebarToggle.addEventListener('click', () => {
-    if (tabs.length > 0) {
-      sidebar.classList.toggle('minimized');
-    }
+    sidebar.classList.toggle('minimized');
+    updateSidebarToggleState();
   });
 
   updateSidebarToggleState();
@@ -186,6 +192,49 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  // Spotlight Search Shortcut (Cmd+K / Ctrl+K)
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      // Only toggle if tables are loaded
+      if (allTables && allTables.length > 0) {
+        toggleSpotlight();
+      }
+    }
+
+    // Spotlight Navigation
+    if (spotlightOverlay.style.display !== 'none') {
+      if (e.key === 'Escape') {
+        toggleSpotlight(false);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        navigateSpotlight(1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        navigateSpotlight(-1);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        executeSpotlightSelection();
+      }
+    }
+  });
+
+  // Spotlight Input Listener
+  if (spotlightInput) {
+    spotlightInput.addEventListener('input', (e) => {
+      filterSpotlight(e.target.value);
+    });
+  }
+
+  // Close spotlight on overlay click
+  if (spotlightOverlay) {
+    spotlightOverlay.addEventListener('click', (e) => {
+      if (e.target === spotlightOverlay) {
+        toggleSpotlight(false);
+      }
+    });
+  }
 });
 
 /**
@@ -239,11 +288,7 @@ function updateThemeIcon() {
 }
 
 function updateSidebarToggleState() {
-  if (tabs.length === 0 && connections.length === 0) {
-    sidebarToggle.disabled = true;
-    sidebarToggle.classList.add('disabled');
-    sidebar.classList.remove('minimized');
-  } else {
+  if (sidebarToggle) {
     sidebarToggle.disabled = false;
     sidebarToggle.classList.remove('disabled');
   }
@@ -309,6 +354,26 @@ function renderConnectionsList() {
       li.classList.add('active');
     }
 
+    // Generate Initials
+    let initials = '';
+    if (conn.name) {
+      const parts = conn.name.trim().split(/\s+/);
+      if (parts.length >= 2) {
+        initials = (parts[0][0] + parts[1][0]).toUpperCase();
+      } else if (conn.name.length >= 2) {
+        initials = conn.name.substring(0, 2).toUpperCase();
+      } else {
+        initials = conn.name.substring(0, 1).toUpperCase();
+      }
+    } else {
+      initials = 'DB';
+    }
+
+    const initialsDiv = document.createElement('div');
+    initialsDiv.className = 'connection-initials';
+    initialsDiv.textContent = initials;
+    li.appendChild(initialsDiv);
+
     const nameSpan = document.createElement('span');
     nameSpan.className = 'connection-name';
     nameSpan.textContent = conn.name;
@@ -324,6 +389,9 @@ function renderConnectionsList() {
     });
 
     connectionsList.appendChild(li);
+
+    // Add tooltip for minimized state
+    li.title = conn.name;
   });
 }
 
@@ -2605,4 +2673,102 @@ function renderSchemaTable(columns) {
 
   table.appendChild(tbody);
   schemaTableContainer.appendChild(table);
+}
+
+// Spotlight Functions
+function toggleSpotlight(show) {
+  if (show === undefined) {
+    show = spotlightOverlay.style.display === 'none';
+  }
+
+  if (show) {
+    spotlightOverlay.style.display = 'flex';
+    spotlightInput.value = '';
+    spotlightInput.focus();
+    filterSpotlight('');
+  } else {
+    spotlightOverlay.style.display = 'none';
+  }
+}
+
+function filterSpotlight(query) {
+  spotlightResults.innerHTML = '';
+  spotlightSelectedIndex = 0;
+
+  if (!allTables || allTables.length === 0) {
+    spotlightResults.innerHTML = '<div class="spotlight-empty">No tables available</div>';
+    spotlightMatches = [];
+    return;
+  }
+
+  const lowerQuery = query.toLowerCase().trim();
+  spotlightMatches = allTables.filter(t => t.toLowerCase().includes(lowerQuery));
+
+  if (spotlightMatches.length === 0) {
+    spotlightResults.innerHTML = '<div class="spotlight-empty">No tables found</div>';
+    return;
+  }
+
+  spotlightMatches.forEach((table, index) => {
+    const div = document.createElement('div');
+    div.className = `spotlight-result-item ${index === 0 ? 'selected' : ''}`;
+    div.dataset.index = index;
+
+    div.innerHTML = `
+      <div class="spotlight-result-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </div>
+      <div class="spotlight-result-info">
+        <span class="spotlight-result-name">${table}</span>
+        <span class="spotlight-result-schema">public</span>
+      </div>
+    `;
+
+    div.addEventListener('mousemove', () => {
+      setSpotlightSelection(index);
+    });
+
+    div.addEventListener('click', () => {
+      openSpotlightTable(table);
+    });
+
+    spotlightResults.appendChild(div);
+  });
+}
+
+function navigateSpotlight(direction) {
+  if (spotlightMatches.length === 0) return;
+
+  let newIndex = spotlightSelectedIndex + direction;
+  if (newIndex < 0) newIndex = spotlightMatches.length - 1;
+  if (newIndex >= spotlightMatches.length) newIndex = 0;
+
+  setSpotlightSelection(newIndex);
+}
+
+function setSpotlightSelection(index) {
+  spotlightSelectedIndex = index;
+  const items = spotlightResults.querySelectorAll('.spotlight-result-item');
+  items.forEach(item => item.classList.remove('selected'));
+
+  const selectedItem = items[index];
+  if (selectedItem) {
+    selectedItem.classList.add('selected');
+    selectedItem.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function executeSpotlightSelection() {
+  if (spotlightSelectedIndex >= 0 && spotlightSelectedIndex < spotlightMatches.length) {
+    openSpotlightTable(spotlightMatches[spotlightSelectedIndex]);
+  }
+}
+
+function openSpotlightTable(tableName) {
+  toggleSpotlight(false);
+  handleTableSelect(tableName);
 }
