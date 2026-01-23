@@ -60,6 +60,12 @@ const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
 const loadingOverlay = document.getElementById('loadingOverlay');
 
+// Schema Dialog UI Elements
+const schemaDialog = document.getElementById('schemaDialog');
+const closeSchemaDialogBtn = document.getElementById('closeSchemaDialog');
+const closeSchemaButton = document.getElementById('closeSchemaButton');
+const schemaTableContainer = document.getElementById('schemaTableContainer');
+
 /**
  * Initialize the application when DOM is ready.
  * Sets up event listeners and loads initial data.
@@ -162,6 +168,23 @@ document.addEventListener('DOMContentLoaded', () => {
   // New Connection Button
   if (newConnectionBtn) {
     newConnectionBtn.addEventListener('click', () => showConnectionDialog(true));
+  }
+
+  // Schema Dialog Listeners
+  if (closeSchemaDialogBtn) {
+    closeSchemaDialogBtn.addEventListener('click', hideSchemaDialog);
+  }
+  if (closeSchemaButton) {
+    closeSchemaButton.addEventListener('click', hideSchemaDialog);
+  }
+
+  // Close schema dialog on outside click
+  if (schemaDialog) {
+    schemaDialog.addEventListener('click', (e) => {
+      if (e.target === schemaDialog) {
+        hideSchemaDialog();
+      }
+    });
   }
 });
 
@@ -1299,6 +1322,7 @@ async function loadTableData() {
     tab.hasPrimaryKey = data.hasPrimaryKey || false;
     tab.isApproximate = data.isApproximate || false;
     tab.data = data; // Cache data for client-side sorting
+    tab.columns = data.columns; // Store column metadata for schema view
 
     // Update cursor for next page navigation
     if (data.nextCursor) {
@@ -1387,6 +1411,14 @@ function renderTableHeader(tab, columns = [], isShimmer = false) {
         </svg>
         <span class="refresh-text">Refresh</span>
       </button>
+      <button class="menu-button" id="schemaButton" title="View Schema">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="3" y1="9" x2="21" y2="9"></line>
+          <line x1="9" y1="21" x2="9" y2="9"></line>
+        </svg>
+        <span>Schema</span>
+      </button>
       <div class="limit-selector">
         <select id="limitSelect" class="limit-select" title="Rows per page">
           <option value="25" ${tab.limit === 25 ? 'selected' : ''}>25 rows</option>
@@ -1435,6 +1467,13 @@ function renderTableHeader(tab, columns = [], isShimmer = false) {
     const refreshButton = tableHeader.querySelector('#refreshButton');
     if (refreshButton) {
       refreshButton.addEventListener('click', handleRefresh);
+    }
+
+    const schemaButton = tableHeader.querySelector('#schemaButton');
+    if (schemaButton) {
+      schemaButton.addEventListener('click', () => {
+        showSchemaModal(tab.tableName, tab.columns);
+      });
     }
 
     const limitSelect = tableHeader.querySelector('#limitSelect');
@@ -1505,7 +1544,7 @@ function renderShimmerTable(tab) {
   for (let i = 0; i < 10; i++) {
     const tr = document.createElement('tr');
     tr.className = 'shimmer-row';
-    
+
     // Row number shimmer cell
     const rowNumTd = document.createElement('td');
     const rowNumSkeleton = document.createElement('div');
@@ -2490,4 +2529,80 @@ function hideLoading() {
   if (loadingOverlay) {
     loadingOverlay.style.display = 'none';
   }
+}
+
+/**
+ * Show the schema modal for a table.
+ * @param {string} tableName - Name of the table
+ * @param {Object} columns - Column metadata
+ */
+function showSchemaModal(tableName, columns) {
+  const title = schemaDialog.querySelector('h2');
+  title.textContent = `Schema: ${tableName}`;
+
+  renderSchemaTable(columns);
+  schemaDialog.style.display = 'flex';
+}
+
+function hideSchemaDialog() {
+  schemaDialog.style.display = 'none';
+}
+
+/**
+ * Render the schema table inside the modal.
+ * @param {Object} columns - Column metadata
+ */
+function renderSchemaTable(columns) {
+  schemaTableContainer.innerHTML = '';
+
+  const table = document.createElement('table');
+  table.className = 'schema-table';
+
+  const thead = document.createElement('thead');
+  thead.innerHTML = `
+    <tr>
+      <th>Column</th>
+      <th>Type</th>
+      <th>Key</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+
+  Object.entries(columns).forEach(([name, meta]) => {
+    const tr = document.createElement('tr');
+
+    // Key Badges
+    let keyBadges = '';
+    if (meta.isPrimaryKey) {
+      keyBadges += '<span class="schema-badge pk">PK</span> ';
+    }
+    if (meta.isForeignKey) {
+      keyBadges += '<span class="schema-badge fk">FK</span> ';
+    }
+    if (meta.isUnique && !meta.isPrimaryKey) {
+      keyBadges += '<span class="schema-badge unique">UQ</span> ';
+    }
+
+    // FK Reference
+    let fkRef = '';
+    if (meta.isForeignKey && meta.foreignKeyRef) {
+      fkRef = `<div class="fk-ref">→ ${meta.foreignKeyRef.table}(${meta.foreignKeyRef.column})</div>`;
+    }
+
+    tr.innerHTML = `
+      <td style="font-weight: 500">${name}</td>
+      <td style="color: var(--text-secondary); font-family: monospace">${meta.dataType}</td>
+      <td>
+        ${keyBadges}
+        ${fkRef}
+      </td>
+    `;
+
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+  schemaTableContainer.appendChild(table);
 }

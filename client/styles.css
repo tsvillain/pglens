@@ -874,6 +874,33 @@ code {
   transform: scale(0.98);
 }
 
+.menu-button {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+.menu-button:hover {
+  background-color: var(--bg-hover);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+
+.menu-button:active {
+  transform: scale(0.98);
+}
+
 .tab-server-badge {
   font-size: 10px;
   background-color: var(--bg-elevated);
@@ -2267,4 +2294,79 @@ html[data-theme="dark"] .loading-overlay {
 
 tr:hover .row-number-cell {
   background-color: var(--bg-hover);
+}
+/* Schema Dialog */
+.schema-dialog-content {
+  max-width: 800px;
+}
+
+.schema-body {
+  padding: 0;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.schema-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.schema-table th,
+.schema-table td {
+  padding: var(--space-3) var(--space-6);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.schema-table th {
+  background-color: var(--bg-elevated);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.schema-table tr:last-child td {
+  border-bottom: none;
+}
+
+.schema-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.4;
+}
+
+.schema-badge.pk {
+  background-color: rgba(37, 99, 235, 0.1);
+  color: var(--color-primary);
+  border: 1px solid rgba(37, 99, 235, 0.2);
+}
+
+.schema-badge.fk {
+  background-color: rgba(16, 185, 129, 0.1);
+  color: var(--color-success);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.schema-badge.unique {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #d97706; /* Amber-600 */
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+[data-theme="dark"] .schema-badge.unique {
+  color: #fbbf24; /* Amber-400 */
+}
+
+.fk-ref {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  margin-left: 4px;
 }

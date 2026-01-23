@@ -86,6 +86,24 @@
       </div>
     </div>
 
+    <!-- Schema Dialog -->
+    <div class="connection-dialog-overlay" id="schemaDialog" style="display: none;">
+      <div class="connection-dialog schema-dialog-content">
+        <div class="connection-dialog-header">
+          <h2>Table Schema</h2>
+          <button class="close-dialog-button" id="closeSchemaDialog">×</button>
+        </div>
+        <div class="connection-dialog-body schema-body">
+          <div class="schema-table-container" id="schemaTableContainer">
+            <!-- Schema table rendered here -->
+          </div>
+        </div>
+        <div class="connection-dialog-footer">
+          <button class="button-primary" id="closeSchemaButton">Close</button>
+        </div>
+      </div>
+    </div>
+
     <div class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="sidebar-header-top">
