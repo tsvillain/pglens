@@ -54,8 +54,6 @@ pglens url
 
 ### Connect to a Database
 
-### Connect to a Database
-
 1. Open `http://localhost:54321` to see the **All Connections** landing page.
 2. Click the **Add Connection** card or the **+** icon in the grid.
 3. Enter your connection details using one of the tabs:
@@ -93,10 +91,42 @@ git clone https://github.com/tsvillain/pglens.git
 cd pglens
 
 # Install dependencies
+# Install dependencies
 npm install
+```
 
-# Run locally (starts server in foreground for logs)
+### Run Desktop App
+
+To run the application as a standalone desktop app during development:
+
+```bash
+npm run electron:start
+```
+
+### Build Desktop App
+
+To build the desktop application for your current platform:
+
+```bash
+npm run dist
+```
+
+To build for specific platforms (requires supported environment):
+
+```bash
+npm run dist:mac    # Build for macOS
+npm run dist:win    # Build for Windows
+npm run dist:linux  # Build for Linux
+```
+
+### Run Server Locally
+
+To run the server locally in foreground:
+
+```bash
 node bin/pglens serve
+```
+
 ```
 
 ## Contributing

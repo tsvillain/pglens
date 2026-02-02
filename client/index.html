@@ -86,6 +86,42 @@
       </div>
     </div>
 
+    <!-- Schema Dialog -->
+    <div class="connection-dialog-overlay" id="schemaDialog" style="display: none;">
+      <div class="connection-dialog schema-dialog-content">
+        <div class="connection-dialog-header">
+          <h2>Table Schema</h2>
+          <button class="close-dialog-button" id="closeSchemaDialog">×</button>
+        </div>
+        <div class="connection-dialog-body schema-body">
+          <div class="schema-table-container" id="schemaTableContainer">
+            <!-- Schema table rendered here -->
+          </div>
+        </div>
+        <div class="connection-dialog-footer">
+          <button class="button-primary" id="closeSchemaButton">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Spotlight Search Dialog -->
+    <div class="spotlight-overlay" id="spotlightOverlay" style="display: none;">
+      <div class="spotlight-modal">
+        <div class="spotlight-search-container">
+          <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="spotlightInput" placeholder="Search tables..." autocomplete="off">
+          <div class="spotlight-shortcut-hint">Cmd + K</div>
+        </div>
+        <div class="spotlight-results" id="spotlightResults">
+          <!-- Results will be rendered here -->
+        </div>
+      </div>
+    </div>
+
     <div class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="sidebar-header-top">
@@ -118,7 +154,7 @@
             <h3>Tables <span class="table-count" id="tableCount">0</span></h3>
           </div>
           <div class="sidebar-search-container">
-            <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="Search tables..." />
+            <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="Search tables (Cmd+K)..." />
             <div class="theme-selector">
               <button class="theme-button" id="themeButton" title="Theme">
                 <span class="theme-icon">🌓</span>

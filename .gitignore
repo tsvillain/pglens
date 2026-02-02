@@ -6,3 +6,6 @@ client/build/
 .DS_Store
 *.log
 
+# Electron build output
+dist/
+

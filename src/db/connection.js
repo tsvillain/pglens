@@ -8,6 +8,13 @@
 
 const postgres = require('postgres');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// Persistence file path: ~/.pglens/connections.json
+const PGLENS_DIR = path.join(os.homedir(), '.pglens');
+const CONNECTIONS_FILE = path.join(PGLENS_DIR, 'connections.json');
 
 // Map to store multiple connections: id -> { pool, name, connectionString }
 const connections = new Map();
@@ -55,7 +62,7 @@ function createPool(connectionString, sslMode = 'prefer', customName = null) {
     max: 10,
     idle_timeout: 30,
     connect_timeout: 10,
-    timeout: 30, // Query timeout in seconds
+    timeout: 30,
   };
 
   if (sslConfig !== null) {
@@ -69,14 +76,11 @@ function createPool(connectionString, sslMode = 'prefer', customName = null) {
     .then(() => {
       console.log('✓ Connected to PostgreSQL database');
 
-      // Check if this connection string already exists
       for (const [existingId, existingConn] of connections.entries()) {
         if (existingConn.connectionString === connectionString) {
-          // If a custom name is provided and different from existing, update it
           if (customName && customName !== existingConn.name) {
             existingConn.name = customName;
           }
-          // Return the existing connection details
           sql.end();
           return { id: existingId, name: existingConn.name, reused: true };
         }
@@ -91,6 +95,8 @@ function createPool(connectionString, sslMode = 'prefer', customName = null) {
         connectionString,
         sslMode
       });
+
+      saveConnectionsToFile();
 
       return { id, name };
     })
@@ -270,7 +276,7 @@ async function updateConnection(id, connectionString, sslMode, name) {
     max: 10,
     idle_timeout: 30,
     connect_timeout: 10,
-    timeout: 30, // Query timeout in seconds
+    timeout: 30,
   };
 
   if (sslConfig !== null) {
@@ -279,21 +285,20 @@ async function updateConnection(id, connectionString, sslMode, name) {
 
   const sql = postgres(connectionString, poolConfig);
 
-  // Test the new connection
   return sql`SELECT NOW()`
     .then(async () => {
       console.log('✓ Updated connection to PostgreSQL database');
 
-      // Close old pool
       await existingConn.pool.end();
 
-      // Update map with new pool and details
       connections.set(id, {
         pool: sql,
         name: name || getDatabaseName(connectionString),
         connectionString,
         sslMode
       });
+
+      saveConnectionsToFile();
 
       return { id, name: connections.get(id).name };
     })
@@ -314,9 +319,9 @@ async function closePool(connectionId) {
     if (conn) {
       await conn.pool.end();
       connections.delete(connectionId);
+      saveConnectionsToFile();
     }
   } else {
-    // Close all connections (e.g., on server shutdown)
     const promises = [];
     for (const conn of connections.values()) {
       promises.push(conn.pool.end());
@@ -326,11 +331,100 @@ async function closePool(connectionId) {
   }
 }
 
+/**
+ * Save connections metadata to file for persistence.
+ * Only saves metadata (id, name, connectionString, sslMode), not pool objects.
+ */
+function saveConnectionsToFile() {
+  try {
+    if (!fs.existsSync(PGLENS_DIR)) {
+      fs.mkdirSync(PGLENS_DIR, { recursive: true });
+    }
+
+    const connectionsData = [];
+    for (const [id, conn] of connections.entries()) {
+      connectionsData.push({
+        id,
+        name: conn.name,
+        connectionString: conn.connectionString,
+        sslMode: conn.sslMode
+      });
+    }
+
+    fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(connectionsData, null, 2));
+  } catch (err) {
+    console.error('Failed to save connections to file:', err.message);
+  }
+}
+
+/**
+ * Load connections metadata from file.
+ * @returns {Array} Array of saved connection configs
+ */
+function loadConnectionsFromFile() {
+  try {
+    if (fs.existsSync(CONNECTIONS_FILE)) {
+      const data = fs.readFileSync(CONNECTIONS_FILE, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('Failed to load connections from file:', err.message);
+  }
+  return [];
+}
+
+/**
+ * Restore connections from file on server startup.
+ * Re-creates connection pools for all saved connections.
+ * @returns {Promise<void>}
+ */
+async function restoreConnections() {
+  const savedConnections = loadConnectionsFromFile();
+
+  if (savedConnections.length === 0) {
+    return;
+  }
+
+  console.log(`Restoring ${savedConnections.length} saved connection(s)...`);
+
+  for (const connConfig of savedConnections) {
+    try {
+      const sslConfig = getSslConfig(connConfig.sslMode);
+      const poolConfig = {
+        max: 10,
+        idle_timeout: 30,
+        connect_timeout: 10,
+        timeout: 30,
+      };
+
+      if (sslConfig !== null) {
+        poolConfig.ssl = sslConfig;
+      }
+
+      const sql = postgres(connConfig.connectionString, poolConfig);
+
+      await sql`SELECT NOW()`;
+
+      connections.set(connConfig.id, {
+        pool: sql,
+        name: connConfig.name,
+        connectionString: connConfig.connectionString,
+        sslMode: connConfig.sslMode
+      });
+
+      console.log(`✓ Restored connection: ${connConfig.name}`);
+    } catch (err) {
+      console.error(`✗ Failed to restore connection "${connConfig.name}": ${err.message}`);
+    }
+  }
+}
+
 module.exports = {
   createPool,
   getPool,
   closePool,
   checkConnection,
   getConnections,
-  updateConnection
+  updateConnection,
+  restoreConnections
 };
