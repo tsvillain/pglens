@@ -21,7 +21,11 @@
     "viewer",
     "cli"
   ],
-  "author": "Tekeshwar Singh (https://github.com/tsvillain)",
+  "author": {
+    "name": "Tekeshwar Singh",
+    "email": "tekeshwarsingh2000@gmail.com",
+    "url": "https://github.com/tsvillain"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/tsvillain/pglens.git"
