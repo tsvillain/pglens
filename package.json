@@ -1,6 +1,6 @@
 {
   "name": "pglens",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "A simple PostgreSQL database viewer tool",
   "main": "electron/main.js",
   "bin": {

@@ -5,9 +5,13 @@ A simple PostgreSQL database viewer tool. Perfect to quickly view and explore yo
 ## Features
 
 - 🔌 **Connection Manager**: Manage multiple database connections from a single UI
+- 💾 **Connection Persistence**: Saved connections are restored when you reopen the app
 - 🚀 **Background Service**: Runs as a daemon process for persistent access
 - 🗂️ **Table Browser**: View all tables in your database in a clean, searchable sidebar
+- 🔎 **Spotlight Search**: Quick table search with `Cmd+K` / `Ctrl+K` for fast navigation
 - 📊 **Data Viewer**: Browse table rows with a modern, easy-to-read interface
+- 🔢 **Row Numbers**: Row numbers displayed for easier navigation and reference
+- 📋 **Table Schema**: View table structure and column definitions directly from the UI
 - 📝 **Cell Content Viewer**: Double-click any cell to view full content in a popup
 - 🎨 **JSON/JSONB Formatting**: Auto-formats JSON data with syntax highlighting
 - 🕒 **Timezone Support**: View timestamps in local, UTC, or other timezones
@@ -21,6 +25,7 @@ A simple PostgreSQL database viewer tool. Perfect to quickly view and explore yo
 - 🎨 **Theme Support**: Choose between light, dark, or system theme
 - ⚡ **Optimized Performance**: Uses cursor-based pagination for efficient large table navigation
 - 🔒 **SSL Support**: Configurable SSL modes (Disable, Require, Prefer, Verify CA/Full)
+- 🔄 **Auto-Updates**: Desktop app automatically checks for and installs updates
 - 🚀 **Easy Setup**: Install globally and run with a single command
 
 ## Installation
@@ -75,7 +80,7 @@ pglens stop
 
 1. **Start**: Run `pglens start` to launch the background service
 2. **Connect**: Add one or more database connections via the Web UI
-3. **Explore**: 
+3. **Explore**:
    - Use the sidebar to browse tables across different connections
    - Double-click cells to view detailed content
    - Use the "Columns" menu to toggle visibility
@@ -125,8 +130,6 @@ To run the server locally in foreground:
 
 ```bash
 node bin/pglens serve
-```
-
 ```
 
 ## Contributing
