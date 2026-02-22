@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { getPool, createPool, closePool, checkConnection, getConnections, updateConnection } = require('../db/connection');
+const { getPool, createPool, closePool, checkConnection, getConnections, updateConnection, getConnectionString } = require('../db/connection');
 
 const router = express.Router();
 
@@ -22,9 +22,9 @@ const router = express.Router();
  * Middleware to check if connected to database
  */
 const requireConnection = async (req, res, next) => {
-  const connectionId = req.headers['x-connection-id'];
+  const connectionId = req.headers['x-connection-id'] || req.query.connectionId;
   if (!connectionId) {
-    return res.status(400).json({ error: 'Connection ID header required' });
+    return res.status(400).json({ error: 'Connection ID required' });
   }
 
   const pool = getPool(connectionId);
@@ -473,6 +473,155 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
   } catch (error) {
     console.error('Error fetching table data:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/export
+ * Exports the database to a downloadable .sql file
+ */
+router.get('/export', requireConnection, async (req, res) => {
+  try {
+    const pool = req.pool;
+
+    // Set headers for file download
+    res.setHeader('Content-Type', 'application/sql');
+    res.setHeader('Content-Disposition', 'attachment; filename="database_backup.sql"');
+
+    res.write('-- pglens Database logical dump\n\n');
+
+    // 1. Fetch all public tables
+    const tablesResult = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' 
+      AND table_type = 'BASE TABLE'
+    `);
+    const tables = tablesResult.rows.map(row => row.table_name);
+
+    for (const tableName of tables) {
+      res.write(`--\n-- Table structure for table "${tableName}"\n--\n\n`);
+
+      // 2. Fetch columns for the table
+      const columnsResult = await pool.query(`
+        SELECT column_name, data_type, udt_name, character_maximum_length, column_default, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        AND table_name = $1
+        ORDER BY ordinal_position
+      `, [tableName]);
+
+      let createTableSql = `DROP TABLE IF EXISTS "${tableName}" CASCADE;\n`;
+      createTableSql += `CREATE TABLE "${tableName}" (\n`;
+      const columnDefs = columnsResult.rows.map(col => {
+        let actualDataType = col.data_type;
+        if (col.data_type === 'USER-DEFINED') {
+          actualDataType = col.udt_name;
+        } else if (col.data_type === 'ARRAY') {
+          // udt_name for arrays typically starts with an underscore, e.g., '_text' -> 'text[]'
+          actualDataType = col.udt_name.startsWith('_') ? col.udt_name.substring(1) + '[]' : col.udt_name + '[]';
+        }
+
+        let isSerial = col.column_default && typeof col.column_default === 'string' && col.column_default.startsWith("nextval(");
+        if (isSerial) {
+          if (actualDataType === 'bigint') actualDataType = 'BIGSERIAL';
+          else actualDataType = 'SERIAL';
+        }
+
+        let def = `  "${col.column_name}" ${actualDataType}`;
+        if (!isSerial && col.character_maximum_length && col.data_type !== 'USER-DEFINED' && col.data_type !== 'ARRAY') {
+          def += `(${col.character_maximum_length})`;
+        }
+        if (col.is_nullable === 'NO') {
+          def += ' NOT NULL';
+        }
+        if (!isSerial && col.column_default !== null) {
+          def += ` DEFAULT ${col.column_default}`;
+        }
+        return def;
+      });
+      createTableSql += columnDefs.join(',\n') + '\n);\n\n';
+      res.write(createTableSql);
+
+      res.write(`--\n-- Data for table "${tableName}"\n--\n\n`);
+
+      // 3. Fetch rows for the table
+      const rowsResult = await pool.query(`SELECT * FROM "${tableName}"`);
+      if (rowsResult.rows.length > 0) {
+        for (const row of rowsResult.rows) {
+          const keys = Object.keys(row).map(k => `"${k}"`).join(', ');
+          const values = Object.values(row).map(val => {
+            if (val === null) return 'NULL';
+            if (typeof val === 'number' || typeof val === 'boolean') return val;
+            if (val instanceof Date) return `'${val.toISOString()}'`;
+            if (Array.isArray(val)) {
+              // Format javascript arrays to postgres array literal '{...}'
+              const arrayLiteral = val.map(v => {
+                if (v === null) return 'NULL';
+                if (typeof v === 'string') return `"${v.replace(/"/g, '""')}"`;
+                return v;
+              }).join(',');
+              return `'{${arrayLiteral}}'`;
+            }
+            if (typeof val === 'object') return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
+            // Escape single quotes for string values
+            return `'${String(val).replace(/'/g, "''")}'`;
+          }).join(', ');
+
+          res.write(`INSERT INTO "${tableName}" (${keys}) VALUES (${values});\n`);
+        }
+      }
+      res.write('\n');
+    }
+
+    res.write('-- Dump completed\n');
+    res.end();
+  } catch (error) {
+    console.error('Export error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to export database', details: error.message });
+    } else {
+      res.end(); // Close stream on error if headers already sent
+    }
+  }
+});
+
+/**
+ * POST /api/import
+ * Imports a .sql file into the database
+ */
+router.post('/import', requireConnection, async (req, res) => {
+  try {
+    const pool = req.pool;
+
+    let sqlString = '';
+    req.on('data', chunk => {
+      sqlString += chunk.toString();
+    });
+
+    req.on('end', async () => {
+      try {
+        if (!sqlString.trim()) {
+          return res.status(400).json({ error: 'SQL file is empty.' });
+        }
+
+        // Execute raw SQL script
+        await pool.query(sqlString);
+        res.json({ success: true, message: 'Database imported successfully.' });
+      } catch (err) {
+        console.error('Import execution error:', err);
+        res.status(500).json({ error: 'Import failed during execution', details: err.message });
+      }
+    });
+
+    req.on('error', (err) => {
+      console.error('Request stream error:', err);
+      res.status(500).json({ error: 'Error reading upload stream', details: err.message });
+    });
+
+  } catch (error) {
+    console.error('Import setup error:', error);
+    res.status(500).json({ error: 'Failed to initiate import', details: error.message });
   }
 });
 

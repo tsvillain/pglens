@@ -419,6 +419,16 @@ async function restoreConnections() {
   }
 }
 
+/**
+ * Get the connection string for a given connection ID.
+ * @param {string} connectionId 
+ * @returns {string|null} Connection string or null if not found
+ */
+function getConnectionString(connectionId) {
+  const conn = connections.get(connectionId);
+  return conn ? conn.connectionString : null;
+}
+
 module.exports = {
   createPool,
   getPool,
@@ -426,5 +436,6 @@ module.exports = {
   checkConnection,
   getConnections,
   updateConnection,
-  restoreConnections
+  restoreConnections,
+  getConnectionString
 };
