@@ -25,8 +25,7 @@ A simple PostgreSQL database viewer tool. Perfect to quickly view and explore yo
 - 🎨 **Theme Support**: Choose between light, dark, or system theme
 - ⚡ **Optimized Performance**: Uses cursor-based pagination for efficient large table navigation
 - 🔒 **SSL Support**: Configurable SSL modes (Disable, Require, Prefer, Verify CA/Full)
-- 🔄 **Auto-Updates**: Desktop app automatically checks for and installs updates
-- 🚀 **Easy Setup**: Install globally and run with a single command
+- **Easy Setup**: Install globally and run with a single command
 
 ## Installation
 
@@ -96,32 +95,7 @@ git clone https://github.com/tsvillain/pglens.git
 cd pglens
 
 # Install dependencies
-# Install dependencies
 npm install
-```
-
-### Run Desktop App
-
-To run the application as a standalone desktop app during development:
-
-```bash
-npm run electron:start
-```
-
-### Build Desktop App
-
-To build the desktop application for your current platform:
-
-```bash
-npm run dist
-```
-
-To build for specific platforms (requires supported environment):
-
-```bash
-npm run dist:mac    # Build for macOS
-npm run dist:win    # Build for Windows
-npm run dist:linux  # Build for Linux
 ```
 
 ### Run Server Locally
