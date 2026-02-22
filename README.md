@@ -29,6 +29,24 @@ A simple PostgreSQL database viewer tool. Perfect to quickly view and explore yo
 
 ## Installation
 
+The easiest way to install pglens globally is using our installation scripts:
+
+**macOS and Linux:**
+
+```bash
+curl -fsSL https://pglens.org/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+iwr https://pglens.org/install.ps1 -useb | iex
+```
+
+### Alternative: Install via npm
+
+If you already have Node.js installed, you can use npm:
+
 ```bash
 npm install -g pglens
 ```
