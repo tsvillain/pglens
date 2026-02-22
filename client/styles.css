@@ -73,7 +73,9 @@
 .connection-dialog {
   background-color: var(--bg-base);
   border-radius: var(--radius-lg);
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  box-shadow:
+    0 20px 25px -5px rgba(0, 0, 0, 0.1),
+    0 10px 10px -5px rgba(0, 0, 0, 0.04);
   width: 100%;
   max-width: 480px;
   border: 1px solid var(--border-subtle);
@@ -128,6 +130,62 @@
 
 .connection-dialog-body {
   padding: var(--space-6);
+}
+
+.connection-dialog-body p {
+  margin-top: 0;
+  margin-bottom: var(--space-3);
+  line-height: 1.5;
+}
+
+.connection-dialog-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* Custom File Upload */
+.form-group .custom-file-upload {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  border: 2px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background-color: var(--bg-base);
+  transition: all var(--transition-fast);
+  color: var(--text-secondary);
+}
+
+.form-group .custom-file-upload:hover,
+.form-group .custom-file-upload.dragover {
+  border-color: var(--color-primary);
+  background-color: rgba(37, 99, 235, 0.05);
+  color: var(--text-primary);
+}
+
+.form-group .custom-file-upload input[type="file"] {
+  display: none;
+}
+
+.file-upload-icon {
+  margin-bottom: var(--space-3);
+  color: var(--text-secondary);
+}
+
+.custom-file-upload:hover .file-upload-icon,
+.custom-file-upload.dragover .file-upload-icon {
+  color: var(--color-primary);
+}
+
+.file-upload-text {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  text-align: center;
+}
+
+.file-upload-text.has-file {
+  color: var(--text-primary);
 }
 
 .form-group {
@@ -224,6 +282,7 @@
   border-top: 1px solid var(--border-subtle);
   display: flex;
   justify-content: flex-end;
+  gap: var(--space-3);
 }
 
 .error-message {
@@ -254,6 +313,28 @@
 
 .button-primary:disabled {
   opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.button-secondary {
+  background-color: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-size: var(--font-size-base);
+}
+
+.button-secondary:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.button-secondary:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
@@ -291,7 +372,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background-color var(--transition-fast), color var(--transition-fast);
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
   width: 28px;
   height: 28px;
 }
@@ -341,7 +424,8 @@ html[data-theme="dark"] {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Roboto",
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Roboto",
     "Helvetica Neue", Arial, sans-serif;
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-normal);
@@ -350,13 +434,15 @@ body {
   background-color: var(--bg-elevated);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color var(--transition-base),
+  transition:
+    background-color var(--transition-base),
     color var(--transition-base);
 }
 
 code {
-  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
-    "Courier New", monospace;
+  font-family:
+    "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New",
+    monospace;
 }
 
 .app {
@@ -653,6 +739,61 @@ code {
 
 [data-theme="dark"] .connection-action-btn:hover {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Database Actions Section */
+.db-actions-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.db-actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0;
+  margin: 0;
+}
+
+.action-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  justify-content: flex-start;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.action-btn:hover {
+  background-color: var(--bg-hover);
+}
+
+.warning-text {
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+  margin-top: var(--space-2);
+}
+
+.success-message {
+  background-color: rgba(16, 185, 129, 0.1);
+  color: var(--color-success);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  margin-top: var(--space-4);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.mt-2 {
+  margin-top: var(--space-2);
 }
 
 /* Tables Section */
@@ -1606,8 +1747,9 @@ tr:hover {
 .json-value {
   margin: 0;
   padding: 0;
-  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
-    "Courier New", monospace;
+  font-family:
+    "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New",
+    monospace;
   font-size: var(--font-size-xs);
   line-height: 1.4;
   color: var(--text-primary);
@@ -1768,8 +1910,9 @@ tr:hover {
 }
 
 .cell-popup-content {
-  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
-    "Courier New", monospace;
+  font-family:
+    "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New",
+    monospace;
   font-size: var(--font-size-sm);
   line-height: 1.6;
   color: var(--text-primary);
@@ -1791,8 +1934,9 @@ tr:hover {
 }
 
 .cell-popup-content.datetime-value-popup {
-  font-family: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
-    "Courier New", monospace;
+  font-family:
+    "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New",
+    monospace;
   line-height: 1.8;
   white-space: pre-wrap;
 }
@@ -2152,10 +2296,12 @@ html[data-theme="dark"] .loading-overlay {
 
 /* Shimmer Loading */
 .skeleton {
-  background: linear-gradient(90deg,
-      var(--bg-elevated) 25%,
-      var(--bg-hover) 37%,
-      var(--bg-elevated) 63%);
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 25%,
+    var(--bg-hover) 37%,
+    var(--bg-elevated) 63%
+  );
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
   border-radius: var(--radius-sm);
@@ -2309,10 +2455,12 @@ html[data-theme="dark"] .loading-overlay {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-md);
-  background: linear-gradient(90deg,
-      var(--bg-hover) 25%,
-      var(--bg-active) 37%,
-      var(--bg-hover) 63%);
+  background: linear-gradient(
+    90deg,
+    var(--bg-hover) 25%,
+    var(--bg-active) 37%,
+    var(--bg-hover) 63%
+  );
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
 }
@@ -2320,10 +2468,12 @@ html[data-theme="dark"] .loading-overlay {
 .skeleton-text {
   height: 14px;
   border-radius: var(--radius-sm);
-  background: linear-gradient(90deg,
-      var(--bg-hover) 25%,
-      var(--bg-active) 37%,
-      var(--bg-hover) 63%);
+  background: linear-gradient(
+    90deg,
+    var(--bg-hover) 25%,
+    var(--bg-active) 37%,
+    var(--bg-hover) 63%
+  );
   background-size: 400% 100%;
   animation: shimmer 1.4s ease infinite;
   margin-bottom: 4px;

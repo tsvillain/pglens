@@ -122,6 +122,68 @@
       </div>
     </div>
 
+    <!-- Export Dialog -->
+    <div class="connection-dialog-overlay" id="exportDialog" style="display: none;">
+      <div class="connection-dialog">
+        <div class="connection-dialog-header">
+          <h2>Export Database Backup</h2>
+          <button class="close-dialog-button" id="closeExportDialog">×</button>
+        </div>
+        <div class="connection-dialog-body">
+          <p>Exporting will create a downloadable <code>.sql</code> file containing all your tables and data. You can
+            save this to your computer as a backup.</p>
+        </div>
+        <div class="connection-dialog-footer">
+          <button class="button-secondary" id="cancelExportBtn">Cancel</button>
+          <button class="button-primary" id="downloadBackupBtn">Download Backup</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Import Dialog -->
+    <div class="connection-dialog-overlay" id="importDialog" style="display: none;">
+      <div class="connection-dialog">
+        <div class="connection-dialog-header">
+          <h2>Import Database Backup</h2>
+          <button class="close-dialog-button" id="closeImportDialog">×</button>
+        </div>
+        <div class="connection-dialog-body">
+          <div id="importBackupPrompt" style="display: none;">
+            <p><strong>Your database currently has data.</strong></p>
+            <p>We strongly recommend downloading a backup before importing. Would you like to download a backup now?</p>
+            <div class="form-row mt-2">
+              <button class="button-secondary flex-1" id="importDownloadBackupBtn">Download Backup</button>
+              <button class="button-secondary flex-1" id="importContinueBtn">Continue without Backup</button>
+            </div>
+          </div>
+          <div id="importFilePrompt" style="display: none;">
+            <p>Select a <code>.sql</code> backup file to restore into your database.</p>
+            <p class="warning-text"><strong>Warning:</strong> This will run the SQL script against your database, which
+              may modify or replace existing data.</p>
+            <div class="form-group mt-2">
+              <label class="custom-file-upload" id="importFileLabel">
+                <input type="file" id="importFileInput" accept=".sql" />
+                <svg class="file-upload-icon" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                  <line x1="12" y1="18" x2="12" y2="12"></line>
+                  <polyline points="9 15 12 12 15 15"></polyline>
+                </svg>
+                <span class="file-upload-text" id="importFileText">Click to select .sql file</span>
+              </label>
+            </div>
+            <div class="error-message" id="importError" style="display: none;"></div>
+            <div class="success-message" id="importSuccess" style="display: none;"></div>
+          </div>
+        </div>
+        <div class="connection-dialog-footer" id="importDialogFooter" style="display: none;">
+          <button class="button-secondary" id="cancelImportBtn">Cancel</button>
+          <button class="button-primary" id="uploadImportBtn" disabled>Import Backup</button>
+        </div>
+      </div>
+    </div>
+
     <div class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="sidebar-header-top">
@@ -146,6 +208,33 @@
           <ul class="connections-list" id="connectionsList">
             <!-- Connections will be added here -->
           </ul>
+        </div>
+
+        <!-- Database Actions Section -->
+        <div class="db-actions-section" id="dbActionsSection" style="display: none;">
+          <div class="section-header">
+            <h3>Database Actions</h3>
+          </div>
+          <div class="db-actions-list">
+            <button class="button-secondary action-btn" id="exportDbBtn">
+              <svg class="action-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span>Export Backup</span>
+            </button>
+            <button class="button-secondary action-btn" id="importDbBtn">
+              <svg class="action-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              <span>Import Backup</span>
+            </button>
+          </div>
         </div>
 
         <!-- Tables Section -->

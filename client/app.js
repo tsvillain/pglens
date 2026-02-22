@@ -73,6 +73,33 @@ const closeSchemaDialogBtn = document.getElementById('closeSchemaDialog');
 const closeSchemaButton = document.getElementById('closeSchemaButton');
 const schemaTableContainer = document.getElementById('schemaTableContainer');
 
+// Database Actions UI Elements
+const dbActionsSection = document.getElementById('dbActionsSection');
+const exportDbBtn = document.getElementById('exportDbBtn');
+const importDbBtn = document.getElementById('importDbBtn');
+
+// Export Dialog UI Elements
+const exportDialog = document.getElementById('exportDialog');
+const closeExportDialogBtn = document.getElementById('closeExportDialog');
+const cancelExportBtn = document.getElementById('cancelExportBtn');
+const downloadBackupBtn = document.getElementById('downloadBackupBtn');
+
+// Import Dialog UI Elements
+const importDialog = document.getElementById('importDialog');
+const closeImportDialogBtn = document.getElementById('closeImportDialog');
+const cancelImportBtn = document.getElementById('cancelImportBtn');
+const uploadImportBtn = document.getElementById('uploadImportBtn');
+const importBackupPrompt = document.getElementById('importBackupPrompt');
+const importFilePrompt = document.getElementById('importFilePrompt');
+const importDownloadBackupBtn = document.getElementById('importDownloadBackupBtn');
+const importContinueBtn = document.getElementById('importContinueBtn');
+const importFileInput = document.getElementById('importFileInput');
+const importFileText = document.getElementById('importFileText');
+const importFileLabel = document.getElementById('importFileLabel');
+const importDialogFooter = document.getElementById('importDialogFooter');
+const importError = document.getElementById('importError');
+const importSuccess = document.getElementById('importSuccess');
+
 /**
  * Initialize the application when DOM is ready.
  * Sets up event listeners and loads initial data.
@@ -235,6 +262,89 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  // Database Actions Listeners
+  if (exportDbBtn) {
+    exportDbBtn.addEventListener('click', showExportDialog);
+  }
+  if (closeExportDialogBtn) {
+    closeExportDialogBtn.addEventListener('click', hideExportDialog);
+  }
+  if (cancelExportBtn) {
+    cancelExportBtn.addEventListener('click', hideExportDialog);
+  }
+  if (downloadBackupBtn) {
+    downloadBackupBtn.addEventListener('click', handleExportDatabase);
+  }
+  if (exportDialog) {
+    exportDialog.addEventListener('click', (e) => {
+      if (e.target === exportDialog) hideExportDialog();
+    });
+  }
+
+  if (importDbBtn) {
+    importDbBtn.addEventListener('click', showImportDialog);
+  }
+  if (closeImportDialogBtn) {
+    closeImportDialogBtn.addEventListener('click', hideImportDialog);
+  }
+  if (cancelImportBtn) {
+    cancelImportBtn.addEventListener('click', hideImportDialog);
+  }
+  if (importDialog) {
+    importDialog.addEventListener('click', (e) => {
+      if (e.target === importDialog) hideImportDialog();
+    });
+  }
+  if (importDownloadBackupBtn) {
+    importDownloadBackupBtn.addEventListener('click', () => {
+      handleExportDatabase();
+      showImportFilePrompt(); // Move to next step after initiating download
+    });
+  }
+  if (importContinueBtn) {
+    importContinueBtn.addEventListener('click', showImportFilePrompt);
+  }
+  if (importFileInput) {
+    importFileInput.addEventListener('change', () => {
+      if (importFileInput.files.length > 0) {
+        uploadImportBtn.disabled = false;
+        if (importFileText) {
+          importFileText.textContent = importFileInput.files[0].name;
+          importFileText.classList.add('has-file');
+        }
+      } else {
+        uploadImportBtn.disabled = true;
+        if (importFileText) {
+          importFileText.textContent = 'Click to select .sql file';
+          importFileText.classList.remove('has-file');
+        }
+      }
+    });
+
+    if (importFileLabel) {
+      importFileLabel.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        importFileLabel.classList.add('dragover');
+      });
+      importFileLabel.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        importFileLabel.classList.remove('dragover');
+      });
+      importFileLabel.addEventListener('drop', (e) => {
+        e.preventDefault();
+        importFileLabel.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) {
+          importFileInput.files = e.dataTransfer.files;
+          const event = new Event('change');
+          importFileInput.dispatchEvent(event);
+        }
+      });
+    }
+  }
+  if (uploadImportBtn) {
+    uploadImportBtn.addEventListener('click', handleImportDatabase);
+  }
 });
 
 /**
@@ -330,12 +440,16 @@ function updateSidebarVisibility() {
   if (connections.length === 0) {
     if (connectionsSection) connectionsSection.style.display = 'none';
     if (tablesSection) tablesSection.style.display = 'none';
+    if (dbActionsSection) dbActionsSection.style.display = 'none';
   } else {
     if (connectionsSection) connectionsSection.style.display = 'flex';
 
-    // Only show tables section if we have an active connection selected
+    // Only show tables section and db actions if we have an active connection selected
     if (tablesSection) {
       tablesSection.style.display = activeConnectionId ? 'flex' : 'none';
+    }
+    if (dbActionsSection) {
+      dbActionsSection.style.display = activeConnectionId ? 'flex' : 'none';
     }
   }
 }
@@ -2772,3 +2886,135 @@ function openSpotlightTable(tableName) {
   toggleSpotlight(false);
   handleTableSelect(tableName);
 }
+
+// ==== Database Actions Functions ==== //
+
+function showExportDialog() {
+  if (!activeConnectionId) return;
+  exportDialog.style.display = 'flex';
+}
+
+function hideExportDialog() {
+  exportDialog.style.display = 'none';
+}
+
+function handleExportDatabase() {
+  if (!activeConnectionId) return;
+  const url = `/api/export?connectionId=${encodeURIComponent(activeConnectionId)}`;
+
+  // Create a temporary link to trigger download
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'database_backup.sql';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  hideExportDialog();
+}
+
+function showImportDialog() {
+  if (!activeConnectionId) return;
+  importDialog.style.display = 'flex';
+
+  // Reset state
+  if (cancelImportBtn) {
+    cancelImportBtn.disabled = false;
+    cancelImportBtn.textContent = 'Cancel';
+  }
+  if (closeImportDialogBtn) closeImportDialogBtn.disabled = false;
+  uploadImportBtn.textContent = 'Import Backup';
+  importFileInput.value = '';
+  if (importFileText) {
+    importFileText.textContent = 'Click to select .sql file';
+    importFileText.classList.remove('has-file');
+  }
+  importError.style.display = 'none';
+  importSuccess.style.display = 'none';
+  uploadImportBtn.disabled = true;
+
+  if (allTables && allTables.length > 0) {
+    // Database has data, show backup prompt
+    importBackupPrompt.style.display = 'block';
+    importFilePrompt.style.display = 'none';
+    importDialogFooter.style.display = 'none';
+  } else {
+    showImportFilePrompt();
+  }
+}
+
+function showImportFilePrompt() {
+  importBackupPrompt.style.display = 'none';
+  importFilePrompt.style.display = 'block';
+  importDialogFooter.style.display = 'flex';
+}
+
+function hideImportDialog() {
+  if (cancelImportBtn && cancelImportBtn.disabled) return;
+  importDialog.style.display = 'none';
+}
+
+async function handleImportDatabase() {
+  if (!activeConnectionId) return;
+  const file = importFileInput.files[0];
+  if (!file) {
+    importError.textContent = 'Please select a file to import.';
+    importError.style.display = 'block';
+    return;
+  }
+
+  setConnectingState(true);
+  importError.style.display = 'none';
+  importSuccess.style.display = 'none';
+
+  uploadImportBtn.disabled = true;
+  uploadImportBtn.textContent = 'Importing...';
+  if (cancelImportBtn) cancelImportBtn.disabled = true;
+  if (closeImportDialogBtn) closeImportDialogBtn.disabled = true;
+
+  try {
+    const response = await fetch('/api/import', {
+      method: 'POST',
+      headers: {
+        'x-connection-id': activeConnectionId
+      },
+      body: file
+    });
+
+    const data = await response.json();
+
+    if (response.ok) {
+      importSuccess.textContent = data.message || 'Database imported successfully.';
+      importSuccess.style.display = 'block';
+      uploadImportBtn.textContent = 'Imported';
+      if (cancelImportBtn) {
+        cancelImportBtn.disabled = false;
+        cancelImportBtn.textContent = 'Close';
+      }
+      if (closeImportDialogBtn) closeImportDialogBtn.disabled = false;
+
+      // Refresh tables list to show newly imported tables
+      loadTables();
+    } else {
+      importError.textContent = data.error || 'Failed to import database.';
+      if (data.details) {
+        importError.textContent += `\nDetails: ${data.details}`;
+      }
+      importError.style.display = 'block';
+      uploadImportBtn.disabled = false;
+      uploadImportBtn.textContent = 'Import Backup';
+      if (cancelImportBtn) cancelImportBtn.disabled = false;
+      if (closeImportDialogBtn) closeImportDialogBtn.disabled = false;
+    }
+  } catch (error) {
+    importError.textContent = error.message;
+    importError.style.display = 'block';
+    uploadImportBtn.disabled = false;
+    uploadImportBtn.textContent = 'Import Backup';
+    if (cancelImportBtn) cancelImportBtn.disabled = false;
+    if (closeImportDialogBtn) closeImportDialogBtn.disabled = false;
+  } finally {
+    setConnectingState(false);
+  }
+}
+
