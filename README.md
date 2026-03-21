@@ -7,7 +7,8 @@ A simple PostgreSQL database viewer tool. Perfect to quickly view and explore yo
 - 🔌 **Connection Manager**: Manage multiple database connections from a single UI
 - 💾 **Connection Persistence**: Saved connections are restored when you reopen the app
 - 🚀 **Background Service**: Runs as a daemon process for persistent access
-- 🗂️ **Table Browser**: View all tables in your database in a clean, searchable sidebar
+- 🗂️ **Table & View Browser**: View all tables and views in your database in a clean, searchable sidebar
+- 🗃️ **Schema Selection**: Browse any schema in your database, not just `public`
 - 🔎 **Spotlight Search**: Quick table search with `Cmd+K` / `Ctrl+K` for fast navigation
 - 📊 **Data Viewer**: Browse table rows with a modern, easy-to-read interface
 - 🔢 **Row Numbers**: Row numbers displayed for easier navigation and reference
@@ -66,7 +67,8 @@ pglens url
    - **Connection URL**: Paste a standard PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/db`).
 4. Select the **SSL Mode** appropriate for your server.
 5. Click **Connect**. The server will be added to your grid.
-6. Click the server card to open the **Explorer**.
+6. To change the **Schema**, edit the connection and select from the dropdown (schemas are fetched from the database).
+7. Click the server card to open the **Explorer** — tables and views for the selected schema will be listed.
 
 ### Stop the Server
 

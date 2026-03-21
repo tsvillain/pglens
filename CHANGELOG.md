@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Schema Selection**: Browse any schema in your database, not just `public`. Schema is selectable when editing a connection and persisted per connection.
+- **Views Support**: Views are now listed alongside tables in the sidebar, dashboard, and spotlight search, distinguished with an eye icon and "view" label.
+- **Schema API**: New `GET /api/schemas` endpoint to list available schemas for a connection.
+
+### Changed
+
+- Dashboard header now shows both table and view counts (e.g. "12 tables, 3 views").
+- All SQL queries use the connection's schema instead of hardcoded `public`.
+- Connection cards show schema name when non-public.
+
 ## [2.2.0] - 2026-02-02
 
 ### Added
