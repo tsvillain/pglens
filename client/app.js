@@ -779,13 +779,10 @@ function renderTableDashboard() {
   const header = document.createElement('div');
   header.className = 'table-dashboard-header';
   const numTables = allTables.filter(t => t.type === 'table').length;
-  const viewCount = allTables.filter(t => t.type === 'view').length;
-  const countParts = [];
-  if (tableCount > 0) countParts.push(`${tableCount} table${tableCount !== 1 ? 's' : ''}`);
-  if (viewCount > 0) countParts.push(`${viewCount} view${viewCount !== 1 ? 's' : ''}`);
+  const numViews = allTables.filter(t => t.type === 'view').length;
   header.innerHTML = `
     <h2>Tables</h2>
-    <p>${countParts.join(', ')} available in this database.</p>
+    <p>${numTables} table${numTables !== 1 ? 's' : ''}, ${numViews} view${numViews !== 1 ? 's' : ''} available in this database.</p>
   `;
   dashboard.appendChild(header);
 
