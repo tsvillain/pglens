@@ -888,6 +888,8 @@ function showConnectionDialog(allowClose, editMode = false, connection = null) {
     // Populate schema dropdown and fetch available schemas
     schemaSelect.innerHTML = `<option value="${connection.schema || 'public'}">${connection.schema || 'public'}</option>`;
     schemaSelect.value = connection.schema || 'public';
+    schemaSelect.disabled = false;
+    document.getElementById('schemaHint').style.display = 'none';
     fetchSchemasForConnection(connection.id);
   } else {
     delete connectionDialog.dataset.connectionId;
@@ -896,6 +898,8 @@ function showConnectionDialog(allowClose, editMode = false, connection = null) {
     sslModeSelect.value = 'prefer';
     schemaSelect.innerHTML = '<option value="public">public</option>';
     schemaSelect.value = 'public';
+    schemaSelect.disabled = true;
+    document.getElementById('schemaHint').style.display = 'block';
 
     // Reset params
     connHost.value = 'localhost';
