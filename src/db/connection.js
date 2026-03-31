@@ -16,7 +16,7 @@ const os = require('os');
 const PGLENS_DIR = path.join(os.homedir(), '.pglens');
 const CONNECTIONS_FILE = path.join(PGLENS_DIR, 'connections.json');
 
-// Map to store multiple connections: id -> { pool, name, connectionString }
+// Map to store multiple connections: id -> { pool, name, connectionString, sslMode, schema }
 const connections = new Map();
 
 /**
@@ -54,9 +54,10 @@ function getDatabaseName(connectionString) {
  * @param {string} connectionString - PostgreSQL connection string
  * @param {string} sslMode - SSL mode: disable, require, prefer, verify-ca, verify-full
  * @param {string} [customName] - Optional custom name for the connection
+ * @param {string} [schema] - Schema to use (default: 'public')
  * @returns {Promise<{id: string, name: string}>} The created connection info
  */
-function createPool(connectionString, sslMode = 'prefer', customName = null) {
+function createPool(connectionString, sslMode = 'prefer', customName = null, schema = 'public') {
   const sslConfig = getSslConfig(sslMode);
   const poolConfig = {
     max: 10,
@@ -93,7 +94,8 @@ function createPool(connectionString, sslMode = 'prefer', customName = null) {
         pool: sql,
         name,
         connectionString,
-        sslMode
+        sslMode,
+        schema: schema || 'public'
       });
 
       saveConnectionsToFile();
@@ -251,7 +253,8 @@ function getConnections() {
       id,
       name: conn.name,
       connectionString: conn.connectionString,
-      sslMode: conn.sslMode
+      sslMode: conn.sslMode,
+      schema: conn.schema || 'public'
     });
   }
   return result;
@@ -263,9 +266,10 @@ function getConnections() {
  * @param {string} connectionString - New connection string
  * @param {string} sslMode - New SSL mode
  * @param {string} name - New name
+ * @param {string} [schema] - Schema to use (default: 'public')
  * @returns {Promise<{id: string, name: string}>} Updated connection info
  */
-async function updateConnection(id, connectionString, sslMode, name) {
+async function updateConnection(id, connectionString, sslMode, name, schema = 'public') {
   const existingConn = connections.get(id);
   if (!existingConn) {
     throw new Error('Connection not found');
@@ -295,7 +299,8 @@ async function updateConnection(id, connectionString, sslMode, name) {
         pool: sql,
         name: name || getDatabaseName(connectionString),
         connectionString,
-        sslMode
+        sslMode,
+        schema: schema || 'public'
       });
 
       saveConnectionsToFile();
@@ -347,7 +352,8 @@ function saveConnectionsToFile() {
         id,
         name: conn.name,
         connectionString: conn.connectionString,
-        sslMode: conn.sslMode
+        sslMode: conn.sslMode,
+        schema: conn.schema || 'public'
       });
     }
 
@@ -409,7 +415,8 @@ async function restoreConnections() {
         pool: sql,
         name: connConfig.name,
         connectionString: connConfig.connectionString,
-        sslMode: connConfig.sslMode
+        sslMode: connConfig.sslMode,
+        schema: connConfig.schema || 'public'
       });
 
       console.log(`✓ Restored connection: ${connConfig.name}`);
@@ -435,6 +442,7 @@ module.exports = {
   closePool,
   checkConnection,
   getConnections,
+  getConnectionSchema,
   updateConnection,
   restoreConnections,
   getConnectionString

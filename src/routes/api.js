@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { getPool, createPool, closePool, checkConnection, getConnections, updateConnection, getConnectionString } = require('../db/connection');
+const { getPool, createPool, closePool, checkConnection, getConnections, getConnectionSchema, updateConnection } = require('../db/connection');
 
 const router = express.Router();
 
@@ -33,6 +33,7 @@ const requireConnection = async (req, res, next) => {
   }
 
   req.pool = pool;
+  req.schema = getConnectionSchema(connectionId);
   next();
 };
 
@@ -41,14 +42,14 @@ const requireConnection = async (req, res, next) => {
  * Connect to a PostgreSQL database
  */
 router.post('/connect', async (req, res) => {
-  const { url, sslMode, name } = req.body;
+  const { url, sslMode, name, schema } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: 'Connection string is required' });
   }
 
   try {
-    const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name);
+    const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name, schema || 'public');
     res.json({ connected: true, connectionId: id, name: connectionName });
   } catch (error) {
     res.status(400).json({
@@ -64,14 +65,14 @@ router.post('/connect', async (req, res) => {
  */
 router.put('/connections/:id', async (req, res) => {
   const { id } = req.params;
-  const { url, sslMode, name } = req.body;
+  const { url, sslMode, name, schema } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: 'Connection string is required' });
   }
 
   try {
-    const { name: connectionName } = await updateConnection(id, url, sslMode || 'prefer', name);
+    const { name: connectionName } = await updateConnection(id, url, sslMode || 'prefer', name, schema || 'public');
     res.json({ updated: true, connectionId: id, name: connectionName });
   } catch (error) {
     res.status(400).json({
@@ -128,6 +129,27 @@ router.get('/status', async (req, res) => {
 });
 
 /**
+ * GET /api/schemas
+ * List all schemas in the connected database.
+ */
+router.get('/schemas', requireConnection, async (req, res) => {
+  try {
+    const pool = req.pool;
+    const result = await pool.query(`
+      SELECT schema_name
+      FROM information_schema.schemata
+      WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+      ORDER BY schema_name;
+    `);
+    const schemas = result.rows.map(row => row.schema_name);
+    res.json({ schemas });
+  } catch (error) {
+    console.error('Error fetching schemas:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Sanitize table name to prevent SQL injection.
  * Only allows alphanumeric characters, underscores, and dots.
  * @param {string} tableName - Table name to sanitize
@@ -152,15 +174,19 @@ function sanitizeTableName(tableName) {
 router.get('/tables', requireConnection, async (req, res) => {
   try {
     const pool = req.pool;
+    const schema = req.schema;
     const result = await pool.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
-      AND table_type = 'BASE TABLE'
+      SELECT table_name, table_type
+      FROM information_schema.tables
+      WHERE table_schema = $1
+      AND table_type IN ('BASE TABLE', 'VIEW')
       ORDER BY table_name;
-    `);
+    `, [schema]);
 
-    const tables = result.rows.map(row => row.table_name);
+    const tables = result.rows.map(row => ({
+      name: row.table_name,
+      type: row.table_type === 'VIEW' ? 'view' : 'table'
+    }));
     res.json({ tables });
   } catch (error) {
     console.error('Error fetching tables:', error);
@@ -175,7 +201,7 @@ router.get('/tables', requireConnection, async (req, res) => {
  * @param {string} tableName - Name of the table
  * @returns {Promise<string|null>} Primary key column name or null if no primary key exists
  */
-async function getPrimaryKeyColumn(pool, tableName) {
+async function getPrimaryKeyColumn(pool, tableName, schema) {
   try {
     const pkQuery = `
     SELECT kcu.column_name
@@ -185,10 +211,10 @@ async function getPrimaryKeyColumn(pool, tableName) {
       AND tc.table_schema = kcu.table_schema
     WHERE tc.constraint_type = 'PRIMARY KEY'
       AND tc.table_name = $1
-      AND tc.table_schema = 'public'
+      AND tc.table_schema = $2
     LIMIT 1;
     `;
-    const result = await pool.query(pkQuery, [tableName]);
+    const result = await pool.query(pkQuery, [tableName, schema]);
     const pkColumn = result.rows.length > 0 ? result.rows[0].column_name : null;
     return pkColumn;
   } catch (error) {
@@ -204,7 +230,7 @@ async function getPrimaryKeyColumn(pool, tableName) {
  * @param {string} tableName - Name of the table
  * @returns {Promise<Object>} Object mapping column names to their foreign key references { table, column }
  */
-async function getForeignKeyRelations(pool, tableName) {
+async function getForeignKeyRelations(pool, tableName, schema) {
   try {
     const fkQuery = `
       SELECT
@@ -220,9 +246,9 @@ async function getForeignKeyRelations(pool, tableName) {
         AND ccu.table_schema = tc.table_schema
       WHERE tc.constraint_type = 'FOREIGN KEY'
         AND tc.table_name = $1
-        AND tc.table_schema = 'public';
+        AND tc.table_schema = $2;
     `;
-    const result = await pool.query(fkQuery, [tableName]);
+    const result = await pool.query(fkQuery, [tableName, schema]);
     const foreignKeys = {};
     result.rows.forEach(row => {
       foreignKeys[row.column_name] = {
@@ -243,7 +269,7 @@ async function getForeignKeyRelations(pool, tableName) {
  * @param {string} tableName - Name of the table
  * @returns {Promise<Set>} Set of primary key column names
  */
-async function getPrimaryKeyColumns(pool, tableName) {
+async function getPrimaryKeyColumns(pool, tableName, schema) {
   try {
     const pkQuery = `
       SELECT kcu.column_name
@@ -253,9 +279,9 @@ async function getPrimaryKeyColumns(pool, tableName) {
         AND tc.table_schema = kcu.table_schema
       WHERE tc.constraint_type = 'PRIMARY KEY'
         AND tc.table_name = $1
-        AND tc.table_schema = 'public';
+        AND tc.table_schema = $2;
     `;
-    const result = await pool.query(pkQuery, [tableName]);
+    const result = await pool.query(pkQuery, [tableName, schema]);
     const pkColumns = new Set();
     result.rows.forEach(row => {
       pkColumns.add(row.column_name);
@@ -273,7 +299,7 @@ async function getPrimaryKeyColumns(pool, tableName) {
  * @param {string} tableName - Name of the table
  * @returns {Promise<Set>} Set of unique constraint column names
  */
-async function getUniqueColumns(pool, tableName) {
+async function getUniqueColumns(pool, tableName, schema) {
   try {
     const uniqueQuery = `
       SELECT kcu.column_name
@@ -283,9 +309,9 @@ async function getUniqueColumns(pool, tableName) {
         AND tc.table_schema = kcu.table_schema
       WHERE tc.constraint_type = 'UNIQUE'
         AND tc.table_name = $1
-        AND tc.table_schema = 'public';
+        AND tc.table_schema = $2;
     `;
-    const result = await pool.query(uniqueQuery, [tableName]);
+    const result = await pool.query(uniqueQuery, [tableName, schema]);
     const uniqueColumns = new Set();
     result.rows.forEach(row => {
       uniqueColumns.add(row.column_name);
@@ -305,20 +331,20 @@ async function getUniqueColumns(pool, tableName) {
  * @param {string} tableName - Name of the table
  * @returns {Promise<Object>} Object mapping column names to metadata objects with dataType, isPrimaryKey, isForeignKey, foreignKeyRef, isUnique
  */
-async function getColumnMetadata(pool, tableName) {
+async function getColumnMetadata(pool, tableName, schema) {
   try {
     const metadataQuery = `
       SELECT column_name, data_type
       FROM information_schema.columns
-      WHERE table_schema = 'public'
+      WHERE table_schema = $2
       AND table_name = $1
       ORDER BY ordinal_position;
     `;
-    const result = await pool.query(metadataQuery, [tableName]);
+    const result = await pool.query(metadataQuery, [tableName, schema]);
 
-    const primaryKeyColumns = await getPrimaryKeyColumns(pool, tableName);
-    const foreignKeyRelations = await getForeignKeyRelations(pool, tableName);
-    const uniqueColumns = await getUniqueColumns(pool, tableName);
+    const primaryKeyColumns = await getPrimaryKeyColumns(pool, tableName, schema);
+    const foreignKeyRelations = await getForeignKeyRelations(pool, tableName, schema);
+    const uniqueColumns = await getUniqueColumns(pool, tableName, schema);
 
     const columns = {};
     result.rows.forEach(row => {
@@ -383,15 +409,17 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
     }
 
     const pool = req.pool;
-    const primaryKeyColumn = await getPrimaryKeyColumn(pool, tableName);
-    const columnMetadata = await getColumnMetadata(pool, tableName);
+    const schema = req.schema;
+    const qualifiedTable = `"${schema}"."${tableName}"`;
+    const primaryKeyColumn = await getPrimaryKeyColumn(pool, tableName, schema);
+    const columnMetadata = await getColumnMetadata(pool, tableName, schema);
 
     // Validate sortColumn if provided
     if (sortColumn && !columnMetadata[sortColumn]) {
       return res.status(400).json({ error: 'Invalid sort column' });
     }
 
-    const countQuery = `SELECT COUNT(*) as total FROM "${tableName}"`;
+    const countQuery = `SELECT COUNT(*) as total FROM ${qualifiedTable}`;
     const countResult = await pool.query(countQuery);
     const totalCount = parseInt(countResult.rows[0].total, 10);
     const isApproximate = false;
@@ -409,14 +437,14 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
         orderByClause += `, "${primaryKeyColumn}" ASC`;
       }
 
-      const query = `SELECT * FROM "${tableName}" ${orderByClause} LIMIT $1 OFFSET $2`;
+      const query = `SELECT * FROM ${qualifiedTable} ${orderByClause} LIMIT $1 OFFSET $2`;
       dataResult = await pool.query(query, [limit, offset]);
 
       // Cursor not valid for custom sorts in this simple implementation
       nextCursor = null;
     } else if (primaryKeyColumn && cursor) {
       // Cursor-based pagination: WHERE id > cursor (most efficient for forward navigation)
-      const cursorQuery = `SELECT * FROM "${tableName}" WHERE "${primaryKeyColumn}" > $1 ORDER BY "${primaryKeyColumn}" ASC LIMIT $2`;
+      const cursorQuery = `SELECT * FROM ${qualifiedTable} WHERE "${primaryKeyColumn}" > $1 ORDER BY "${primaryKeyColumn}" ASC LIMIT $2`;
       const cursorParams = [cursor, limit];
       dataResult = await pool.query(cursorQuery, cursorParams);
 
@@ -426,7 +454,7 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
       }
     } else if (primaryKeyColumn && page === 1) {
       // First page with primary key: start from beginning, return cursor
-      const firstPageQuery = `SELECT * FROM "${tableName}" ORDER BY "${primaryKeyColumn}" ASC LIMIT $1`;
+      const firstPageQuery = `SELECT * FROM ${qualifiedTable} ORDER BY "${primaryKeyColumn}" ASC LIMIT $1`;
       const firstPageParams = [limit];
       dataResult = await pool.query(firstPageQuery, firstPageParams);
 
@@ -443,11 +471,11 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
 
       if (primaryKeyColumn) {
         // Order by primary key for consistent results
-        query = `SELECT * FROM "${tableName}" ORDER BY "${primaryKeyColumn}" ASC LIMIT $1 OFFSET $2`;
+        query = `SELECT * FROM ${qualifiedTable} ORDER BY "${primaryKeyColumn}" ASC LIMIT $1 OFFSET $2`;
         queryParams.push(limit, offset);
       } else {
         // No primary key: no ordering guarantee
-        query = `SELECT * FROM "${tableName}" LIMIT $1 OFFSET $2`;
+        query = `SELECT * FROM ${qualifiedTable} LIMIT $1 OFFSET $2`;
         queryParams.push(limit, offset);
       }
       dataResult = await pool.query(query, queryParams);
