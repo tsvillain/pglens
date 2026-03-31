@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { getPool, createPool, closePool, checkConnection, getConnections, getConnectionSchema, updateConnection } = require('../db/connection');
+const { getPool, createPool, closePool, checkConnection, getConnections, getConnectionSchema, updateConnectionSchema, updateConnection } = require('../db/connection');
 
 const router = express.Router();
 
@@ -33,7 +33,11 @@ const requireConnection = async (req, res, next) => {
   }
 
   req.pool = pool;
-  req.schema = getConnectionSchema(connectionId);
+  try {
+    req.schema = sanitizeSchemaName(getConnectionSchema(connectionId));
+  } catch {
+    return res.status(400).json({ error: 'Connection has an invalid schema name' });
+  }
   next();
 };
 
@@ -49,7 +53,7 @@ router.post('/connect', async (req, res) => {
   }
 
   try {
-    const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name, schema || 'public');
+    const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name, sanitizeSchemaName(schema || 'public'));
     res.json({ connected: true, connectionId: id, name: connectionName });
   } catch (error) {
     res.status(400).json({
@@ -72,7 +76,7 @@ router.put('/connections/:id', async (req, res) => {
   }
 
   try {
-    const { name: connectionName } = await updateConnection(id, url, sslMode || 'prefer', name, schema || 'public');
+    const { name: connectionName } = await updateConnection(id, url, sslMode || 'prefer', name, sanitizeSchemaName(schema || 'public'));
     res.json({ updated: true, connectionId: id, name: connectionName });
   } catch (error) {
     res.status(400).json({
@@ -148,6 +152,21 @@ router.get('/schemas', requireConnection, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+/**
+ * Sanitize schema name to prevent SQL injection.
+ * Only allows alphanumeric characters and underscores (standard PostgreSQL identifiers).
+ * Rejects anything that could break out of double-quote identifier quoting.
+ * @param {string} schemaName - Schema name to sanitize
+ * @returns {string} Sanitized schema name
+ * @throws {Error} If schema name contains invalid characters
+ */
+function sanitizeSchemaName(schemaName) {
+  if (!schemaName || !/^[a-zA-Z0-9_]+$/.test(schemaName)) {
+    throw new Error('Invalid schema name');
+  }
+  return schemaName;
+}
 
 /**
  * Sanitize table name to prevent SQL injection.
@@ -505,26 +524,49 @@ router.get('/tables/:tableName', requireConnection, async (req, res) => {
 });
 
 /**
+ * PATCH /api/connections/:id/schema
+ * Update the active schema for an existing connection without reconnecting
+ */
+router.patch('/connections/:id/schema', async (req, res) => {
+  const { id } = req.params;
+  const { schema } = req.body;
+
+  if (!schema) {
+    return res.status(400).json({ error: 'schema is required' });
+  }
+
+  try {
+    updateConnectionSchema(id, sanitizeSchemaName(schema));
+    res.json({ updated: true });
+  } catch (error) {
+    res.status(400).json({ updated: false, error: error.message });
+  }
+});
+
+/**
  * GET /api/export
  * Exports the database to a downloadable .sql file
  */
 router.get('/export', requireConnection, async (req, res) => {
   try {
     const pool = req.pool;
+    const schema = req.schema;
 
     // Set headers for file download
     res.setHeader('Content-Type', 'application/sql');
-    res.setHeader('Content-Disposition', 'attachment; filename="database_backup.sql"');
+    res.setHeader('Content-Disposition', `attachment; filename="${schema}_backup.sql"`);
 
-    res.write('-- pglens Database logical dump\n\n');
+    res.write('-- pglens Database logical dump\n');
+    res.write(`-- Schema: ${schema}\n\n`);
+    res.write(`SET search_path TO "${schema}";\n\n`);
 
-    // 1. Fetch all public tables
+    // 1. Fetch all tables in the schema
     const tablesResult = await pool.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = $1
       AND table_type = 'BASE TABLE'
-    `);
+    `, [schema]);
     const tables = tablesResult.rows.map(row => row.table_name);
 
     for (const tableName of tables) {
@@ -534,10 +576,10 @@ router.get('/export', requireConnection, async (req, res) => {
       const columnsResult = await pool.query(`
         SELECT column_name, data_type, udt_name, character_maximum_length, column_default, is_nullable
         FROM information_schema.columns
-        WHERE table_schema = 'public'
-        AND table_name = $1
+        WHERE table_schema = $1
+        AND table_name = $2
         ORDER BY ordinal_position
-      `, [tableName]);
+      `, [schema, tableName]);
 
       let createTableSql = `DROP TABLE IF EXISTS "${tableName}" CASCADE;\n`;
       createTableSql += `CREATE TABLE "${tableName}" (\n`;
@@ -574,7 +616,7 @@ router.get('/export', requireConnection, async (req, res) => {
       res.write(`--\n-- Data for table "${tableName}"\n--\n\n`);
 
       // 3. Fetch rows for the table
-      const rowsResult = await pool.query(`SELECT * FROM "${tableName}"`);
+      const rowsResult = await pool.query(`SELECT * FROM "${schema}"."${tableName}"`);
       if (rowsResult.rows.length > 0) {
         for (const row of rowsResult.rows) {
           const keys = Object.keys(row).map(k => `"${k}"`).join(', ');
@@ -621,6 +663,7 @@ router.get('/export', requireConnection, async (req, res) => {
 router.post('/import', requireConnection, async (req, res) => {
   try {
     const pool = req.pool;
+    const schema = req.schema;
 
     let sqlString = '';
     req.on('data', chunk => {
@@ -633,8 +676,8 @@ router.post('/import', requireConnection, async (req, res) => {
           return res.status(400).json({ error: 'SQL file is empty.' });
         }
 
-        // Execute raw SQL script
-        await pool.query(sqlString);
+        // Execute raw SQL script with schema search_path
+        await pool.query(`SET search_path TO "${schema}";\n${sqlString}`);
         res.json({ success: true, message: 'Database imported successfully.' });
       } catch (err) {
         console.error('Import execution error:', err);

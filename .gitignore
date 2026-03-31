@@ -9,3 +9,5 @@ client/build/
 # Electron build output
 dist/
 
+CLAUDE.md
+

@@ -427,8 +427,30 @@ async function restoreConnections() {
 }
 
 /**
+ * Update just the schema for an existing connection (no reconnect needed).
+ * @param {string} connectionId
+ * @param {string} schema
+ */
+function updateConnectionSchema(connectionId, schema) {
+  const conn = connections.get(connectionId);
+  if (!conn) throw new Error('Connection not found');
+  conn.schema = schema;
+  saveConnectionsToFile();
+}
+
+/**
+ * Get the schema for a given connection ID.
+ * @param {string} connectionId
+ * @returns {string|null} Schema name or null if not found
+ */
+function getConnectionSchema(connectionId) {
+  const conn = connections.get(connectionId);
+  return conn ? (conn.schema || null) : null;
+}
+
+/**
  * Get the connection string for a given connection ID.
- * @param {string} connectionId 
+ * @param {string} connectionId
  * @returns {string|null} Connection string or null if not found
  */
 function getConnectionString(connectionId) {
@@ -443,6 +465,7 @@ module.exports = {
   checkConnection,
   getConnections,
   getConnectionSchema,
+  updateConnectionSchema,
   updateConnection,
   restoreConnections,
   getConnectionString

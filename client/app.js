@@ -57,6 +57,8 @@ const connUser = document.getElementById('connUser');
 const connPassword = document.getElementById('connPassword');
 const sslModeSelect = document.getElementById('sslMode');
 const schemaSelect = document.getElementById('schemaSelect');
+const sidebarSchemaSelect = document.getElementById('sidebarSchemaSelect');
+const schemaSelectorRow = document.getElementById('schemaSelectorRow');
 const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
 const loadingOverlay = document.getElementById('loadingOverlay');
@@ -114,6 +116,28 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   fetchConnections(); // Check status and load connections
+
+  // Sidebar schema selector
+  if (sidebarSchemaSelect) {
+    sidebarSchemaSelect.addEventListener('change', async (e) => {
+      const newSchema = e.target.value;
+      if (!activeConnectionId || !newSchema) return;
+      try {
+        const response = await fetch(`/api/connections/${activeConnectionId}/schema`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ schema: newSchema })
+        });
+        if (response.ok) {
+          const conn = connections.find(c => c.id === activeConnectionId);
+          if (conn) conn.schema = newSchema;
+          loadTables();
+        }
+      } catch (err) {
+        console.error('Failed to update schema:', err);
+      }
+    });
+  }
 
   // Connection Event Listeners
   connectButton.addEventListener('click', handleConnect);
@@ -525,6 +549,7 @@ function switchConnection(connectionId) {
   if (activeConnectionId === connectionId) return;
 
   activeConnectionId = connectionId;
+  if (schemaSelectorRow) schemaSelectorRow.style.display = 'none';
 
   // Hide landing page, show table view
   landingPage.style.display = 'none';
@@ -1131,6 +1156,34 @@ function setConnectingState(isConnecting) {
  * Load all tables from the active database via API.
  * Fetches table list and updates the sidebar.
  */
+async function loadSidebarSchemas() {
+  if (!activeConnectionId || !sidebarSchemaSelect || !schemaSelectorRow) return;
+  try {
+    const response = await fetch('/api/schemas', {
+      headers: { 'x-connection-id': activeConnectionId }
+    });
+    const data = await response.json();
+    const schemas = data.schemas || [];
+
+    sidebarSchemaSelect.innerHTML = '';
+    schemas.forEach(s => {
+      const option = document.createElement('option');
+      option.value = s;
+      option.textContent = s;
+      sidebarSchemaSelect.appendChild(option);
+    });
+
+    const conn = connections.find(c => c.id === activeConnectionId);
+    if (conn && conn.schema && schemas.includes(conn.schema)) {
+      sidebarSchemaSelect.value = conn.schema;
+    }
+
+    schemaSelectorRow.style.display = schemas.length > 1 ? 'flex' : 'none';
+  } catch (err) {
+    console.error('Failed to load sidebar schemas:', err);
+  }
+}
+
 async function loadTables() {
   if (!activeConnectionId) return;
 
@@ -1142,6 +1195,8 @@ async function loadTables() {
     if (!existingTab || existingTab.connectionId !== activeConnectionId) {
       renderShimmerDashboard();
     }
+
+    loadSidebarSchemas();
 
     const response = await fetch('/api/tables', {
       headers: { 'x-connection-id': activeConnectionId }
@@ -1157,7 +1212,10 @@ async function loadTables() {
 
     // If no tables, show message
     if (allTables.length === 0) {
-      tableView.innerHTML = '<div class="no-data-message">No tables found in this database</div>';
+      sidebarContent.innerHTML = '<div class="empty-state">No tables</div>';
+      const conn = connections.find(c => c.id === activeConnectionId);
+      const schemaName = conn ? conn.schema : 'this schema';
+      tableView.innerHTML = `<div class="no-tables-message"><p>No tables found in the <strong>${schemaName}</strong> schema.</p></div>`;
       return;
     }
 

@@ -232,7 +232,7 @@
               </svg>
               <span>Export Backup</span>
             </button>
-            <button class="button-secondary action-btn" id="importDbBtn">
+            <!-- <button class="button-secondary action-btn" id="importDbBtn">
               <svg class="action-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -240,7 +240,7 @@
                 <line x1="12" y1="3" x2="12" y2="15"></line>
               </svg>
               <span>Import Backup</span>
-            </button>
+            </button> -->
           </div>
         </div>
 
@@ -248,6 +248,15 @@
         <div class="tables-section">
           <div class="section-header">
             <h3>Tables <span class="table-count" id="tableCount">0</span></h3>
+          </div>
+          <div class="schema-selector-row" id="schemaSelectorRow" style="display: none;">
+            <span class="schema-selector-label">Schema</span>
+            <div class="schema-select-wrapper">
+              <select id="sidebarSchemaSelect" class="schema-select"></select>
+              <svg class="schema-select-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M2 4L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
           </div>
           <div class="sidebar-search-container">
             <input type="text" class="sidebar-search" id="sidebarSearch" placeholder="Search tables (Cmd+K)..." />
