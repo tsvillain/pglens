@@ -12,11 +12,11 @@
  */
 
 // Application state
-let connections = []; // Array of active connections: { id, name, connectionString, sslMode }
+let connections = []; // Array of active connections: { id, name, connectionString, sslMode, schema }
 let activeConnectionId = null; // Currently active connection ID
 let tabs = []; // Array of tab objects: { connectionId, tableName, page, totalCount, sortColumn, sortDirection, data, hiddenColumns, columnWidths, cursor, cursorHistory, hasPrimaryKey, isApproximate, abortController }
 let activeTabIndex = -1; // Currently active tab index
-let allTables = []; // All available tables from the current database connection
+let allTables = []; // All available tables/views from the current database connection: { name, type }
 let searchQuery = ''; // Current search filter for tables
 let currentTheme = 'system'; // Current theme: 'light', 'dark', or 'system'
 
@@ -56,6 +56,7 @@ const connDatabase = document.getElementById('connDatabase');
 const connUser = document.getElementById('connUser');
 const connPassword = document.getElementById('connPassword');
 const sslModeSelect = document.getElementById('sslMode');
+const schemaSelect = document.getElementById('schemaSelect');
 const connectButton = document.getElementById('connectButton');
 const connectionError = document.getElementById('connectionError');
 const loadingOverlay = document.getElementById('loadingOverlay');
@@ -448,6 +449,7 @@ async function handleConnect() {
   let url = '';
   const connectionName = connectionNameInput.value.trim();
   const sslMode = sslModeSelect.value;
+  const schema = schemaSelect.value || 'public';
   const inputMode = connectionDialog.dataset.inputMode || 'url';
 
   if (inputMode === 'url') {
@@ -506,7 +508,7 @@ async function handleConnect() {
     const response = await fetch(urlPath, {
       method: method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, sslMode, name: connectionName || undefined })
+      body: JSON.stringify({ url, sslMode, name: connectionName || undefined, schema })
     });
 
     const data = await response.json();
@@ -521,7 +523,8 @@ async function handleConnect() {
               ...connections[index],
               name: data.name,
               connectionString: url,
-              sslMode: sslMode
+              sslMode: sslMode,
+              schema: schema
             };
           }
         } else {
@@ -533,7 +536,8 @@ async function handleConnect() {
               id: data.connectionId,
               name: data.name,
               connectionString: url,
-              sslMode: sslMode
+              sslMode: sslMode,
+              schema: schema
             });
           } else {
             console.log('Connection already exists, switching to it');
@@ -705,7 +709,7 @@ function renderLandingPage() {
 
       <div class="card-info">
         <h3>${conn.name}</h3>
-        <p>PostgreSQL • ${dbDisplay}</p>
+        <p>PostgreSQL • ${dbDisplay}${conn.schema && conn.schema !== 'public' ? ` • ${conn.schema}` : ''}</p>
       </div>
 
       <div class="host-block">
@@ -774,9 +778,11 @@ function renderTableDashboard() {
 
   const header = document.createElement('div');
   header.className = 'table-dashboard-header';
+  const numTables = allTables.filter(t => t.type === 'table').length;
+  const numViews = allTables.filter(t => t.type === 'view').length;
   header.innerHTML = `
     <h2>Tables</h2>
-    <p>${allTables.length} tables available in this database.</p>
+    <p>${numTables} table${numTables !== 1 ? 's' : ''}, ${numViews} view${numViews !== 1 ? 's' : ''} available in this database.</p>
   `;
   dashboard.appendChild(header);
 
@@ -784,24 +790,28 @@ function renderTableDashboard() {
   grid.className = 'tables-grid';
 
   allTables.forEach(table => {
+    const isView = table.type === 'view';
     const card = document.createElement('div');
     card.className = 'table-card';
     card.innerHTML = `
       <div class="table-card-icon">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        ${isView ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>` : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="3" y1="6" x2="21" y2="6"></line>
           <line x1="3" y1="12" x2="21" y2="12"></line>
           <line x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
+        </svg>`}
       </div>
       <div class="table-card-info">
-        <div class="table-card-name" title="${table}">${table}</div>
-        <div class="table-card-schema">public</div>
+        <div class="table-card-name" title="${table.name}">${table.name}</div>
+        <div class="table-card-schema">${getActiveConnectionSchema()}${isView ? ' • view' : ''}</div>
       </div>
     `;
 
     card.addEventListener('click', () => {
-      handleTableSelect(table);
+      handleTableSelect(table.name);
     });
 
     grid.appendChild(card);
@@ -871,11 +881,22 @@ function showConnectionDialog(allowClose, editMode = false, connection = null) {
       connPassword.value = parsed.password;
     }
     connectionUrlInput.value = connection.connectionString || '';
+
+    // Populate schema dropdown and fetch available schemas
+    schemaSelect.innerHTML = `<option value="${connection.schema || 'public'}">${connection.schema || 'public'}</option>`;
+    schemaSelect.value = connection.schema || 'public';
+    schemaSelect.disabled = false;
+    document.getElementById('schemaHint').style.display = 'none';
+    fetchSchemasForConnection(connection.id);
   } else {
     delete connectionDialog.dataset.connectionId;
     connectionUrlInput.value = '';
     connectionNameInput.value = '';
     sslModeSelect.value = 'prefer';
+    schemaSelect.innerHTML = '<option value="public">public</option>';
+    schemaSelect.value = 'public';
+    schemaSelect.disabled = true;
+    document.getElementById('schemaHint').style.display = 'block';
 
     // Reset params
     connHost.value = 'localhost';
@@ -931,12 +952,51 @@ function parseConnectionString(urlStr) {
   }
 }
 
+/**
+ * Get the schema of the currently active connection.
+ * @returns {string} Schema name
+ */
+function getActiveConnectionSchema() {
+  if (!activeConnectionId) return 'public';
+  const conn = connections.find(c => c.id === activeConnectionId);
+  return conn ? (conn.schema || 'public') : 'public';
+}
+
 function handleConnectionEdit(connection) {
   showConnectionDialog(true, true, connection);
 }
 
 function hideConnectionDialog() {
   connectionDialog.style.display = 'none';
+}
+
+/**
+ * Fetch available schemas for a connection and populate the schema dropdown.
+ * @param {string} connectionId - The connection ID to fetch schemas for
+ */
+async function fetchSchemasForConnection(connectionId) {
+  try {
+    const response = await fetch('/api/schemas', {
+      headers: { 'x-connection-id': connectionId }
+    });
+    const data = await response.json();
+    if (data.schemas && data.schemas.length > 0) {
+      const currentValue = schemaSelect.value;
+      schemaSelect.innerHTML = '';
+      data.schemas.forEach(s => {
+        const option = document.createElement('option');
+        option.value = s;
+        option.textContent = s;
+        schemaSelect.appendChild(option);
+      });
+      // Restore previously selected value if it exists in the list
+      if (data.schemas.includes(currentValue)) {
+        schemaSelect.value = currentValue;
+      }
+    }
+  } catch (error) {
+    console.error('Failed to fetch schemas:', error);
+  }
 }
 
 function showConnectionError(message) {
@@ -950,6 +1010,7 @@ function setConnectingState(isConnecting) {
   connectionNameInput.disabled = isConnecting;
   connectionUrlInput.disabled = isConnecting;
   sslModeSelect.disabled = isConnecting;
+  schemaSelect.disabled = isConnecting;
 }
 
 /**
@@ -1005,7 +1066,7 @@ function filterAndRenderTables() {
   }
 
   const filteredTables = searchQuery
-    ? allTables.filter(table => table.toLowerCase().includes(searchQuery))
+    ? allTables.filter(table => table.name.toLowerCase().includes(searchQuery))
     : allTables;
 
   if (searchQuery && filteredTables.length !== allTables.length) {
@@ -1024,16 +1085,19 @@ function filterAndRenderTables() {
 
   filteredTables.forEach(table => {
     const li = document.createElement('li');
-    li.textContent = table;
-    li.addEventListener('click', () => handleTableSelect(table));
+    li.textContent = table.name;
+    if (table.type === 'view') {
+      li.title = 'View';
+    }
+    li.addEventListener('click', () => handleTableSelect(table.name));
 
     if (searchQuery) {
-      const lowerTable = table.toLowerCase();
+      const lowerTable = table.name.toLowerCase();
       const index = lowerTable.indexOf(searchQuery);
       if (index !== -1) {
-        const before = table.substring(0, index);
-        const match = table.substring(index, index + searchQuery.length);
-        const after = table.substring(index + searchQuery.length);
+        const before = table.name.substring(0, index);
+        const match = table.name.substring(index, index + searchQuery.length);
+        const after = table.name.substring(index + searchQuery.length);
 
         li.innerHTML = `${escapeHtml(before)}<mark>${escapeHtml(match)}</mark>${escapeHtml(after)}`;
       }
@@ -2702,7 +2766,7 @@ function filterSpotlight(query) {
   }
 
   const lowerQuery = query.toLowerCase().trim();
-  spotlightMatches = allTables.filter(t => t.toLowerCase().includes(lowerQuery));
+  spotlightMatches = allTables.filter(t => t.name.toLowerCase().includes(lowerQuery));
 
   if (spotlightMatches.length === 0) {
     spotlightResults.innerHTML = '<div class="spotlight-empty">No tables found</div>';
@@ -2710,21 +2774,25 @@ function filterSpotlight(query) {
   }
 
   spotlightMatches.forEach((table, index) => {
+    const isView = table.type === 'view';
     const div = document.createElement('div');
     div.className = `spotlight-result-item ${index === 0 ? 'selected' : ''}`;
     div.dataset.index = index;
 
     div.innerHTML = `
       <div class="spotlight-result-icon">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        ${isView ? `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>` : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="3" y1="6" x2="21" y2="6"></line>
           <line x1="3" y1="12" x2="21" y2="12"></line>
           <line x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
+        </svg>`}
       </div>
       <div class="spotlight-result-info">
-        <span class="spotlight-result-name">${table}</span>
-        <span class="spotlight-result-schema">public</span>
+        <span class="spotlight-result-name">${table.name}</span>
+        <span class="spotlight-result-schema">${getActiveConnectionSchema()}${isView ? ' • view' : ''}</span>
       </div>
     `;
 
@@ -2733,7 +2801,7 @@ function filterSpotlight(query) {
     });
 
     div.addEventListener('click', () => {
-      openSpotlightTable(table);
+      openSpotlightTable(table.name);
     });
 
     spotlightResults.appendChild(div);
@@ -2764,7 +2832,7 @@ function setSpotlightSelection(index) {
 
 function executeSpotlightSelection() {
   if (spotlightSelectedIndex >= 0 && spotlightSelectedIndex < spotlightMatches.length) {
-    openSpotlightTable(spotlightMatches[spotlightSelectedIndex]);
+    openSpotlightTable(spotlightMatches[spotlightSelectedIndex].name);
   }
 }
 
