@@ -20,6 +20,12 @@ let allTables = []; // All available tables/views from the current database conn
 let searchQuery = ''; // Current search filter for tables
 let currentTheme = 'system'; // Current theme: 'light', 'dark', or 'system'
 
+// Schema state
+let schemaData = null; // Holds the fetched schema data
+let schemaNetwork = null; // The vis.Network instance
+let schemaNodes = null; // vis.DataSet for nodes
+let schemaEdges = null; // vis.DataSet for edges
+
 // UI Elements
 const sidebar = document.getElementById('sidebar');
 const sidebarContent = document.getElementById('sidebarContent');
@@ -70,11 +76,26 @@ const spotlightResults = document.getElementById('spotlightResults');
 let spotlightSelectedIndex = -1;
 let spotlightMatches = [];
 
-// Schema Dialog UI Elements
+// Schema UI Elements (Old Dialog - keeping for backward compatibility if used)
 const schemaDialog = document.getElementById('schemaDialog');
 const closeSchemaDialogBtn = document.getElementById('closeSchemaDialog');
 const closeSchemaButton = document.getElementById('closeSchemaButton');
 const schemaTableContainer = document.getElementById('schemaTableContainer');
+
+// New Schema View Elements
+const schemaView = document.getElementById('schemaView');
+const visualizeSchemaBtn = document.getElementById('visualizeSchemaBtn');
+const schemaNetworkContainer = document.getElementById('schemaNetwork');
+const schemaZoomInBtn = document.getElementById('schemaZoomInBtn');
+const schemaZoomOutBtn = document.getElementById('schemaZoomOutBtn');
+const schemaFitBtn = document.getElementById('schemaFitBtn');
+const schemaExportBtn = document.getElementById('schemaExportBtn');
+const schemaSearchInput = document.getElementById('schemaSearchInput');
+const clearSchemaSearchBtn = document.getElementById('clearSchemaSearchBtn');
+const schemaSidebar = document.getElementById('schemaSidebar');
+const schemaDetailsTitle = document.getElementById('schemaDetailsTitle');
+const schemaDetailsContent = document.getElementById('schemaDetailsContent');
+const closeSchemaDetailsBtn = document.getElementById('closeSchemaDetailsBtn');
 
 // Database Actions UI Elements
 const dbActionsSection = document.getElementById('dbActionsSection');
@@ -307,6 +328,53 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Schema View Listeners
+  if (visualizeSchemaBtn) {
+    visualizeSchemaBtn.addEventListener('click', showSchemaView);
+  }
+  if (schemaZoomInBtn) {
+    schemaZoomInBtn.addEventListener('click', () => {
+      if (schemaNetwork) {
+        const scale = schemaNetwork.getScale() * 1.5;
+        schemaNetwork.moveTo({ scale: scale });
+      }
+    });
+  }
+  if (schemaZoomOutBtn) {
+    schemaZoomOutBtn.addEventListener('click', () => {
+      if (schemaNetwork) {
+        const scale = schemaNetwork.getScale() / 1.5;
+        schemaNetwork.moveTo({ scale: scale });
+      }
+    });
+  }
+  if (schemaFitBtn) {
+    schemaFitBtn.addEventListener('click', () => {
+      if (schemaNetwork) {
+        schemaNetwork.fit({ animation: true });
+      }
+    });
+  }
+  if (schemaExportBtn) {
+    schemaExportBtn.addEventListener('click', exportSchemaImage);
+  }
+  if (schemaSearchInput) {
+    schemaSearchInput.addEventListener('input', (e) => {
+      filterSchema(e.target.value);
+    });
+  }
+  if (clearSchemaSearchBtn) {
+    clearSchemaSearchBtn.addEventListener('click', () => {
+      if (schemaSearchInput) {
+        schemaSearchInput.value = '';
+        filterSchema('');
+      }
+    });
+  }
+  if (closeSchemaDetailsBtn) {
+    closeSchemaDetailsBtn.addEventListener('click', hideSchemaDetails);
+  }
+
   if (importDbBtn) {
     importDbBtn.addEventListener('click', showImportDialog);
   }
@@ -409,6 +477,9 @@ function applyTheme() {
   }
 
   document.documentElement.setAttribute('data-theme', themeToApply);
+
+  // Update schema diagram colors if active
+  applyThemeToSchema();
 }
 
 function updateThemeIcon() {
@@ -551,8 +622,18 @@ function switchConnection(connectionId) {
   activeConnectionId = connectionId;
   if (schemaSelectorRow) schemaSelectorRow.style.display = 'none';
 
-  // Hide landing page, show table view
+  // Reset schema state for the new connection
+  if (schemaNetwork) {
+    schemaNetwork.destroy();
+    schemaNetwork = null;
+  }
+  schemaData = null;
+  schemaNodes = null;
+  schemaEdges = null;
+
+  // Hide landing page and schema view, show table view
   landingPage.style.display = 'none';
+  if (schemaView) schemaView.style.display = 'none';
   tableView.style.display = 'flex';
   if (tabs.length > 0) {
     tabsContainer.style.display = 'block';
@@ -1365,6 +1446,9 @@ function handleTableSelect(tableName) {
     };
     tabs.push(newTab);
     activeTabIndex = tabs.length - 1;
+    // Dismiss schema view if visible
+    if (schemaView) schemaView.style.display = 'none';
+    if (tableView) tableView.style.display = 'flex';
     renderTabs();
     loadTableData();
   }
@@ -1383,6 +1467,10 @@ function switchToTab(index) {
       return;
     }
   }
+
+  // Dismiss schema view if visible
+  if (schemaView) schemaView.style.display = 'none';
+  if (tableView) tableView.style.display = 'flex';
 
   activeTabIndex = index;
   const tab = tabs[activeTabIndex];
@@ -3133,7 +3221,6 @@ async function handleImportDatabase() {
       if (closeImportDialogBtn) closeImportDialogBtn.disabled = false;
     }
   } catch (error) {
-    importError.textContent = error.message;
     importError.style.display = 'block';
     uploadImportBtn.disabled = false;
     uploadImportBtn.textContent = 'Import Backup';
@@ -3144,3 +3231,514 @@ async function handleImportDatabase() {
   }
 }
 
+// ---------- SCHEMA VISUALIZATION ----------
+
+/**
+ * Show the schema visualization view and trigger data fetch
+ */
+async function showSchemaView() {
+  if (!activeConnectionId) return;
+
+  // Hide other views
+  tableView.style.display = 'none';
+  tabsContainer.style.display = 'none';
+  pagination.style.display = 'none';
+  landingPage.style.display = 'none';
+
+  // Show Schema View
+  schemaView.style.display = 'flex';
+
+  // If we already have a network rendered for this connection, just fit it
+  // Otherwise, fetch and render
+  if (schemaNetwork) {
+    schemaNetwork.fit({ animation: true });
+    return;
+  }
+
+  await fetchSchema();
+}
+
+/**
+ * Fetch schema data from API
+ */
+function showSchemaProgress(label, pct) {
+  let el = schemaNetworkContainer.querySelector('.schema-loading');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'schema-loading';
+    el.innerHTML = `
+      <div class="schema-progress-bar"><div class="schema-progress-fill indeterminate"></div></div>
+      <div class="schema-loading-label"></div>
+    `;
+    schemaNetworkContainer.appendChild(el);
+  }
+  const labelEl = el.querySelector('.schema-loading-label');
+  labelEl.textContent = pct != null ? `${label} ${pct}%` : label;
+  const fill = el.querySelector('.schema-progress-fill');
+  if (pct == null) {
+    fill.classList.add('indeterminate');
+  } else {
+    fill.classList.remove('indeterminate');
+    fill.style.width = pct + '%';
+  }
+}
+
+function hideSchemaProgress() {
+  const el = schemaNetworkContainer?.querySelector('.schema-loading');
+  if (el) el.remove();
+}
+
+async function fetchSchema() {
+  showSchemaProgress('Fetching schema\u2026', null);
+  try {
+    const response = await fetch('/api/schema', {
+      headers: {
+        'x-connection-id': activeConnectionId
+      }
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || 'Failed to fetch schema');
+    }
+
+    const data = await response.json();
+    schemaData = data.schema;
+
+    showSchemaProgress('Building graph\u2026', 10);
+    renderSchemaNetwork(schemaData);
+  } catch (error) {
+    hideSchemaProgress();
+    console.error('Schema fetch error:', error);
+    alert('Failed to load schema: ' + error.message);
+  }
+}
+
+/**
+ * Escape XML special characters for safe SVG embedding
+ */
+function escapeXml(unsafe) {
+  if (!unsafe) return '';
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Generate a Base64 SVG Data URL representing a Database Table node.
+ * Uses only pure SVG primitives (rect, text, line) — no foreignObject —
+ * so it renders correctly on vis-network's canvas.
+ */
+function createTableSvgDataUrl(tableName, columns, isDark) {
+  const ROW_HEIGHT = 22;
+  const HEADER_HEIGHT = 28;
+  const PADDING_X = 8;
+  const FONT_SIZE = 12;
+  const TYPE_FONT_SIZE = 11;
+  const BADGE_FONT_SIZE = 9;
+  const COL1_WIDTH = 28;  // badge column
+  const COL2_WIDTH = 130; // column name
+  const COL3_WIDTH = 90;  // data type
+  const WIDTH = COL1_WIDTH + COL2_WIDTH + COL3_WIDTH;
+  const HEIGHT = HEADER_HEIGHT + (columns.length * ROW_HEIGHT) + 2;
+
+  // Theme colors
+  const bgColor = isDark ? '#1e293b' : '#ffffff';
+  const headerBg = isDark ? '#334155' : '#e0f2fe';
+  const headerBorder = isDark ? '#475569' : '#bae6fd';
+  const borderColor = isDark ? '#475569' : '#d1d5db';
+  const textColor = isDark ? '#f1f5f9' : '#1e293b';
+  const headerTextColor = isDark ? '#f1f5f9' : '#0f172a';
+  const typeColor = isDark ? '#94a3b8' : '#64748b';
+  const rowAlt = isDark ? '#0f172a' : '#f8fafc';
+  const rowBase = isDark ? '#1e293b' : '#ffffff';
+  const pkColor = '#f59e0b';
+  const fkColor = '#3b82f6';
+
+  let rowsSvg = '';
+  columns.forEach((col, i) => {
+    const y = HEADER_HEIGHT + (i * ROW_HEIGHT);
+    const bg = i % 2 === 0 ? rowBase : rowAlt;
+    const textY = y + ROW_HEIGHT / 2 + 4;
+
+    // Row background
+    rowsSvg += `<rect x="1" y="${y}" width="${WIDTH - 2}" height="${ROW_HEIGHT}" fill="${bg}"/>`;
+    // Row bottom border
+    rowsSvg += `<line x1="1" y1="${y + ROW_HEIGHT}" x2="${WIDTH - 1}" y2="${y + ROW_HEIGHT}" stroke="${borderColor}" stroke-width="0.5"/>`;
+
+    // Badge column separator
+    rowsSvg += `<line x1="${COL1_WIDTH}" y1="${y}" x2="${COL1_WIDTH}" y2="${y + ROW_HEIGHT}" stroke="${borderColor}" stroke-width="0.5"/>`;
+
+    // Badge text (PK / FK)
+    if (col.isPrimaryKey) {
+      rowsSvg += `<text x="${COL1_WIDTH / 2}" y="${textY}" text-anchor="middle" font-size="${BADGE_FONT_SIZE}" font-weight="bold" fill="${pkColor}" font-family="sans-serif">PK</text>`;
+    } else if (col.isForeignKey) {
+      rowsSvg += `<text x="${COL1_WIDTH / 2}" y="${textY}" text-anchor="middle" font-size="${BADGE_FONT_SIZE}" font-weight="bold" fill="${fkColor}" font-family="sans-serif">FK</text>`;
+    }
+
+    // Column name separator
+    rowsSvg += `<line x1="${COL1_WIDTH + COL2_WIDTH}" y1="${y}" x2="${COL1_WIDTH + COL2_WIDTH}" y2="${y + ROW_HEIGHT}" stroke="${borderColor}" stroke-width="0.5"/>`;
+
+    // Column name
+    const colName = escapeXml(col.name.length > 18 ? col.name.substring(0, 17) + '…' : col.name);
+    rowsSvg += `<text x="${COL1_WIDTH + PADDING_X}" y="${textY}" font-size="${FONT_SIZE}" fill="${textColor}" font-family="monospace">${colName}</text>`;
+
+    // Data type
+    let typeStr = escapeXml(col.type);
+    if (col.maxLength) typeStr += `(${col.maxLength})`;
+    if (typeStr.length > 12) typeStr = typeStr.substring(0, 11) + '…';
+    rowsSvg += `<text x="${COL1_WIDTH + COL2_WIDTH + PADDING_X}" y="${textY}" font-size="${TYPE_FONT_SIZE}" fill="${typeColor}" font-family="sans-serif">${typeStr}</text>`;
+  });
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">
+  <!-- Border + background -->
+  <rect x="0.5" y="0.5" width="${WIDTH - 1}" height="${HEIGHT - 1}" rx="4" ry="4" fill="${bgColor}" stroke="${borderColor}" stroke-width="1"/>
+  <!-- Header background -->
+  <rect x="1" y="1" width="${WIDTH - 2}" height="${HEADER_HEIGHT - 1}" rx="3" ry="3" fill="${headerBg}"/>
+  <!-- Clip header corners -->
+  <rect x="1" y="${HEADER_HEIGHT - 6}" width="${WIDTH - 2}" height="6" fill="${headerBg}"/>
+  <!-- Header bottom border -->
+  <line x1="1" y1="${HEADER_HEIGHT}" x2="${WIDTH - 1}" y2="${HEADER_HEIGHT}" stroke="${headerBorder}" stroke-width="1.5"/>
+  <!-- Header text -->
+  <text x="${PADDING_X}" y="${HEADER_HEIGHT / 2 + 5}" font-size="${FONT_SIZE + 1}" font-weight="bold" fill="${headerTextColor}" font-family="sans-serif">${escapeXml(tableName)}</text>
+  <!-- Column rows -->
+  ${rowsSvg}
+</svg>`;
+
+  const encoded = window.btoa(unescape(encodeURIComponent(svg)));
+  return `data:image/svg+xml;base64,${encoded}`;
+}
+
+/**
+ * Process schema data and render the vis-network diagram
+ */
+function renderSchemaNetwork(schema) {
+  if (!schemaNetworkContainer) return;
+
+  const nodes = [];
+  const edges = [];
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+  // Create Nodes as SVG table images
+  for (const [tableName, tableData] of Object.entries(schema)) {
+    const imageUrl = createTableSvgDataUrl(tableName, tableData.columns, isDark);
+
+    nodes.push({
+      id: tableName,
+      label: '',
+      title: `${tableName} (${tableData.columns.length} columns)`,
+      shape: 'image',
+      image: imageUrl,
+      shapeProperties: { useImageSize: true },
+      size: 30
+    });
+
+    // Create Edges with crow's foot notation
+    tableData.columns.forEach(col => {
+      if (col.isForeignKey && col.foreignKeyRef) {
+        if (schema[col.foreignKeyRef.table]) {
+          edges.push({
+            from: tableName,
+            to: col.foreignKeyRef.table,
+            label: `${col.name} → ${col.foreignKeyRef.column}`,
+            font: { size: 10, align: 'middle', color: getEdgeTextColor(), strokeWidth: 2, strokeColor: isDark ? '#1e293b' : '#ffffff' },
+            arrows: {
+              from: { enabled: true, type: 'bar', scaleFactor: 0.5 },
+              to: { enabled: true, type: 'crow', scaleFactor: 0.5 }
+            },
+            color: getEdgeColor(),
+            width: 1.5,
+            smooth: { type: 'cubicBezier', roundness: 0.2 }
+          });
+        }
+      }
+    });
+  }
+
+  schemaNodes = new vis.DataSet(nodes);
+  schemaEdges = new vis.DataSet(edges);
+
+  const data = {
+    nodes: schemaNodes,
+    edges: schemaEdges
+  };
+
+  const options = {
+    nodes: {
+      borderWidth: 0,
+      shadow: { enabled: true, color: 'rgba(0,0,0,0.15)', size: 8, x: 3, y: 3 }
+    },
+    edges: {
+      width: 2,
+      hoverWidth: 3,
+      selectionWidth: 4,
+      color: { inherit: false },
+      arrows: {
+        from: { enabled: true, type: 'bar', scaleFactor: 0.5 },
+        to: { enabled: true, type: 'crow', scaleFactor: 0.5 }
+      },
+      font: {
+        size: 10,
+        align: 'middle'
+      },
+      smooth: {
+        type: 'cubicBezier',
+        roundness: 0.2
+      }
+    },
+    physics: {
+      enabled: true,
+      barnesHut: {
+        gravitationalConstant: -5000,
+        centralGravity: 0.25,
+        springLength: 350,
+        springConstant: 0.03,
+        damping: 0.09,
+        avoidOverlap: 1
+      },
+      stabilization: {
+        enabled: true,
+        iterations: 1500,
+        updateInterval: 50,
+        onlyDynamicEdges: false,
+        fit: true
+      }
+    },
+    interaction: {
+      hover: true,
+      tooltipDelay: 200,
+      zoomView: true,
+      dragView: true,
+      multiselect: false
+    },
+    layout: {
+      improvedLayout: true
+    }
+  };
+
+  // Clean up old network if exists
+  if (schemaNetwork) {
+    schemaNetwork.destroy();
+  }
+
+  schemaNetwork = new vis.Network(schemaNetworkContainer, data, options);
+
+  // Apply initial theme
+  applyThemeToSchema();
+
+  // Events
+  schemaNetwork.on("click", function (params) {
+    if (params.nodes.length > 0) {
+      const nodeId = params.nodes[0];
+      showSchemaDetails(nodeId);
+    } else {
+      hideSchemaDetails();
+    }
+  });
+
+  // Real progress from vis-network's physics stabilization
+  schemaNetwork.on("stabilizationProgress", function (params) {
+    const pct = Math.round(10 + (params.iterations / params.total) * 88);
+    showSchemaProgress(`Laying out ${nodes.length} tables\u2026`, pct);
+  });
+
+  schemaNetwork.on("stabilizationIterationsDone", function () {
+    showSchemaProgress('Done', 100);
+    schemaNetwork.setOptions({ physics: { enabled: false } });
+    schemaNetwork.fit({ animation: true });
+    setTimeout(hideSchemaProgress, 300);
+  });
+}
+
+/**
+ * Get colors for nodes based on current theme
+ */
+function getNodeColors() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return isDark ? {
+    border: '#3b82f6',
+    background: '#1e293b',
+    highlight: { border: '#60a5fa', background: '#334155' },
+    hover: { border: '#60a5fa', background: '#1e293b' }
+  } : {
+    border: '#2563eb',
+    background: '#ffffff',
+    highlight: { border: '#1d4ed8', background: '#eff6ff' },
+    hover: { border: '#3b82f6', background: '#ffffff' }
+  };
+}
+
+/**
+ * Get colors for edges based on current theme
+ */
+function getEdgeColor() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return {
+    color: isDark ? '#60a5fa' : '#3b82f6',
+    highlight: isDark ? '#93c5fd' : '#2563eb',
+    hover: isDark ? '#93c5fd' : '#2563eb',
+    inherit: false,
+    opacity: 1.0
+  };
+}
+
+function getEdgeTextColor() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return isDark ? '#94a3b8' : '#64748b';
+}
+
+/**
+ * Show table detailed view in sidebar
+ */
+function showSchemaDetails(tableName) {
+  if (!schemaData || !schemaData[tableName] || !schemaSidebar) return;
+
+  const tableData = schemaData[tableName];
+  schemaDetailsTitle.textContent = tableName;
+
+  let html = `<div class="schema-detail-item">
+    <strong>Columns (${tableData.columns.length})</strong>
+    <ul class="schema-column-list mt-2">`;
+
+  tableData.columns.forEach(col => {
+    html += `<li class="schema-column-item">`;
+
+    // Add indicators
+    if (col.isPrimaryKey) html += `<span class="schema-icon-pk" title="Primary Key">PK</span>`;
+    if (col.isForeignKey) html += `<span class="schema-icon-fk" title="Foreign Key to ${col.foreignKeyRef.table}">FK</span>`;
+    if (col.isUnique) html += `<span class="schema-icon-uq" title="Unique Constraint">UQ</span>`;
+
+    html += `<span class="schema-column-name">${col.name}</span>`;
+
+    let typeDisplay = col.type;
+    if (col.maxLength) typeDisplay += `(${col.maxLength})`;
+
+    html += `<span class="schema-column-type">${typeDisplay} ${col.isNullable ? '' : 'NOT NULL'}</span>`;
+    html += `</li>`;
+  });
+
+  html += `</ul></div>`;
+
+  schemaDetailsContent.innerHTML = html;
+  schemaSidebar.style.display = 'flex';
+}
+
+function hideSchemaDetails() {
+  if (schemaSidebar) {
+    schemaSidebar.style.display = 'none';
+  }
+}
+
+/**
+ * Filter schema nodes visually
+ */
+function filterSchema(query) {
+  if (!schemaNodes || !schemaNetwork) return;
+
+  query = query.toLowerCase().trim();
+
+  if (clearSchemaSearchBtn) {
+    clearSchemaSearchBtn.style.display = query.length > 0 ? 'block' : 'none';
+  }
+
+  if (query.length === 0) {
+    // Reset all nodes
+    const updates = schemaNodes.getIds().map(id => ({ id: id, hidden: false }));
+    schemaNodes.update(updates);
+    schemaNetwork.fit({ animation: true });
+    return;
+  }
+
+  const matchIds = [];
+
+  // Find matches
+  Object.entries(schemaData).forEach(([tableName, tableData]) => {
+    let match = false;
+    // Match table name
+    if (tableName.toLowerCase().includes(query)) {
+      match = true;
+    } else {
+      // Match column names
+      const colMatch = tableData.columns.some(col => col.name.toLowerCase().includes(query));
+      if (colMatch) match = true;
+    }
+
+    if (match) matchIds.push(tableName);
+  });
+
+  // Hide non-matching, show matching
+  const updates = schemaNodes.getIds().map(id => ({
+    id: id,
+    hidden: !matchIds.includes(id)
+  }));
+
+  schemaNodes.update(updates);
+
+  // If we have matches, fit to them
+  if (matchIds.length > 0) {
+    schemaNetwork.fit({ nodes: matchIds, animation: true });
+  }
+}
+
+/**
+ * Handle theme change for the schema diagram
+ */
+function applyThemeToSchema() {
+  if (!schemaNetwork || !schemaNodes || !schemaEdges || !schemaData) return;
+
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+  // Re-generate SVG images for each node with the new theme colors
+  const nodeUpdates = schemaNodes.getIds().map(id => {
+    const tableData = schemaData[id];
+    if (!tableData) return { id };
+    const imageUrl = createTableSvgDataUrl(id, tableData.columns, isDark);
+    return { id, image: imageUrl };
+  });
+  schemaNodes.update(nodeUpdates);
+
+  // Update edge colors
+  const edgeColor = getEdgeColor();
+  const edgeUpdates = schemaEdges.getIds().map(id => ({
+    id: id,
+    color: edgeColor,
+    font: { color: getEdgeTextColor(), strokeColor: isDark ? '#1e293b' : '#ffffff' }
+  }));
+  schemaEdges.update(edgeUpdates);
+}
+
+/**
+ * Export the schema diagram canvas as PNG
+ */
+function exportSchemaImage() {
+  if (!schemaNetworkContainer) return;
+
+  const canvas = schemaNetworkContainer.querySelector('canvas');
+  if (!canvas) {
+    alert('Canvas not found. Ensure diagram is loaded.');
+    return;
+  }
+
+  // Create a temporary canvas to draw background color (transparent by default in vis)
+  const tempCanvas = document.createElement('canvas');
+  const tempCtx = tempCanvas.getContext('2d');
+  tempCanvas.width = canvas.width;
+  tempCanvas.height = canvas.height;
+
+  // Fill background
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  tempCtx.fillStyle = isDark ? '#0f0f0f' : '#ffffff';
+  tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+  // Draw original canvas over it
+  tempCtx.drawImage(canvas, 0, 0);
+
+  const dataURL = tempCanvas.toDataURL('image/png');
+  const link = document.createElement('a');
+  link.href = dataURL;
+  link.download = `schema_export_${activeConnectionId || 'db'}.png`;
+  link.click();
+}
