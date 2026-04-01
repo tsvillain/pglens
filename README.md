@@ -9,6 +9,8 @@ A simple PostgreSQL database viewer tool. Perfect to quickly view and explore yo
 - 🚀 **Background Service**: Runs as a daemon process for persistent access
 - 🗂️ **Table & View Browser**: View all tables and views in your database in a clean, searchable sidebar
 - 🗃️ **Schema Selection**: Browse any schema in your database, not just `public`
+- 🕸️ **Schema Visualization**: Interactive network graph to visualize table relationships within a schema
+- 📥 **Import/Export**: Export your database schema as SQL and import it into another connection
 - 🔎 **Spotlight Search**: Quick table search with `Cmd+K` / `Ctrl+K` for fast navigation
 - 📊 **Data Viewer**: Browse table rows with a modern, easy-to-read interface
 - 🔢 **Row Numbers**: Row numbers displayed for easier navigation and reference
@@ -103,6 +105,8 @@ pglens stop
    - Use the sidebar to browse tables across different connections
    - Double-click cells to view detailed content
    - Use the "Columns" menu to toggle visibility
+   - Visualize table relationships using the Schema button
+   - Export your database schema and import to another environment
    - Switch themes for comfortable viewing
 
 ## Development
