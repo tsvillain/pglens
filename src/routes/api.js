@@ -696,4 +696,120 @@ router.post('/import', requireConnection, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/schema
+ * 
+ * Returns a structured representation of the database schema for visualization.
+ * Includes tables, columns, data types, primary keys, unique constraints, and foreign key relationships.
+ */
+router.get('/schema', requireConnection, async (req, res) => {
+  try {
+    const pool = req.pool;
+    const schema = req.schema;
+
+    // Fire all 4 queries in parallel — one round trip each instead of 3N+1
+    const [tablesResult, columnsResult, constraintsResult, fkResult] = await Promise.all([
+      pool.query(`
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = $1
+          AND table_type = 'BASE TABLE'
+      `, [schema]),
+
+      pool.query(`
+        SELECT table_name, column_name, data_type, udt_name, character_maximum_length, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = $1
+        ORDER BY table_name, ordinal_position
+      `, [schema]),
+
+      // Primary keys and unique constraints in one query
+      pool.query(`
+        SELECT tc.table_name, kcu.column_name, tc.constraint_type
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_schema = $1
+          AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+      `, [schema]),
+
+      pool.query(`
+        SELECT
+          kcu.table_name,
+          kcu.column_name,
+          ccu.table_name  AS foreign_table_name,
+          ccu.column_name AS foreign_column_name
+        FROM information_schema.table_constraints AS tc
+        JOIN information_schema.key_column_usage AS kcu
+          ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage AS ccu
+          ON ccu.constraint_name = tc.constraint_name
+          AND ccu.table_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+          AND tc.table_schema = $1
+      `, [schema])
+    ]);
+
+    // Index constraint results by table for O(1) lookup
+    const pkCols = {};    // { tableName: Set<columnName> }
+    const uqCols = {};    // { tableName: Set<columnName> }
+    for (const row of constraintsResult.rows) {
+      if (row.constraint_type === 'PRIMARY KEY') {
+        (pkCols[row.table_name] ??= new Set()).add(row.column_name);
+      } else {
+        (uqCols[row.table_name] ??= new Set()).add(row.column_name);
+      }
+    }
+
+    const fkMap = {};    // { tableName: { columnName: { table, column } } }
+    for (const row of fkResult.rows) {
+      (fkMap[row.table_name] ??= {})[row.column_name] = {
+        table: row.foreign_table_name,
+        column: row.foreign_column_name
+      };
+    }
+
+    const colsByTable = {};  // { tableName: row[] }
+    for (const row of columnsResult.rows) {
+      (colsByTable[row.table_name] ??= []).push(row);
+    }
+
+    // Build response
+    const schemaMap = {};
+    for (const { table_name: tableName } of tablesResult.rows) {
+      const pkSet = pkCols[tableName] ?? new Set();
+      const uqSet = uqCols[tableName] ?? new Set();
+      const fkTable = fkMap[tableName] ?? {};
+
+      const columns = (colsByTable[tableName] ?? []).map(col => {
+        let actualDataType = col.data_type;
+        if (col.data_type === 'USER-DEFINED') {
+          actualDataType = col.udt_name;
+        } else if (col.data_type === 'ARRAY') {
+          actualDataType = col.udt_name.startsWith('_') ? col.udt_name.substring(1) + '[]' : col.udt_name + '[]';
+        }
+        return {
+          name: col.column_name,
+          type: actualDataType,
+          maxLength: col.character_maximum_length,
+          isNullable: col.is_nullable === 'YES',
+          isPrimaryKey: pkSet.has(col.column_name),
+          isUnique: uqSet.has(col.column_name),
+          isForeignKey: !!fkTable[col.column_name],
+          foreignKeyRef: fkTable[col.column_name] || null
+        };
+      });
+
+      schemaMap[tableName] = { name: tableName, columns };
+    }
+
+    res.json({ schema: schemaMap });
+  } catch (error) {
+    console.error('Error fetching schema:', error);
+    res.status(500).json({ error: 'Failed to fetch database schema', details: error.message });
+  }
+});
+
 module.exports = router;
