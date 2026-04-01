@@ -7,17 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-04-01
+
 ### Added
 
 - **Schema Selection**: Browse any schema in your database, not just `public`. Schema is selectable when editing a connection and persisted per connection.
 - **Views Support**: Views are now listed alongside tables in the sidebar, dashboard, and spotlight search, distinguished with an eye icon and "view" label.
 - **Schema API**: New `GET /api/schemas` endpoint to list available schemas for a connection.
+- **Schema Visualization**: Interactive network graph to visualize table relationships within a schema.
+- **Import/Export**: Export your database schema and import it into another connection.
 
 ### Changed
 
 - Dashboard header now shows both table and view counts (e.g. "12 tables, 3 views").
 - All SQL queries use the connection's schema instead of hardcoded `public`.
 - Connection cards show schema name when non-public.
+- Increased server start and port acquisition timeouts for more reliable startup.
 
 ## [2.2.0] - 2026-02-02
 
@@ -112,5 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQL injection prevention via table name sanitization
 - Input validation for pagination parameters
 
+[Unreleased]: https://github.com/tsvillain/pglens/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/tsvillain/pglens/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/tsvillain/pglens/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/tsvillain/pglens/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/tsvillain/pglens/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/tsvillain/pglens/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tsvillain/pglens/releases/tag/v1.0.0

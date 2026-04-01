@@ -1,6 +1,6 @@
 {
   "name": "pglens",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "A simple PostgreSQL database viewer tool",
   "bin": {
     "pglens": "./bin/pglens"
