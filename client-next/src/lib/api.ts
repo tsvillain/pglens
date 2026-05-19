@@ -28,16 +28,60 @@ const SchemasResponse = z.object({
   schemas: z.array(z.string()),
 })
 
+// Server returns the envelope:
+//   { error: { code, message, hint? }, errorMessage: <string mirror for v2> }
+// During the strangler-fig migration we accept either shape so v3 keeps
+// working against older pglens binaries.
 const ApiErrorResponse = z.object({
-  error: z.string(),
+  error: z
+    .union([
+      z.string(),
+      z.object({
+        code: z.string().optional(),
+        message: z.string(),
+        hint: z.string().optional(),
+      }),
+    ])
+    .optional(),
+  errorMessage: z.string().optional(),
 })
 
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
-    super(message)
-    this.status = status
+  code?: string
+  hint?: string
+  constructor(opts: { message: string; status: number; code?: string; hint?: string }) {
+    super(opts.message)
+    this.status = opts.status
+    this.code = opts.code
+    this.hint = opts.hint
   }
+}
+
+function parseErrorBody(body: unknown, status: number): ApiError {
+  if (typeof body !== 'object' || body == null) {
+    return new ApiError({ message: `HTTP ${status}`, status })
+  }
+  const parsed = ApiErrorResponse.safeParse(body)
+  if (!parsed.success) {
+    return new ApiError({ message: `HTTP ${status}`, status })
+  }
+  const { error, errorMessage } = parsed.data
+  if (typeof error === 'object' && error) {
+    return new ApiError({
+      message: error.message,
+      status,
+      code: error.code,
+      hint: error.hint,
+    })
+  }
+  if (typeof error === 'string') {
+    return new ApiError({ message: error, status })
+  }
+  if (errorMessage) {
+    return new ApiError({ message: errorMessage, status })
+  }
+  return new ApiError({ message: `HTTP ${status}`, status })
 }
 
 interface FetchOptions {
@@ -53,16 +97,16 @@ async function api<T>(
   const headers: Record<string, string> = {}
   if (opts.connectionId) headers['x-connection-id'] = opts.connectionId
 
-  const res = await fetch(path, { headers, signal: opts.signal })
+  // `credentials: 'same-origin'` is the default but stated explicitly so the
+  // pglens_token cookie always rides along.
+  const res = await fetch(path, {
+    headers,
+    signal: opts.signal,
+    credentials: 'same-origin',
+  })
   if (!res.ok) {
-    let message = `HTTP ${res.status}`
-    try {
-      const body = ApiErrorResponse.parse(await res.json())
-      message = body.error
-    } catch {
-      // keep default
-    }
-    throw new ApiError(message, res.status)
+    const body = await res.json().catch(() => null)
+    throw parseErrorBody(body, res.status)
   }
   return schema.parse(await res.json())
 }
@@ -102,15 +146,10 @@ async function postJson<T>(
     method,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    credentials: 'same-origin',
   })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    const message =
-      (typeof json === 'object' && json && 'error' in json
-        ? String((json as { error: unknown }).error)
-        : null) ?? `HTTP ${res.status}`
-    throw new ApiError(message, res.status)
-  }
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
   return schema.parse(json)
 }
 
@@ -140,15 +179,10 @@ export async function runQuery(
       'x-connection-id': connectionId,
     },
     body: JSON.stringify({ sql, params }),
+    credentials: 'same-origin',
   })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    const message =
-      typeof json === 'object' && json && 'error' in json
-        ? String((json as { error: unknown }).error)
-        : `HTTP ${res.status}`
-    throw new ApiError(message, res.status)
-  }
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
   return QueryResponse.parse(json)
 }
 
