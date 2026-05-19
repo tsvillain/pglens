@@ -26,15 +26,24 @@ test.describe('v3 landing', () => {
     expect(body.ok).toBe(true)
   })
 
-  test('v3 landing redirects with ?token, sets cookie, then renders the heading', async ({ page }) => {
+  test('landing redirects with ?token, sets cookie, then renders the heading', async ({ page }) => {
     const token = readToken()
-    await page.goto(`/v3/?token=${token}`)
-    await expect(page).toHaveURL('/v3/')
-    await expect(page.getByRole('heading', { name: 'pglens v3' })).toBeVisible()
+    await page.goto(`/?token=${token}`)
+    await expect(page).toHaveURL('/')
+    await expect(page.getByRole('heading', { name: 'pglens' })).toBeVisible()
+  })
+
+  test('legacy /v3 path 301-redirects to root', async ({ page }) => {
+    const token = readToken()
+    // Prime the cookie so the auth middleware doesn't intercept with its own 302.
+    await page.goto(`/?token=${token}`)
+    const res = await page.goto('/v3/tables/foo')
+    expect(res?.status()).toBe(200) // followed: 301 → 200
+    await expect(page).toHaveURL('/tables/foo')
   })
 
   test('rejects an obviously wrong token without setting a cookie', async ({ page }) => {
-    const res = await page.goto('/v3/?token=bogus')
+    const res = await page.goto('/?token=bogus')
     expect(res?.status()).toBe(401)
   })
 })

@@ -16,15 +16,38 @@ import { useConnectionStore } from '@/store/connection'
 type Mode = 'params' | 'url'
 type Ssl = NonNullable<ConnectPayload['sslMode']>
 
+// Sentinel value swapped in for the password in masked URLs returned by
+// GET /api/connections. The server treats a literal "***" on PUT as
+// "keep the existing keychain entry".
+const PW_SENTINEL = '***'
+
+export interface ConnectionEdit {
+  id: string
+  name?: string
+  connectionString?: string
+  host?: string
+  port?: number
+  database?: string
+  username?: string
+  sslMode?: string
+  schema?: string
+}
+
 interface ConnectionDialogProps {
   open: boolean
   onClose: () => void
-  edit?: { id: string; name?: string; url?: string; sslMode?: Ssl; schema?: string }
+  edit?: ConnectionEdit
+}
+
+function isValidSsl(s: string | undefined): s is Ssl {
+  return s === 'prefer' || s === 'require' || s === 'disable' ||
+    s === 'verify-ca' || s === 'verify-full'
 }
 
 function buildUrl(host: string, port: string, db: string, user: string, pw: string) {
-  const u = `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(pw)}@${host}:${port || '5432'}/${db}`
-  return u
+  const password = pw || ''
+  const auth = `${encodeURIComponent(user)}${password ? ':' + encodeURIComponent(password) : ''}@`
+  return `postgresql://${auth}${host}:${port || '5432'}/${db}`
 }
 
 export function ConnectionDialog({ open, onClose, edit }: ConnectionDialogProps) {
@@ -45,10 +68,17 @@ export function ConnectionDialog({ open, onClose, edit }: ConnectionDialogProps)
   useEffect(() => {
     if (!open) return
     if (edit) {
-      setMode('url')
+      // Default to URL mode when we have a masked connection string; both
+      // tabs stay prefilled so the user can switch without losing context.
+      setMode(edit.connectionString ? 'url' : 'params')
       setName(edit.name ?? '')
-      setUrl(edit.url ?? '')
-      setSslMode(edit.sslMode ?? 'prefer')
+      setUrl(edit.connectionString ?? '')
+      setHost(edit.host ?? 'localhost')
+      setPort(edit.port ? String(edit.port) : '5432')
+      setDb(edit.database ?? 'postgres')
+      setUser(edit.username ?? '')
+      setPw('')
+      setSslMode(isValidSsl(edit.sslMode) ? edit.sslMode : 'prefer')
       setSchema(edit.schema ?? 'public')
     } else {
       setMode('url')
@@ -66,8 +96,15 @@ export function ConnectionDialog({ open, onClose, edit }: ConnectionDialogProps)
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const finalUrl =
-        mode === 'url' ? url : buildUrl(host, port, db, user, pw)
+      let finalUrl: string
+      if (mode === 'url') {
+        finalUrl = url
+      } else {
+        // In params edit mode, an empty password means "keep current". Send
+        // the sentinel so the server pulls the real password from the keychain.
+        const effectivePw = pw === '' && edit ? PW_SENTINEL : pw
+        finalUrl = buildUrl(host, port, db, user, effectivePw)
+      }
       const payload: ConnectPayload = {
         url: finalUrl,
         sslMode,
@@ -135,7 +172,14 @@ export function ConnectionDialog({ open, onClose, edit }: ConnectionDialogProps)
         </Field>
 
         {mode === 'url' ? (
-          <Field label="Connection URL">
+          <Field
+            label="Connection URL"
+            hint={
+              edit
+                ? `Password is masked as "${PW_SENTINEL}". Leave it as-is to keep the existing password.`
+                : undefined
+            }
+          >
             <Input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -162,11 +206,15 @@ export function ConnectionDialog({ open, onClose, edit }: ConnectionDialogProps)
               <Field label="Username">
                 <Input value={user} onChange={(e) => setUser(e.target.value)} />
               </Field>
-              <Field label="Password">
+              <Field
+                label="Password"
+                hint={edit ? 'Leave blank to keep current.' : undefined}
+              >
                 <Input
                   type="password"
                   value={pw}
                   onChange={(e) => setPw(e.target.value)}
+                  placeholder={edit ? '(unchanged)' : ''}
                 />
               </Field>
             </div>
@@ -204,9 +252,11 @@ export function ConnectionDialog({ open, onClose, edit }: ConnectionDialogProps)
 function Field({
   label,
   children,
+  hint,
 }: {
   label: string
   children: React.ReactNode
+  hint?: string
 }) {
   return (
     <label className="block">
@@ -214,6 +264,9 @@ function Field({
         {label}
       </span>
       {children}
+      {hint && (
+        <span className="mt-1 block text-[11px] text-muted-foreground">{hint}</span>
+      )}
     </label>
   )
 }

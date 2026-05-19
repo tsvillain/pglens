@@ -13,8 +13,8 @@ const LOG_FILE = path.join(os.homedir(), '.pglens', 'logs', 'pglens.log');
 
 program
   .name('pglens')
-  .description('A simple PostgreSQL database viewer tool')
-  .version('3.0.0-alpha');
+  .description('No-code PostgreSQL workstation')
+  .version('3.0.0');
 
 function getRunningPort() {
   if (!fs.existsSync(PORT_FILE)) return null;

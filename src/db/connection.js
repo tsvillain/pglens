@@ -127,8 +127,15 @@ async function updateConnection(id, connectionString, sslMode, name, schema = 'p
 
   const meta = parseConnectionUrl(connectionString);
   if (!meta) throw new Error('Could not parse connection string');
-  const password = meta.password;
+  let password = meta.password;
   delete meta.password;
+
+  // "***" is the masked-password sentinel surfaced by maskedConnectionUrl().
+  // When the client submits an unmodified URL/Params edit, swap it for the
+  // real keychain entry so the connection re-opens successfully.
+  if (password === '***') {
+    password = await getPassword(id);
+  }
 
   const sql = await openPool(meta, password, sslMode);
   await existing.pool.end();

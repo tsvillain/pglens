@@ -4,7 +4,11 @@ const ConnectionSchema = z.object({
   id: z.string(),
   name: z.string(),
   host: z.string().optional(),
+  port: z.number().optional(),
   database: z.string().optional(),
+  username: z.string().optional(),
+  connectionString: z.string().optional(),
+  sslMode: z.string().optional(),
   schema: z.string().optional(),
   type: z.string().optional(),
 })
@@ -140,7 +144,7 @@ async function postJson<T>(
   path: string,
   body: unknown,
   schema: z.ZodSchema<T>,
-  method: 'POST' | 'PUT' = 'POST',
+  method: 'POST' | 'PUT' | 'PATCH' = 'POST',
 ): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -193,6 +197,107 @@ export function updateConnectionApi(id: string, payload: ConnectPayload) {
     UpdateConnectionResponse,
     'PUT',
   )
+}
+
+const PatchSchemaResponse = z.object({ updated: z.boolean() })
+
+export function patchSchema(connectionId: string, schema: string) {
+  return postJson(
+    `/api/connections/${encodeURIComponent(connectionId)}/schema`,
+    { schema },
+    PatchSchemaResponse,
+    'PATCH',
+  )
+}
+
+const DisconnectResponse = z.object({ connected: z.boolean() })
+
+export async function disconnect(connectionId: string) {
+  const res = await fetch('/api/disconnect', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-connection-id': connectionId,
+    },
+    body: JSON.stringify({ connectionId }),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return DisconnectResponse.parse(json)
+}
+
+export interface BackupProgress {
+  bytes: number
+  currentTable?: string
+}
+
+/**
+ * Stream /api/export to disk while reporting progress. The server emits
+ * `-- Table structure for table "..."` markers between sections, so we
+ * peek into the decoded text to surface the current table name.
+ */
+export async function downloadBackup(
+  connectionId: string,
+  fileName = 'pglens_backup.sql',
+  onProgress?: (p: BackupProgress) => void,
+  signal?: AbortSignal,
+) {
+  const res = await fetch('/api/export', {
+    headers: { 'x-connection-id': connectionId },
+    credentials: 'same-origin',
+    signal,
+  })
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+  if (!res.body) {
+    // Fallback for environments without ReadableStream.
+    const blob = await res.blob()
+    triggerDownload(blob, fileName)
+    onProgress?.({ bytes: blob.size })
+    return
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  const chunks: BlobPart[] = []
+  let bytes = 0
+  let textBuffer = ''
+  let currentTable: string | undefined
+  const tableMarker = /Table structure for table "([^"]+)"/g
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    bytes += value.byteLength
+
+    textBuffer += decoder.decode(value, { stream: true })
+    let m: RegExpExecArray | null
+    let last: string | undefined
+    while ((m = tableMarker.exec(textBuffer)) !== null) last = m[1]
+    if (last) currentTable = last
+    // Trim so the buffer doesn't grow unbounded over a long export.
+    if (textBuffer.length > 8192) textBuffer = textBuffer.slice(-4096)
+
+    onProgress?.({ bytes, currentTable })
+  }
+
+  triggerDownload(new Blob(chunks, { type: 'application/sql' }), fileName)
+  onProgress?.({ bytes, currentTable })
+}
+
+function triggerDownload(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
 export function listSchemas(connectionId: string, signal?: AbortSignal) {

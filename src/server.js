@@ -1,10 +1,8 @@
 /**
  * pglens Server
  *
- * Express server with token-gated localhost-only access. Mounts the legacy
- * vanilla client at `/`, the v3 React app at `/v3` behind PGLENS_V3, and
- * the API at `/api`. All routes require the per-install token (cookie or
- * x-pglens-token header).
+ * Express server with token-gated localhost-only access. The React + TS
+ * app under `client-next/dist` is now the only frontend, served at `/`.
  */
 
 const express = require('express');
@@ -22,7 +20,6 @@ const { sendError, codes } = require('./http/errors');
 const { closePool, restoreConnections } = require('./db/connection');
 const apiRoutes = require('./routes/api');
 
-const V3_ENABLED = process.env.PGLENS_V3 !== '0';
 const DEFAULT_PORT = 54321;
 const BIND_HOST = process.env.PGLENS_BIND || '127.0.0.1';
 
@@ -45,38 +42,34 @@ async function startServer({ standalone = true } = {}) {
   if (await isPortInUse(port)) port = 0;
 
   app.use(cookieParser());
-  // CORS is intentionally not required (same-origin only via localhost bind),
-  // but kept for tooling like `curl --json` against the API.
+  // CORS off — same-origin localhost-only.
   app.use(cors({ origin: false }));
   app.use(express.json({ limit: '10mb' }));
 
-  // Health probe does not require auth — used by the v3 landing for ready-check.
+  // Health probe — no auth, used by the landing page + Playwright.
   app.get('/api/v3/health', (_req, res) => {
     res.json({ ok: true, version: pkg.version });
   });
 
-  // Everything else requires the per-install token.
+  // All other routes require the per-install token.
   app.use(tokenMiddleware);
 
   app.use('/api', apiRoutes);
 
-  const v3DistPath = path.join(__dirname, '../client-next/dist');
-  const v3Available = V3_ENABLED && fs.existsSync(path.join(v3DistPath, 'index.html'));
+  // Legacy redirect: prior versions printed URLs under /v3. Keep the prefix
+  // working by 301-redirecting to root so old bookmarks don't 404.
+  app.get(/^\/v3(\/.*)?$/, (req, res) => {
+    const tail = req.params[0] || '/';
+    res.redirect(301, tail);
+  });
 
-  if (v3Available) {
-    app.use('/v3', express.static(v3DistPath));
-    app.get('/v3/*', (_req, res) => res.sendFile(path.join(v3DistPath, 'index.html')));
-  } else if (V3_ENABLED) {
-    app.get('/v3*', (_req, res) =>
-      res.status(503).type('text/plain').send('pglens v3 not built. Run: cd client-next && npm run build'),
-    );
+  const clientPath = path.join(__dirname, '../client-next/dist');
+  if (!fs.existsSync(path.join(clientPath, 'index.html'))) {
+    logger.error({ clientPath }, 'client-next/dist not built — run `cd client-next && npm run build`');
   }
-
-  const clientPath = path.join(__dirname, '../client');
   app.use(express.static(clientPath));
   app.get('*', (_req, res) => res.sendFile(path.join(clientPath, 'index.html')));
 
-  // Final error handler — convert any uncaught error into the envelope.
   app.use((err, _req, res, _next) => {
     logger.error({ err: err.message, stack: err.stack }, 'unhandled error');
     if (res.headersSent) return;
@@ -87,13 +80,10 @@ async function startServer({ standalone = true } = {}) {
     const server = app.listen(port, BIND_HOST, () => {
       const actualPort = server.address().port;
       const url = `http://${BIND_HOST}:${actualPort}/?token=${token}`;
-      logger.info({ port: actualPort, host: BIND_HOST, v3: v3Available }, 'server listening');
+      logger.info({ port: actualPort, host: BIND_HOST }, 'server listening');
       if (standalone) {
         console.log(`✓ Server running on http://${BIND_HOST}:${actualPort}`);
         console.log(`  Open: ${url}`);
-        if (v3Available) {
-          console.log(`  v3 preview: http://${BIND_HOST}:${actualPort}/v3/?token=${token}`);
-        }
         fs.writeFileSync(PORT_FILE, actualPort.toString(), { mode: 0o600 });
       }
       resolve({ port: actualPort, token, url });

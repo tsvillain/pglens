@@ -14,7 +14,6 @@ const queryClient = new QueryClient({
 
 const router = createRouter({
   routeTree,
-  basepath: '/v3',
   defaultPreload: 'intent',
   context: { queryClient },
 })

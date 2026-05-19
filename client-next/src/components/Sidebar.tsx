@@ -1,26 +1,32 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMemo, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Database, GitBranch, Plus, Search, Table as TableIcon, Terminal, Eye } from 'lucide-react'
+import {
+  Database, Download, Eye, GitBranch, MoreVertical, Pencil, Plus, Power,
+  Search, Table as TableIcon, Terminal,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { ConnectionDialog } from '@/components/ConnectionDialog'
+import { ExportProgressToast } from '@/components/ExportProgressToast'
+import { ThemeToggle } from '@/components/ThemeToggle'
 import {
-  listConnections,
-  listSchemas,
-  listTables,
-  type Connection,
+  disconnect, downloadBackup, listConnections, listSchemas, listTables,
+  patchSchema, type Connection,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useConnectionStore } from '@/store/connection'
+import { useTabsStore } from '@/store/tabs'
 
 export function Sidebar() {
+  const qc = useQueryClient()
   const activeId = useConnectionStore((s) => s.activeConnectionId)
   const setActive = useConnectionStore((s) => s.setActive)
   const navigate = useNavigate()
   const matchRoute = useMatchRoute()
+  const openTab = useTabsStore((s) => s.open)
 
   const connections = useQuery({
     queryKey: ['connections'],
@@ -28,7 +34,6 @@ export function Sidebar() {
     refetchInterval: 15_000,
   })
 
-  // Auto-pick the first connection if none selected.
   const resolvedActiveId =
     activeId && connections.data?.some((c) => c.id === activeId)
       ? activeId
@@ -36,26 +41,70 @@ export function Sidebar() {
 
   const tables = useQuery({
     queryKey: ['tables', resolvedActiveId],
-    queryFn: ({ signal }) =>
-      listTables(resolvedActiveId!, signal).then((r) => r.tables),
+    queryFn: ({ signal }) => listTables(resolvedActiveId!, signal).then((r) => r.tables),
     enabled: !!resolvedActiveId,
   })
 
   const schemas = useQuery({
     queryKey: ['schemas', resolvedActiveId],
-    queryFn: ({ signal }) =>
-      listSchemas(resolvedActiveId!, signal).then((r) => r.schemas),
+    queryFn: ({ signal }) => listSchemas(resolvedActiveId!, signal).then((r) => r.schemas),
     enabled: !!resolvedActiveId,
   })
 
+  const patchSchemaMut = useMutation({
+    mutationFn: ({ id, schema }: { id: string; schema: string }) =>
+      patchSchema(id, schema),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['connections'] })
+      qc.invalidateQueries({ queryKey: ['tables', resolvedActiveId] })
+      qc.invalidateQueries({ queryKey: ['schema', resolvedActiveId] })
+    },
+  })
+
+  const disconnectMut = useMutation({
+    mutationFn: (id: string) => disconnect(id),
+    onSuccess: (_d, id) => {
+      qc.invalidateQueries({ queryKey: ['connections'] })
+      if (resolvedActiveId === id) setActive(null)
+    },
+  })
+
+  const [exportProgress, setExportProgress] = useState<
+    { bytes: number; currentTable?: string } | null
+  >(null)
+  const exportAbortRef = useRef<AbortController | null>(null)
+
+  const exportMut = useMutation({
+    mutationFn: (id: string) => {
+      exportAbortRef.current?.abort()
+      const controller = new AbortController()
+      exportAbortRef.current = controller
+      setExportProgress({ bytes: 0 })
+      return downloadBackup(
+        id,
+        `pglens_${activeConn?.name ?? 'backup'}.sql`,
+        (p) => setExportProgress({ bytes: p.bytes, currentTable: p.currentTable }),
+        controller.signal,
+      )
+    },
+    onSettled: () => {
+      setExportProgress(null)
+      exportAbortRef.current = null
+    },
+  })
+
   const [search, setSearch] = useState('')
-  const [dialogOpen, setDialogOpen] = useState(false)
   const filteredTables = useMemo(() => {
     if (!tables.data) return []
     const q = search.trim().toLowerCase()
     if (!q) return tables.data
     return tables.data.filter((t) => t.name.toLowerCase().includes(q))
   }, [tables.data, search])
+
+  const [dialogState, setDialogState] = useState<{ open: boolean; edit?: Connection }>(
+    { open: false },
+  )
+  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
 
   const activeConn: Connection | undefined = connections.data?.find(
     (c) => c.id === resolvedActiveId,
@@ -66,14 +115,15 @@ export function Sidebar() {
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <Link
           to="/"
-          className="flex items-center gap-2 text-base font-semibold tracking-tight"
+          onClick={() => openTab({ kind: 'home' })}
+          className="flex items-center gap-2"
         >
           <Database className="h-4 w-4 text-primary" />
-          pglens
-          <span className="rounded-sm border border-border bg-muted px-1 py-0.5 text-[10px] uppercase text-muted-foreground">
-            v3
+          <span className="font-logo text-xl leading-none tracking-wide">
+            pglens
           </span>
         </Link>
+        <ThemeToggle />
       </div>
 
       <Section
@@ -83,7 +133,7 @@ export function Sidebar() {
             size="icon"
             variant="ghost"
             title="New connection"
-            onClick={() => setDialogOpen(true)}
+            onClick={() => setDialogState({ open: true })}
           >
             <Plus className="h-4 w-4" />
           </Button>
@@ -96,24 +146,58 @@ export function Sidebar() {
           </Hint>
         )}
         {connections.data?.length === 0 && (
-          <Hint>No active connections. Open / to add one.</Hint>
+          <Hint>No active connections. Click + to add one.</Hint>
         )}
         <ul className="space-y-1">
           {connections.data?.map((c) => (
-            <li key={c.id}>
-              <button
-                onClick={() => setActive(c.id)}
+            <li key={c.id} className="relative">
+              <div
                 className={cn(
-                  'flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent',
-                  c.id === resolvedActiveId &&
-                    'bg-accent text-accent-foreground',
+                  'group flex items-center gap-1 rounded-md px-1 hover:bg-accent',
+                  c.id === resolvedActiveId && 'bg-accent text-accent-foreground',
                 )}
               >
-                <span className="truncate">{c.name || c.id}</span>
-                {c.id === resolvedActiveId && (
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                )}
-              </button>
+                <button
+                  onClick={() => setActive(c.id)}
+                  className="flex flex-1 items-center gap-2 px-1 py-1.5 text-left text-sm"
+                >
+                  {c.id === resolvedActiveId && (
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+                  )}
+                  <span className="truncate">{c.name || c.id}</span>
+                </button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6 opacity-0 group-hover:opacity-100"
+                  onClick={() => setMenuOpenFor(menuOpenFor === c.id ? null : c.id)}
+                  aria-label="Connection actions"
+                >
+                  <MoreVertical className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              {menuOpenFor === c.id && (
+                <div className="absolute right-0 top-full z-10 mt-1 w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+                  <MenuItem
+                    icon={Pencil}
+                    onClick={() => {
+                      setMenuOpenFor(null)
+                      setDialogState({ open: true, edit: c })
+                    }}
+                  >
+                    Edit
+                  </MenuItem>
+                  <MenuItem
+                    icon={Power}
+                    onClick={() => {
+                      setMenuOpenFor(null)
+                      disconnectMut.mutate(c.id)
+                    }}
+                  >
+                    Disconnect
+                  </MenuItem>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -123,9 +207,9 @@ export function Sidebar() {
         <Section title="Schema">
           <Select
             value={activeConn.schema ?? 'public'}
-            onChange={() => {
-              /* TODO: PATCH /api/connections/:id/schema */
-            }}
+            onChange={(e) =>
+              patchSchemaMut.mutate({ id: activeConn.id, schema: e.target.value })
+            }
           >
             {schemas.data?.map((s) => (
               <option key={s} value={s}>
@@ -135,10 +219,10 @@ export function Sidebar() {
           </Select>
           <Link
             to="/schema"
+            onClick={() => openTab({ kind: 'schema' })}
             className={cn(
               'mt-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
-              !!matchRoute({ to: '/schema' }) &&
-                'bg-accent text-accent-foreground',
+              !!matchRoute({ to: '/schema' }) && 'bg-accent text-accent-foreground',
             )}
           >
             <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
@@ -146,15 +230,23 @@ export function Sidebar() {
           </Link>
           <Link
             to="/query"
+            onClick={() => openTab({ kind: 'query' })}
             className={cn(
               'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
-              !!matchRoute({ to: '/query' }) &&
-                'bg-accent text-accent-foreground',
+              !!matchRoute({ to: '/query' }) && 'bg-accent text-accent-foreground',
             )}
           >
             <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
             Query
           </Link>
+          <button
+            onClick={() => exportMut.mutate(activeConn.id)}
+            disabled={exportMut.isPending}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50"
+          >
+            <Download className="h-3.5 w-3.5 text-muted-foreground" />
+            {exportMut.isPending ? 'Exporting…' : 'Export backup'}
+          </button>
         </Section>
       )}
 
@@ -168,7 +260,7 @@ export function Sidebar() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter tables…"
+            placeholder="Filter tables (⌘K)…"
             className="h-8 pl-7 text-sm"
             disabled={!resolvedActiveId}
           />
@@ -178,26 +270,20 @@ export function Sidebar() {
           {!resolvedActiveId && <Hint>Pick a connection above.</Hint>}
           {tables.isLoading && <Hint>Loading tables…</Hint>}
           {tables.error && (
-            <Hint className="text-destructive">
-              {(tables.error as Error).message}
-            </Hint>
+            <Hint className="text-destructive">{(tables.error as Error).message}</Hint>
           )}
-          {tables.data && filteredTables.length === 0 && (
-            <Hint>No tables match.</Hint>
-          )}
+          {tables.data && filteredTables.length === 0 && <Hint>No tables match.</Hint>}
           <ul className="space-y-0.5">
             {filteredTables.map((t) => {
               const params = { tableName: t.name }
-              const isActive = !!matchRoute({
-                to: '/tables/$tableName',
-                params,
-              })
+              const isActive = !!matchRoute({ to: '/tables/$tableName', params })
               return (
                 <li key={t.name}>
                   <button
-                    onClick={() =>
+                    onClick={() => {
+                      openTab({ kind: 'table', tableName: t.name })
                       navigate({ to: '/tables/$tableName', params })
-                    }
+                    }}
                     className={cn(
                       'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent',
                       isActive && 'bg-accent text-accent-foreground',
@@ -216,17 +302,40 @@ export function Sidebar() {
           </ul>
         </div>
       </Section>
-      <ConnectionDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+
+      {exportProgress && (
+        <ExportProgressToast
+          bytes={exportProgress.bytes}
+          currentTable={exportProgress.currentTable}
+          onCancel={() => exportAbortRef.current?.abort()}
+        />
+      )}
+
+      <ConnectionDialog
+        open={dialogState.open}
+        edit={
+          dialogState.edit
+            ? {
+                id: dialogState.edit.id,
+                name: dialogState.edit.name,
+                connectionString: dialogState.edit.connectionString,
+                host: dialogState.edit.host,
+                port: dialogState.edit.port,
+                database: dialogState.edit.database,
+                username: dialogState.edit.username,
+                sslMode: dialogState.edit.sslMode,
+                schema: dialogState.edit.schema,
+              }
+            : undefined
+        }
+        onClose={() => setDialogState({ open: false })}
+      />
     </aside>
   )
 }
 
 function Section({
-  title,
-  action,
-  children,
-  className,
-  bodyClassName,
+  title, action, children, className, bodyClassName,
 }: {
   title: string
   action?: React.ReactNode
@@ -247,14 +356,24 @@ function Section({
   )
 }
 
-function Hint({
-  children,
-  className,
+function Hint({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <p className={cn('text-xs text-muted-foreground', className)}>{children}</p>
+}
+
+function MenuItem({
+  icon: Icon, children, onClick,
 }: {
+  icon: React.ComponentType<{ className?: string }>
   children: React.ReactNode
-  className?: string
+  onClick: () => void
 }) {
   return (
-    <p className={cn('text-xs text-muted-foreground', className)}>{children}</p>
+    <button
+      onClick={onClick}
+      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {children}
+    </button>
   )
 }

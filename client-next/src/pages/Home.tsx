@@ -1,11 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
+import { Database, Plus, ServerCog } from 'lucide-react'
+import { useState } from 'react'
 import { z } from 'zod'
-import { cn } from '@/lib/utils'
 
-const HealthSchema = z.object({
-  ok: z.boolean(),
-  version: z.string().optional(),
-})
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { ConnectionDialog } from '@/components/ConnectionDialog'
+import { listConnections } from '@/lib/api'
+import { useConnectionStore } from '@/store/connection'
+import { useTabsStore } from '@/store/tabs'
+
+const HealthSchema = z.object({ ok: z.boolean(), version: z.string().optional() })
 
 async function fetchHealth() {
   const res = await fetch('/api/v3/health')
@@ -14,59 +20,114 @@ async function fetchHealth() {
 }
 
 export function Home() {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['health'],
-    queryFn: fetchHealth,
-    retry: false,
+  const navigate = useNavigate()
+  const setActive = useConnectionStore((s) => s.setActive)
+  const openTab = useTabsStore((s) => s.open)
+
+  const [search, setSearch] = useState('')
+  const [dialogOpen, setDialogOpen] = useState(false)
+
+  const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth, retry: false })
+  const connections = useQuery({
+    queryKey: ['connections'],
+    queryFn: ({ signal }) => listConnections(signal).then((r) => r.connections),
+  })
+
+  const filtered = (connections.data ?? []).filter((c) => {
+    const q = search.trim().toLowerCase()
+    if (!q) return true
+    return (
+      c.name?.toLowerCase().includes(q) ||
+      c.host?.toLowerCase().includes(q) ||
+      c.database?.toLowerCase().includes(q)
+    )
   })
 
   return (
     <div className="px-10 py-10">
-      <div className="flex items-center gap-3">
-        <h1 className="text-3xl font-semibold tracking-tight">pglens v3</h1>
-        <span className="rounded-md border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-          preview
-        </span>
-      </div>
-      <p className="mt-3 max-w-2xl text-muted-foreground">
-        Phase 0 foundation. Vite + React 18 + TypeScript strict. shadcn/ui +
-        Tailwind. TanStack Query + Router + Table. Served at <code>/v3</code>
-        {' '}behind a feature flag while the v2 client at <code>/</code> stays
-        authoritative.
-      </p>
-
-      <section className="mt-10 max-w-xl rounded-lg border border-border bg-card p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Backend handshake</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Sanity check that the v3 mount can reach the API.
-        </p>
-        <div className="mt-4 text-sm">
-          {isLoading && <span className="text-muted-foreground">Pinging…</span>}
-          {error && (
-            <span className="text-destructive">{(error as Error).message}</span>
-          )}
-          {data && (
-            <span
-              className={cn(
-                'inline-flex items-center gap-2 rounded-md border border-border bg-muted px-2 py-1',
-              )}
-            >
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              ok={String(data.ok)}
-              {data.version ? ` · v${data.version}` : ''}
+      <div className="flex items-end justify-between">
+        <div>
+          <h1 className="flex items-center gap-3">
+            <Database className="h-8 w-8 text-primary" />
+            <span className="font-logo text-4xl leading-none tracking-wide">
+              pglens
             </span>
-          )}
+            <span className="rounded-md border border-border bg-muted px-2 py-0.5 text-xs font-normal text-muted-foreground">
+              v{health.data?.version ?? '…'}
+            </span>
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+            No-code PostgreSQL workstation. Pick a connection below or add a
+            new one to get started.
+          </p>
         </div>
-      </section>
+        <Button onClick={() => setDialogOpen(true)}>
+          <Plus className="h-4 w-4" />
+          New connection
+        </Button>
+      </div>
 
-      <ul className="mt-10 grid max-w-2xl gap-3 text-sm text-muted-foreground sm:grid-cols-2">
-        <li className="rounded-md border border-border p-3">✓ Landing</li>
-        <li className="rounded-md border border-border p-3">✓ Sidebar</li>
-        <li className="rounded-md border border-border p-3">… Table viewer</li>
-        <li className="rounded-md border border-border p-3">… Schema viz</li>
-        <li className="rounded-md border border-border p-3">… Connection dialog</li>
-        <li className="rounded-md border border-border p-3">… Query runner</li>
+      <div className="mt-8 flex items-center gap-3">
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search connections by name, host, or database…"
+          className="max-w-md"
+        />
+        <p className="text-xs text-muted-foreground">
+          {connections.data
+            ? `${filtered.length} of ${connections.data.length}`
+            : ''}
+        </p>
+      </div>
+
+      <ul className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {connections.isLoading && (
+          <li className="text-sm text-muted-foreground">Loading connections…</li>
+        )}
+        {connections.data?.length === 0 && (
+          <li className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+            No saved connections yet. Click <kbd className="rounded border border-border bg-muted px-1">+</kbd> to add one.
+          </li>
+        )}
+        {filtered.map((c) => (
+          <li key={c.id}>
+            <button
+              onClick={() => {
+                setActive(c.id)
+                openTab({ kind: 'schema' })
+                navigate({ to: '/schema' })
+              }}
+              className="flex w-full flex-col gap-2 rounded-lg border border-border bg-card p-4 text-left shadow-sm hover:border-primary/40 hover:bg-accent/40"
+            >
+              <div className="flex items-center gap-2">
+                <ServerCog className="h-4 w-4 text-primary" />
+                <span className="truncate font-medium">{c.name}</span>
+              </div>
+              <div className="grid gap-1 text-xs text-muted-foreground">
+                <div className="flex items-center justify-between">
+                  <span>host</span>
+                  <span className="truncate font-mono">{c.host ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>database</span>
+                  <span className="truncate font-mono">{c.database ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>schema</span>
+                  <span className="truncate font-mono">{c.schema ?? 'public'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>ssl</span>
+                  <span className="truncate font-mono">{c.sslMode ?? 'prefer'}</span>
+                </div>
+              </div>
+            </button>
+          </li>
+        ))}
       </ul>
+
+      <ConnectionDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
     </div>
   )
 }

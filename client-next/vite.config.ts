@@ -2,9 +2,9 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'node:path'
 
-// Served behind /v3 feature flag during strangler-fig migration.
+// Served at root from 3.0.0 onward — strangler-fig migration complete.
 export default defineConfig({
-  base: '/v3/',
+  base: '/',
   plugins: [react()],
   resolve: {
     alias: {
