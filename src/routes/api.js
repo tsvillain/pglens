@@ -812,4 +812,48 @@ router.get('/schema', requireConnection, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/query
+ *
+ * Advanced-mode SQL escape hatch. Executes a raw SQL statement against the
+ * active connection's schema. Read-write is allowed — this endpoint is gated
+ * by the per-install token + bound to localhost in Phase 0 hardening.
+ *
+ * Body: { sql: string, params?: unknown[] }
+ * Response: { rows, fields, rowCount, durationMs }
+ */
+router.post('/query', requireConnection, async (req, res) => {
+  const { sql, params } = req.body || {};
+  if (typeof sql !== 'string' || !sql.trim()) {
+    return res.status(400).json({ error: 'sql is required' });
+  }
+  if (params !== undefined && !Array.isArray(params)) {
+    return res.status(400).json({ error: 'params must be an array' });
+  }
+
+  const pool = req.pool;
+  const schema = req.schema;
+  const started = Date.now();
+  try {
+    // Run user statement with search_path scoped to active schema.
+    await pool.query(`SET search_path TO "${schema}"`);
+    const result = await pool.query(sql, params);
+    const fields = (result.fields || []).map(f => ({
+      name: f.name,
+      dataTypeID: f.dataTypeID,
+    }));
+    res.json({
+      rows: result.rows,
+      fields,
+      rowCount: result.rowCount,
+      durationMs: Date.now() - started,
+    });
+  } catch (error) {
+    res.status(400).json({
+      error: error.message,
+      durationMs: Date.now() - started,
+    });
+  }
+});
+
 module.exports = router;
