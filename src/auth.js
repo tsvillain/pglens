@@ -48,45 +48,56 @@ function constantTimeEquals(a, b) {
 }
 
 /**
- * Express middleware enforcing the per-install token.
+ * Build an Express middleware enforcing the given expected token. Factored
+ * out so tests can construct a middleware with a known token without
+ * touching the on-disk token file.
  *
  * Accepts the token from (in order): `?token=` query param,
  * `x-pglens-token` header, or `pglens_token` cookie. On a successful
- * query-string match, sets the cookie and 302s to a token-stripped URL
- * so it doesn't leak into history.
+ * query-string match, sets the cookie and 302s to a token-stripped URL.
  */
-function tokenMiddleware(req, res, next) {
-  const expected = getToken();
-  const cookieToken = req.cookies?.[COOKIE_NAME];
-  const headerToken = req.get('x-pglens-token');
-  const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
+function createTokenMiddleware(expected) {
+  return function tokenMiddleware(req, res, next) {
+    const cookieToken = req.cookies?.[COOKIE_NAME];
+    const headerToken = req.get ? req.get('x-pglens-token') : req.headers?.['x-pglens-token'];
+    const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
 
-  if (constantTimeEquals(cookieToken, expected)) return next();
-  if (constantTimeEquals(headerToken, expected)) return next();
+    if (constantTimeEquals(cookieToken, expected)) return next();
+    if (constantTimeEquals(headerToken, expected)) return next();
 
-  if (constantTimeEquals(queryToken, expected)) {
-    res.cookie(COOKIE_NAME, expected, {
-      httpOnly: true,
-      sameSite: 'strict',
-      secure: false,
-      path: '/',
-      maxAge: 365 * 24 * 60 * 60 * 1000,
-    });
+    if (constantTimeEquals(queryToken, expected)) {
+      res.cookie(COOKIE_NAME, expected, {
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: false,
+        path: '/',
+        maxAge: 365 * 24 * 60 * 60 * 1000,
+      });
 
-    // Browser navigations: redirect to a clean URL so the token isn't in history.
-    if (req.method === 'GET' && req.accepts('html')) {
-      const url = new URL(req.originalUrl, 'http://localhost');
-      url.searchParams.delete('token');
-      const cleanPath = url.pathname + (url.search ? url.search : '');
-      return res.redirect(302, cleanPath);
+      if (req.method === 'GET' && req.accepts && req.accepts('html')) {
+        const url = new URL(req.originalUrl, 'http://localhost');
+        url.searchParams.delete('token');
+        const cleanPath = url.pathname + (url.search ? url.search : '');
+        return res.redirect(302, cleanPath);
+      }
+      return next();
     }
-    return next();
-  }
 
-  return sendError(res, 401, 'UNAUTHENTICATED', 'Missing or invalid token', {
-    hint:
-      'Open pglens via the URL printed by the CLI, or include the token in the x-pglens-token header.',
-  });
+    return sendError(res, 401, 'UNAUTHENTICATED', 'Missing or invalid token', {
+      hint:
+        'Open pglens via the URL printed by the CLI, or include the token in the x-pglens-token header.',
+    });
+  };
 }
 
-module.exports = { tokenMiddleware, loadOrCreateToken, getToken, COOKIE_NAME };
+function tokenMiddleware(req, res, next) {
+  return createTokenMiddleware(getToken())(req, res, next);
+}
+
+module.exports = {
+  tokenMiddleware,
+  createTokenMiddleware,
+  loadOrCreateToken,
+  getToken,
+  COOKIE_NAME,
+};
