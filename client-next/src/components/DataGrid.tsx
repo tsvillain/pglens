@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -6,10 +6,12 @@ import {
   type ColumnDef,
 } from '@tanstack/react-table'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, ChevronsUpDown, Key, Link as LinkIcon } from 'lucide-react'
+import { ArrowDown, ArrowUp, Braces, ChevronsUpDown, Key, Link as LinkIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import type { ColumnMeta } from '@/lib/api'
+import { Dialog } from '@/components/ui/dialog'
+import { JsonViewer, coerceJson, isExpandable } from '@/components/JsonViewer'
 
 export type SortState = { column: string; direction: 'asc' | 'desc' } | null
 
@@ -20,9 +22,37 @@ interface DataGridProps {
   onSortChange: (next: SortState) => void
 }
 
-function renderCell(value: unknown): React.ReactNode {
+type JsonCell = { column: string; value: unknown }
+
+/** jsonb/json columns, or any value that parses to an object/array. */
+function isJsonCell(value: unknown, dataType?: string): boolean {
+  const t = dataType?.toLowerCase()
+  if (t === 'jsonb' || t === 'json') return true
+  return isExpandable(coerceJson(value))
+}
+
+function renderCell(
+  value: unknown,
+  dataType: string | undefined,
+  onOpenJson: (value: unknown) => void,
+): React.ReactNode {
   if (value === null || value === undefined) {
     return <span className="italic text-muted-foreground/60">NULL</span>
+  }
+  if (isJsonCell(value, dataType)) {
+    const data = coerceJson(value)
+    return (
+      <button
+        onClick={() => onOpenJson(data)}
+        className="flex items-center gap-1 text-sky-600 hover:underline dark:text-sky-400"
+        title="View JSON"
+      >
+        <Braces className="h-3 w-3 shrink-0" />
+        <span className="truncate">
+          {Array.isArray(data) ? `[${data.length}]` : JSON.stringify(data)}
+        </span>
+      </button>
+    )
   }
   if (typeof value === 'boolean') return value ? 'true' : 'false'
   if (typeof value === 'number') return String(value)
@@ -37,15 +67,19 @@ function renderCell(value: unknown): React.ReactNode {
 
 export function DataGrid({ rows, columns, sort, onSortChange }: DataGridProps) {
   const columnNames = useMemo(() => Object.keys(columns), [columns])
+  const [jsonCell, setJsonCell] = useState<JsonCell | null>(null)
 
   const colDefs = useMemo<ColumnDef<Record<string, unknown>>[]>(
     () =>
       columnNames.map((name) => ({
         accessorKey: name,
         header: name,
-        cell: (info) => renderCell(info.getValue()),
+        cell: (info) =>
+          renderCell(info.getValue(), columns[name]?.dataType, (value) =>
+            setJsonCell({ column: name, value }),
+          ),
       })),
-    [columnNames],
+    [columnNames, columns],
   )
 
   const table = useReactTable({
@@ -78,6 +112,7 @@ export function DataGrid({ rows, columns, sort, onSortChange }: DataGridProps) {
   }
 
   return (
+    <>
     <div
       ref={parentRef}
       className="h-full overflow-auto rounded-md border border-border bg-card"
@@ -169,5 +204,14 @@ export function DataGrid({ rows, columns, sort, onSortChange }: DataGridProps) {
         </tbody>
       </table>
     </div>
+    <Dialog
+      open={jsonCell !== null}
+      onClose={() => setJsonCell(null)}
+      title={jsonCell?.column ?? 'JSON'}
+      className="max-w-2xl"
+    >
+      {jsonCell && <JsonViewer value={jsonCell.value} />}
+    </Dialog>
+    </>
   )
 }

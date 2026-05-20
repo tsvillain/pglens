@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Database, Plus, ServerCog } from 'lucide-react'
+import { Plus, ServerCog } from 'lucide-react'
 import { useState } from 'react'
 import { z } from 'zod'
 
@@ -48,7 +48,6 @@ export function Home() {
       <div className="flex items-end justify-between">
         <div>
           <h1 className="flex items-center gap-3">
-            <Database className="h-8 w-8 text-primary" />
             <span className="font-logo text-4xl leading-none tracking-wide">
               pglens
             </span>

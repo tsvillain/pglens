@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { X, Database, Table as TableIcon, Terminal, GitBranch } from 'lucide-react'
+import { X, Home, Table as TableIcon, Terminal, GitBranch } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { tabId, tabLabel, tabRoute, useTabsStore, type Tab } from '@/store/tabs'
@@ -20,7 +20,7 @@ function tabIcon(t: Tab) {
     case 'table': return TableIcon
     case 'query': return Terminal
     case 'schema': return GitBranch
-    case 'home': return Database
+    case 'home': return Home
   }
 }
 

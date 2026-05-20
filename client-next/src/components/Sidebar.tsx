@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useMatchRoute, useNavigate } from '@tanstack/react-router'
 import {
-  Database, Download, Eye, GitBranch, MoreVertical, Pencil, Plus, Power,
+  Download, Eye, GitBranch, MoreVertical, Pencil, Plus, Power,
   Search, Table as TableIcon, Terminal,
 } from 'lucide-react'
 
@@ -118,7 +118,6 @@ export function Sidebar() {
           onClick={() => openTab({ kind: 'home' })}
           className="flex items-center gap-2"
         >
-          <Database className="h-4 w-4 text-primary" />
           <span className="font-logo text-xl leading-none tracking-wide">
             pglens
           </span>
