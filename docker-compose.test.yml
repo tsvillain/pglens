@@ -1,0 +1,21 @@
+# Postgres for integration tests. Brought up by CI and locally on demand:
+#   docker compose -f docker-compose.test.yml up -d
+#   PGLENS_TEST_DB_URL=postgresql://pglens:pglens@localhost:55432/pglens_test npm run test:integration
+#
+# Port 55432 to avoid clashing with a real local Postgres on 5432.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pglens
+      POSTGRES_PASSWORD: pglens
+      POSTGRES_DB: pglens_test
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pglens -d pglens_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data

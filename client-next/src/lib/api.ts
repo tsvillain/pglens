@@ -1,0 +1,388 @@
+import { z } from 'zod'
+
+const ConnectionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  host: z.string().optional(),
+  port: z.number().optional(),
+  database: z.string().optional(),
+  username: z.string().optional(),
+  connectionString: z.string().optional(),
+  sslMode: z.string().optional(),
+  schema: z.string().optional(),
+  type: z.string().optional(),
+})
+export type Connection = z.infer<typeof ConnectionSchema>
+
+const ConnectionsResponse = z.object({
+  connections: z.array(ConnectionSchema),
+})
+
+const TableSchema = z.object({
+  name: z.string(),
+  type: z.enum(['table', 'view']),
+})
+export type Table = z.infer<typeof TableSchema>
+
+const TablesResponse = z.object({
+  tables: z.array(TableSchema),
+})
+
+const SchemasResponse = z.object({
+  schemas: z.array(z.string()),
+})
+
+// Server returns the envelope:
+//   { error: { code, message, hint? }, errorMessage: <string mirror for v2> }
+// During the strangler-fig migration we accept either shape so v3 keeps
+// working against older pglens binaries.
+const ApiErrorResponse = z.object({
+  error: z
+    .union([
+      z.string(),
+      z.object({
+        code: z.string().optional(),
+        message: z.string(),
+        hint: z.string().optional(),
+      }),
+    ])
+    .optional(),
+  errorMessage: z.string().optional(),
+})
+
+export class ApiError extends Error {
+  status: number
+  code?: string
+  hint?: string
+  constructor(opts: { message: string; status: number; code?: string; hint?: string }) {
+    super(opts.message)
+    this.status = opts.status
+    this.code = opts.code
+    this.hint = opts.hint
+  }
+}
+
+function parseErrorBody(body: unknown, status: number): ApiError {
+  if (typeof body !== 'object' || body == null) {
+    return new ApiError({ message: `HTTP ${status}`, status })
+  }
+  const parsed = ApiErrorResponse.safeParse(body)
+  if (!parsed.success) {
+    return new ApiError({ message: `HTTP ${status}`, status })
+  }
+  const { error, errorMessage } = parsed.data
+  if (typeof error === 'object' && error) {
+    return new ApiError({
+      message: error.message,
+      status,
+      code: error.code,
+      hint: error.hint,
+    })
+  }
+  if (typeof error === 'string') {
+    return new ApiError({ message: error, status })
+  }
+  if (errorMessage) {
+    return new ApiError({ message: errorMessage, status })
+  }
+  return new ApiError({ message: `HTTP ${status}`, status })
+}
+
+interface FetchOptions {
+  connectionId?: string
+  signal?: AbortSignal
+}
+
+async function api<T>(
+  path: string,
+  schema: z.ZodSchema<T>,
+  opts: FetchOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = {}
+  if (opts.connectionId) headers['x-connection-id'] = opts.connectionId
+
+  // `credentials: 'same-origin'` is the default but stated explicitly so the
+  // pglens_token cookie always rides along.
+  const res = await fetch(path, {
+    headers,
+    signal: opts.signal,
+    credentials: 'same-origin',
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    throw parseErrorBody(body, res.status)
+  }
+  return schema.parse(await res.json())
+}
+
+export function listConnections(signal?: AbortSignal) {
+  return api('/api/connections', ConnectionsResponse, { signal })
+}
+
+const ConnectResponse = z.object({
+  connected: z.boolean(),
+  connectionId: z.string().optional(),
+  name: z.string().optional(),
+  error: z.string().optional(),
+})
+
+const UpdateConnectionResponse = z.object({
+  updated: z.boolean(),
+  connectionId: z.string().optional(),
+  name: z.string().optional(),
+  error: z.string().optional(),
+})
+
+export interface ConnectPayload {
+  url: string
+  sslMode?: 'prefer' | 'require' | 'disable' | 'verify-ca' | 'verify-full'
+  name?: string
+  schema?: string
+}
+
+async function postJson<T>(
+  path: string,
+  body: unknown,
+  schema: z.ZodSchema<T>,
+  method: 'POST' | 'PUT' | 'PATCH' = 'POST',
+): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return schema.parse(json)
+}
+
+export function connect(payload: ConnectPayload) {
+  return postJson('/api/connect', payload, ConnectResponse)
+}
+
+const QueryResponse = z.object({
+  rows: z.array(z.record(z.string(), z.unknown())),
+  fields: z.array(
+    z.object({ name: z.string(), dataTypeID: z.number().optional() }),
+  ),
+  rowCount: z.number().nullable(),
+  durationMs: z.number(),
+})
+export type QueryResult = z.infer<typeof QueryResponse>
+
+export async function runQuery(
+  connectionId: string,
+  sql: string,
+  params?: unknown[],
+): Promise<QueryResult> {
+  const res = await fetch('/api/query', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-connection-id': connectionId,
+    },
+    body: JSON.stringify({ sql, params }),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return QueryResponse.parse(json)
+}
+
+export function updateConnectionApi(id: string, payload: ConnectPayload) {
+  return postJson(
+    `/api/connections/${encodeURIComponent(id)}`,
+    payload,
+    UpdateConnectionResponse,
+    'PUT',
+  )
+}
+
+const PatchSchemaResponse = z.object({ updated: z.boolean() })
+
+export function patchSchema(connectionId: string, schema: string) {
+  return postJson(
+    `/api/connections/${encodeURIComponent(connectionId)}/schema`,
+    { schema },
+    PatchSchemaResponse,
+    'PATCH',
+  )
+}
+
+const DisconnectResponse = z.object({ connected: z.boolean() })
+
+export async function disconnect(connectionId: string) {
+  const res = await fetch('/api/disconnect', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-connection-id': connectionId,
+    },
+    body: JSON.stringify({ connectionId }),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return DisconnectResponse.parse(json)
+}
+
+export interface BackupProgress {
+  bytes: number
+  currentTable?: string
+}
+
+/**
+ * Stream /api/export to disk while reporting progress. The server emits
+ * `-- Table structure for table "..."` markers between sections, so we
+ * peek into the decoded text to surface the current table name.
+ */
+export async function downloadBackup(
+  connectionId: string,
+  fileName = 'pglens_backup.sql',
+  onProgress?: (p: BackupProgress) => void,
+  signal?: AbortSignal,
+) {
+  const res = await fetch('/api/export', {
+    headers: { 'x-connection-id': connectionId },
+    credentials: 'same-origin',
+    signal,
+  })
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+  if (!res.body) {
+    // Fallback for environments without ReadableStream.
+    const blob = await res.blob()
+    triggerDownload(blob, fileName)
+    onProgress?.({ bytes: blob.size })
+    return
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  const chunks: BlobPart[] = []
+  let bytes = 0
+  let textBuffer = ''
+  let currentTable: string | undefined
+  const tableMarker = /Table structure for table "([^"]+)"/g
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    bytes += value.byteLength
+
+    textBuffer += decoder.decode(value, { stream: true })
+    let m: RegExpExecArray | null
+    let last: string | undefined
+    while ((m = tableMarker.exec(textBuffer)) !== null) last = m[1]
+    if (last) currentTable = last
+    // Trim so the buffer doesn't grow unbounded over a long export.
+    if (textBuffer.length > 8192) textBuffer = textBuffer.slice(-4096)
+
+    onProgress?.({ bytes, currentTable })
+  }
+
+  triggerDownload(new Blob(chunks, { type: 'application/sql' }), fileName)
+  onProgress?.({ bytes, currentTable })
+}
+
+function triggerDownload(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+export function listSchemas(connectionId: string, signal?: AbortSignal) {
+  return api('/api/schemas', SchemasResponse, { connectionId, signal })
+}
+
+export function listTables(connectionId: string, signal?: AbortSignal) {
+  return api('/api/tables', TablesResponse, { connectionId, signal })
+}
+
+const ColumnMetaSchema = z.object({
+  dataType: z.string(),
+  isPrimaryKey: z.boolean(),
+  isForeignKey: z.boolean(),
+  foreignKeyRef: z
+    .object({ table: z.string(), column: z.string() })
+    .nullable(),
+  isUnique: z.boolean(),
+})
+export type ColumnMeta = z.infer<typeof ColumnMetaSchema>
+
+const TableDataResponse = z.object({
+  rows: z.array(z.record(z.string(), z.unknown())),
+  totalCount: z.number(),
+  page: z.number(),
+  limit: z.number(),
+  isApproximate: z.boolean(),
+  nextCursor: z.union([z.string(), z.number(), z.null()]).nullable(),
+  hasPrimaryKey: z.boolean(),
+  columns: z.record(z.string(), ColumnMetaSchema),
+})
+export type TableData = z.infer<typeof TableDataResponse>
+
+export interface TableQueryParams {
+  page?: number
+  limit?: number
+  sortColumn?: string | null
+  sortDirection?: 'asc' | 'desc'
+}
+
+const SchemaColumnSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  maxLength: z.number().nullable(),
+  isNullable: z.boolean(),
+  isPrimaryKey: z.boolean(),
+  isUnique: z.boolean(),
+  isForeignKey: z.boolean(),
+  foreignKeyRef: z
+    .object({ table: z.string(), column: z.string() })
+    .nullable(),
+})
+export type SchemaColumn = z.infer<typeof SchemaColumnSchema>
+
+const SchemaTableSchema = z.object({
+  name: z.string(),
+  columns: z.array(SchemaColumnSchema),
+})
+export type SchemaTable = z.infer<typeof SchemaTableSchema>
+
+const SchemaResponse = z.object({
+  schema: z.record(z.string(), SchemaTableSchema),
+})
+
+export function getDatabaseSchema(connectionId: string, signal?: AbortSignal) {
+  return api('/api/schema', SchemaResponse, { connectionId, signal })
+}
+
+export function getTableData(
+  connectionId: string,
+  tableName: string,
+  params: TableQueryParams = {},
+  signal?: AbortSignal,
+) {
+  const qs = new URLSearchParams()
+  if (params.page) qs.set('page', String(params.page))
+  if (params.limit) qs.set('limit', String(params.limit))
+  if (params.sortColumn) {
+    qs.set('sortColumn', params.sortColumn)
+    qs.set('sortDirection', params.sortDirection ?? 'asc')
+  }
+  const query = qs.toString()
+  return api(
+    `/api/tables/${encodeURIComponent(tableName)}${query ? '?' + query : ''}`,
+    TableDataResponse,
+    { connectionId, signal },
+  )
+}
