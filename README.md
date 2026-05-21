@@ -87,6 +87,7 @@ reprint it at any time with:
 pglens url      # full URL with token
 pglens token    # token only
 pglens logs -f  # tail structured logs
+pglens doctor   # diagnose install problems (shadowed/stale binaries)
 ```
 
 > **Auth:** Opening the printed URL stores an `HttpOnly` cookie, so subsequent visits
@@ -112,6 +113,25 @@ To stop the background service:
 ```bash
 pglens stop
 ```
+
+## Troubleshooting
+
+### `pglens --version` shows an old version after upgrading
+
+Almost always one of two things — run `pglens doctor` and it will tell you which,
+with the exact commands to fix it:
+
+- **Stale shell hash.** Your shell cached the path to the old binary. Run `hash -r`
+  (bash/zsh) or open a new terminal.
+- **A shadowing copy on PATH.** If you installed once with the curl script and again
+  with `npm`, two `pglens` binaries exist (e.g. `~/.pglens/bin` and your npm prefix).
+  Whichever comes first on `PATH` wins. `pglens doctor` lists every copy it finds and
+  prints removal commands. Your data (`~/.pglens/connections.json`, `token`, `logs/`)
+  is never touched.
+
+> **Pick one install method.** Mixing the curl installer and `npm -g` is the usual
+> cause of shadowed binaries. If you use `npm`, remove the `~/.pglens/bin` copy and the
+> matching `PATH` line in your shell rc (`pglens doctor` shows you where).
 
 ## How It Works
 

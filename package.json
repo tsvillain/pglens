@@ -1,6 +1,6 @@
 {
   "name": "pglens",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "A simple PostgreSQL database viewer tool",
   "bin": {
     "pglens": "./bin/pglens"
@@ -8,11 +8,13 @@
   "files": [
     "bin",
     "src",
+    "scripts/postinstall.js",
     "client-next/dist",
     "README.md"
   ],
   "scripts": {
     "prepack": "npm --prefix client-next ci && npm --prefix client-next run build",
+    "postinstall": "node scripts/postinstall.js",
     "start": "node bin/pglens",
     "test": "node scripts/run-tests.js test/unit",
     "test:coverage": "node scripts/run-tests.js test/unit --experimental-test-coverage --test-coverage-include=src/** --test-reporter=spec",

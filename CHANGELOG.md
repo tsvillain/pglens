@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-05-22
+
+### Added
+
+- **`pglens doctor`** command: diagnoses install problems — multiple `pglens`
+  binaries on `PATH`, a leftover pre-3.0 self-install under `~/.pglens`, and
+  orphaned `PATH` entries — and prints exact, data-safe cleanup commands.
+- **Post-install notice**: when `npm install` lands behind a shadowing copy,
+  a short warning points to `pglens doctor`. Never fails the install; opt out
+  with `PGLENS_NO_POSTINSTALL=1` (also skipped in CI).
+
+### Fixed
+
+- **Install scripts** (`install/install.sh`, `install/install.ps1`, deployed to
+  pglens.org) now **prepend** `~/.pglens/bin` to `PATH` so the curl-managed copy
+  wins over any stray binary; warn if another `pglens` is already on `PATH`;
+  install `pglens@latest` so re-running upgrades cleanly; and print correct
+  "open a new terminal / `hash -r`" guidance. Also fixed a UTF-8 mojibake (`â`)
+  in the success output.
+
 ## [3.0.0] - 2026-05-21
 
 Foundation rewrite. The 5K-line vanilla `app.js` is gone, replaced by a

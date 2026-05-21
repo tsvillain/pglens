@@ -61,7 +61,7 @@ async function checkForUpdate() {
   if (process.env.PGLENS_NO_UPDATE_CHECK) return;
 
   let cache = null;
-  try { cache = JSON.parse(fs.readFileSync(UPDATE_CACHE, 'utf8')); } catch {}
+  try { cache = JSON.parse(fs.readFileSync(UPDATE_CACHE, 'utf8')); } catch { }
 
   const cachedLatest = cache?.latest || null;
   let notified = false;
@@ -79,7 +79,7 @@ async function checkForUpdate() {
       UPDATE_CACHE,
       JSON.stringify({ lastCheck: Date.now(), latest: latest || cachedLatest })
     );
-  } catch {}
+  } catch { }
 
   if (latest && !notified && semverGt(latest, CURRENT_VERSION)) {
     printUpdateNotice(latest);
@@ -89,7 +89,7 @@ async function checkForUpdate() {
 program
   .name('pglens')
   .description('No-code PostgreSQL workstation')
-  .version('3.0.0');
+  .version(CURRENT_VERSION);
 
 function getRunningPort() {
   if (!fs.existsSync(PORT_FILE)) return null;
@@ -251,6 +251,50 @@ program
       return;
     }
     console.log(token);
+  });
+
+program
+  .command('doctor')
+  .description('Diagnose install problems (shadowed binaries, stale upgrades)')
+  .action(() => {
+    const diag = require('../src/diagnostics');
+    let selfReal = __filename;
+    try { selfReal = fs.realpathSync(__filename); } catch { }
+
+    const report = diag.collectReport({ selfReal, selfVersion: CURRENT_VERSION });
+    const { ok, problems } = diag.analyze(report);
+
+    console.log(`\npglens doctor\n`);
+    console.log(`Running : ${__filename}  (v${CURRENT_VERSION})`);
+    const first = report.copies[0];
+    if (first) console.log(`PATH    : ${first.file}  (first match${first.version ? `, v${first.version}` : ''})`);
+
+    console.log(`\npglens on PATH:`);
+    if (report.copies.length === 0) {
+      console.log('  (none — PATH lookup found nothing; unusual)');
+    }
+    for (const c of report.copies) {
+      const mark = c.isSelf ? '✓' : '✗';
+      const ver = c.version ? `v${c.version}` : 'v?';
+      const note = c.isSelf ? '' : '  (stale — remove)';
+      console.log(`  ${mark} ${c.file.padEnd(40)} ${ver}${note}`);
+    }
+
+    if (ok) {
+      console.log(`\nNo problems found. You're on v${CURRENT_VERSION}.\n`);
+      return;
+    }
+
+    console.log(`\nIssues:`);
+    for (const p of problems) console.log(`  • ${p.message}`);
+
+    const plan = diag.buildFixPlan(report);
+    if (plan.length) {
+      console.log(`\nFix:`);
+      for (const cmd of plan) console.log(`  ${cmd}`);
+    }
+    console.log(`\nYour data is kept: connections.json, queries.json, logs/, token.\n`);
+    process.exitCode = 1;
   });
 
 program.parse(process.argv);
