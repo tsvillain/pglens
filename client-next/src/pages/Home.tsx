@@ -107,21 +107,21 @@ export function Home() {
                 <span className="truncate font-medium">{c.name}</span>
               </div>
               <div className="grid gap-1 text-xs text-muted-foreground">
-                <div className="flex items-center justify-between">
-                  <span>host</span>
-                  <span className="truncate font-mono">{c.host ?? '—'}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="shrink-0">host</span>
+                  <span className="min-w-0 truncate font-mono" title={c.host ?? undefined}>{c.host ?? '—'}</span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span>database</span>
-                  <span className="truncate font-mono">{c.database ?? '—'}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="shrink-0">database</span>
+                  <span className="min-w-0 truncate font-mono" title={c.database ?? undefined}>{c.database ?? '—'}</span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span>schema</span>
-                  <span className="truncate font-mono">{c.schema ?? 'public'}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="shrink-0">schema</span>
+                  <span className="min-w-0 truncate font-mono" title={c.schema ?? undefined}>{c.schema ?? 'public'}</span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span>ssl</span>
-                  <span className="truncate font-mono">{c.sslMode ?? 'prefer'}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="shrink-0">ssl</span>
+                  <span className="min-w-0 truncate font-mono" title={c.sslMode ?? undefined}>{c.sslMode ?? 'prefer'}</span>
                 </div>
               </div>
             </button>

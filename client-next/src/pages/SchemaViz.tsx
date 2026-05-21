@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import dagre from '@dagrejs/dagre'
 import {
@@ -41,12 +41,22 @@ const HEADER_H = 36
 
 type TableNodeData = {
   table: SchemaTable
-  dim: boolean
-  highlight: boolean
 }
 
-function TableNode({ data, selected }: NodeProps<Node<TableNodeData>>) {
-  const { table, dim, highlight } = data
+// Hover spotlight state lives in context, not in node data. Keeping it out of
+// the nodes array means hovering doesn't rebuild node objects → ReactFlow never
+// re-reconciles node DOM → mouseenter/leave don't ping-pong → no flicker.
+type HoverState = {
+  hoveredId: string | null
+  neighbors: Map<string, Set<string>>
+}
+const HoverContext = createContext<HoverState>({ hoveredId: null, neighbors: new Map() })
+
+const TableNode = memo(function TableNode({ id, data, selected }: NodeProps<Node<TableNodeData>>) {
+  const { table } = data
+  const { hoveredId, neighbors } = useContext(HoverContext)
+  const highlight = hoveredId === id
+  const dim = hoveredId !== null && !highlight && !neighbors.get(hoveredId)?.has(id)
   return (
     <div
       className={cn(
@@ -77,7 +87,7 @@ function TableNode({ data, selected }: NodeProps<Node<TableNodeData>>) {
       </ul>
     </div>
   )
-}
+})
 
 const nodeTypes = { table: TableNode }
 
@@ -121,7 +131,7 @@ function layoutDagre(
       type: 'table',
       // dagre returns center coords; React Flow expects top-left.
       position: { x: pos.x - COL_W / 2, y: pos.y - height / 2 },
-      data: { table: t, dim: false, highlight: false },
+      data: { table: t },
     }
   })
 }
@@ -202,26 +212,29 @@ function SchemaCanvas({ tables }: { tables: SchemaTable[] }) {
     [filteredTables, edges, direction],
   )
 
-  // Hover spotlight: nodes connected to hovered node stay opaque; rest dim.
-  const { nodes, decoratedEdges } = useMemo(() => {
-    if (!hoveredId) {
-      return { nodes: baseNodes, decoratedEdges: edges }
+  // Adjacency map: for each table, the set of directly-connected tables.
+  // Built once per edge change so hovering is a cheap lookup, not a rebuild.
+  const neighbors = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    const link = (a: string, b: string) => {
+      if (!map.has(a)) map.set(a, new Set([a]))
+      map.get(a)!.add(b)
     }
-    const neighbors = new Set<string>([hoveredId])
     for (const e of edges) {
-      if (e.source === hoveredId) neighbors.add(e.target)
-      if (e.target === hoveredId) neighbors.add(e.source)
+      link(e.source, e.target)
+      link(e.target, e.source)
     }
-    const nextNodes = baseNodes.map((n) => ({
-      ...n,
-      data: {
-        ...n.data,
-        dim: !neighbors.has(n.id),
-        highlight: n.id === hoveredId,
-      },
-    }))
-    const nextEdges = edges.map((e) => {
-      const active = neighbors.has(e.source) && neighbors.has(e.target)
+    return map
+  }, [edges])
+
+  const hoverState = useMemo<HoverState>(() => ({ hoveredId, neighbors }), [hoveredId, neighbors])
+
+  // Hover spotlight: connected edges light up; the rest fade. Node dimming is
+  // handled inside TableNode via context so the nodes array stays stable.
+  const decoratedEdges = useMemo(() => {
+    if (!hoveredId) return edges
+    return edges.map((e) => {
+      const active = e.source === hoveredId || e.target === hoveredId
       return {
         ...e,
         animated: active,
@@ -233,8 +246,7 @@ function SchemaCanvas({ tables }: { tables: SchemaTable[] }) {
         },
       }
     })
-    return { nodes: nextNodes, decoratedEdges: nextEdges }
-  }, [baseNodes, edges, hoveredId])
+  }, [edges, hoveredId])
 
   const getViewport = useCallback(() => {
     return flowRef.current?.querySelector<HTMLElement>('.react-flow__viewport') ?? null
@@ -331,8 +343,9 @@ function SchemaCanvas({ tables }: { tables: SchemaTable[] }) {
         </div>
       </header>
       <div className="min-h-0 flex-1" ref={flowRef}>
+        <HoverContext.Provider value={hoverState}>
         <ReactFlow
-          nodes={nodes}
+          nodes={baseNodes}
           edges={decoratedEdges}
           nodeTypes={nodeTypes}
           colorMode={effectiveTheme}
@@ -374,6 +387,7 @@ function SchemaCanvas({ tables }: { tables: SchemaTable[] }) {
             }}
           />
         </ReactFlow>
+        </HoverContext.Provider>
       </div>
     </div>
   )
