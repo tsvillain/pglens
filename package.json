@@ -5,7 +5,14 @@
   "bin": {
     "pglens": "./bin/pglens"
   },
+  "files": [
+    "bin",
+    "src",
+    "client-next/dist",
+    "README.md"
+  ],
   "scripts": {
+    "prepack": "npm --prefix client-next ci && npm --prefix client-next run build",
     "start": "node bin/pglens",
     "test": "node scripts/run-tests.js test/unit",
     "test:coverage": "node scripts/run-tests.js test/unit --experimental-test-coverage --test-coverage-include=src/** --test-reporter=spec",
