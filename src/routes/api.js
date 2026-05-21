@@ -21,7 +21,7 @@ const logger = require('../log');
 
 const router = express.Router();
 
-// ---- Shared schemas ---------------------------------------------------------
+// ---- Shared schemas --------------------------------------------------------
 
 const SslModeSchema = z.enum(['prefer', 'require', 'disable', 'verify-ca', 'verify-full']);
 const SchemaNameSchema = z.string().min(1).max(255).refine(s => !s.includes('\0'), 'null byte');
@@ -111,6 +111,7 @@ router.post('/disconnect', async (req, res) => {
   }
   try {
     await closePool(connectionId);
+    invalidateMetadata(connectionId);
     res.json({ connected: false });
   } catch (err) {
     return sendError(res, 500, codes.INTERNAL, err.message);
@@ -166,19 +167,6 @@ router.get('/tables', requireConnection, async (req, res) => {
 });
 
 // ---- Table-introspection helpers -------------------------------------------
-
-async function getPrimaryKeyColumn(pool, tableName, schema) {
-  const r = await pool.query(`
-    SELECT kcu.column_name
-    FROM information_schema.table_constraints tc
-    JOIN information_schema.key_column_usage kcu
-      ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-    WHERE tc.constraint_type = 'PRIMARY KEY'
-      AND tc.table_name = $1 AND tc.table_schema = $2
-    LIMIT 1;
-  `, [tableName, schema]);
-  return r.rows.length ? r.rows[0].column_name : null;
-}
 
 async function getPrimaryKeyColumns(pool, tableName, schema) {
   const r = await pool.query(`
@@ -251,6 +239,37 @@ async function getColumnMetadata(pool, tableName, schema) {
   return out;
 }
 
+/**
+ * Column metadata is static between schema changes but costs ~3 catalog
+ * round-trips to fetch — expensive on remote DBs. Cache it per
+ * (connection, schema, table) with a short TTL so pagination/sort within a
+ * table doesn't re-run the introspection queries on every page.
+ */
+const META_TTL_MS = 30_000;
+const metaCache = new Map(); // key -> { expires, columns, primaryKeyColumn }
+
+function invalidateMetadata(connectionId) {
+  const prefix = `${connectionId}\0`;
+  for (const key of metaCache.keys()) {
+    if (key.startsWith(prefix)) metaCache.delete(key);
+  }
+}
+
+async function getTableMetadata(pool, connectionId, schema, tableName) {
+  const key = `${connectionId}\0${schema}\0${tableName}`;
+  const hit = metaCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit;
+
+  const columns = await getColumnMetadata(pool, tableName, schema);
+  // First primary-key column (ordinal order preserved) drives ordering/cursor.
+  const primaryKeyColumn =
+    Object.keys(columns).find((name) => columns[name].isPrimaryKey) || null;
+
+  const entry = { expires: Date.now() + META_TTL_MS, columns, primaryKeyColumn };
+  metaCache.set(key, entry);
+  return entry;
+}
+
 // ---- Table data -------------------------------------------------------------
 
 router.get('/tables/:tableName',
@@ -272,18 +291,20 @@ router.get('/tables/:tableName',
       const schema = req.schema;
       const qualifiedTable = quoteQualifiedIdent(schema, tableName);
 
-      const [primaryKeyColumn, columnMetadata] = await Promise.all([
-        getPrimaryKeyColumn(pool, tableName, schema),
-        getColumnMetadata(pool, tableName, schema),
-      ]);
+      const { columns: columnMetadata, primaryKeyColumn } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
 
       if (sortColumn && !columnMetadata[sortColumn]) {
         return sendError(res, 400, codes.BAD_REQUEST, 'Invalid sort column');
       }
 
-      const countResult = await pool.query(`SELECT COUNT(*) as total FROM ${qualifiedTable}`);
-      const totalCount = parseInt(countResult.rows[0].total, 10);
-      let dataResult, nextCursor = null;
+      // COUNT and the data query are independent — run them concurrently to
+      // collapse two latency round-trips into one. The data query is built
+      // inline below; count runs alongside it.
+      const countPromise = pool.query(`SELECT COUNT(*) as total FROM ${qualifiedTable}`);
+      // Build the data query without awaiting, so it runs alongside the count.
+      // `emitCursor` marks branches where nextCursor is the last row's PK.
+      let dataPromise, emitCursor = false;
 
       if (sortColumn) {
         const offset = (page - 1) * limit;
@@ -291,37 +312,38 @@ router.get('/tables/:tableName',
         if (primaryKeyColumn && sortColumn !== primaryKeyColumn) {
           orderByClause += `, ${quoteIdent(primaryKeyColumn)} ASC`;
         }
-        dataResult = await pool.query(
+        dataPromise = pool.query(
           `SELECT * FROM ${qualifiedTable} ${orderByClause} LIMIT $1 OFFSET $2`,
           [limit, offset],
         );
       } else if (primaryKeyColumn && cursor !== undefined) {
-        dataResult = await pool.query(
+        dataPromise = pool.query(
           `SELECT * FROM ${qualifiedTable} WHERE ${quoteIdent(primaryKeyColumn)} > $1 ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $2`,
           [cursor, limit],
         );
-        if (dataResult.rows.length) {
-          nextCursor = dataResult.rows[dataResult.rows.length - 1][primaryKeyColumn];
-        }
+        emitCursor = true;
       } else if (primaryKeyColumn && page === 1) {
-        dataResult = await pool.query(
+        dataPromise = pool.query(
           `SELECT * FROM ${qualifiedTable} ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $1`,
           [limit],
         );
-        if (dataResult.rows.length) {
-          nextCursor = dataResult.rows[dataResult.rows.length - 1][primaryKeyColumn];
-        }
+        emitCursor = true;
       } else {
         const offset = (page - 1) * limit;
         const orderBy = primaryKeyColumn ? `ORDER BY ${quoteIdent(primaryKeyColumn)} ASC ` : '';
-        dataResult = await pool.query(
+        dataPromise = pool.query(
           `SELECT * FROM ${qualifiedTable} ${orderBy}LIMIT $1 OFFSET $2`,
           [limit, offset],
         );
-        if (primaryKeyColumn && dataResult.rows.length) {
-          nextCursor = dataResult.rows[dataResult.rows.length - 1][primaryKeyColumn];
-        }
+        emitCursor = !!primaryKeyColumn;
       }
+
+      const [countResult, dataResult] = await Promise.all([countPromise, dataPromise]);
+      const totalCount = parseInt(countResult.rows[0].total, 10);
+      const nextCursor =
+        emitCursor && dataResult.rows.length
+          ? dataResult.rows[dataResult.rows.length - 1][primaryKeyColumn]
+          : null;
 
       res.json({
         rows: dataResult.rows,
@@ -391,7 +413,7 @@ router.get('/export', requireConnection, async (req, res) => {
         if (isSerial) type = type === 'bigint' ? 'BIGSERIAL' : 'SERIAL';
         let def = `  ${quoteIdent(col.column_name)} ${type}`;
         if (!isSerial && col.character_maximum_length &&
-            col.data_type !== 'USER-DEFINED' && col.data_type !== 'ARRAY') {
+          col.data_type !== 'USER-DEFINED' && col.data_type !== 'ARRAY') {
           def += `(${col.character_maximum_length})`;
         }
         if (col.is_nullable === 'NO') def += ' NOT NULL';
@@ -441,6 +463,7 @@ router.post('/import', requireConnection, async (req, res) => {
     }
     try {
       await req.pool.query(`SET search_path TO ${quoteIdent(req.schema)};\n${sqlString}`);
+      invalidateMetadata(req.connectionId);
       res.json({ success: true });
     } catch (err) {
       logger.error({ err: err.message }, 'import failed');
@@ -547,6 +570,8 @@ router.post('/query',
     try {
       await pool.query(`SET search_path TO ${quoteIdent(schema)}`);
       const result = await pool.query(sql, params);
+      // Raw SQL may include DDL — drop cached metadata for this connection.
+      invalidateMetadata(req.connectionId);
       const fields = (result.fields || []).map(f => ({ name: f.name, dataTypeID: f.dataTypeID }));
       res.json({
         rows: result.rows,
