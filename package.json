@@ -7,9 +7,9 @@
   },
   "scripts": {
     "start": "node bin/pglens",
-    "test": "node --test test/unit/*.test.js",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**' --test-reporter=spec test/unit/*.test.js",
-    "test:integration": "node --test test/integration/*.test.js",
+    "test": "node scripts/run-tests.js test/unit",
+    "test:coverage": "node scripts/run-tests.js test/unit --experimental-test-coverage --test-coverage-include=src/** --test-reporter=spec",
+    "test:integration": "node scripts/run-tests.js test/integration",
     "test:e2e": "playwright test",
     "test:all": "npm test && npm run test:integration && npm --prefix client-next test"
   },
