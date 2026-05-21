@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.0.0] - 2026-05-XX
+## [3.0.0] - 2026-05-21
 
 Foundation rewrite. The 5K-line vanilla `app.js` is gone, replaced by a
 Vite + React 18 + TypeScript (strict) app served at `/` with shadcn/ui +
@@ -61,6 +61,10 @@ migration 301-redirects to `/` so existing bookmarks keep working.
   Firefox + WebKit pseudo-elements).
 - **Page-transition loading cues** in the table viewer: top progress
   bar, inline `updating…` spinner, and dimmed grid during refetch.
+- **JSON/JSONB cell viewer**: collapsible, syntax-highlighted JSON tree
+  in the cell content popup.
+- **Unicode spinner** on every loading state with context-specific
+  progress text (e.g. which table is loading, what step is running).
 - **Quality gates**: 33 backend unit tests via `node:test`, 11 frontend
   unit tests via Vitest + jsdom, env-gated integration tests against
   `postgres:16-alpine` (`docker-compose.test.yml`), Playwright E2E
@@ -92,6 +96,9 @@ migration 301-redirects to `/` so existing bookmarks keep working.
   (placeholder data is now scoped to the same `tableName`).
 - `Select` primitive: native chevron suppressed, replaced with a Lucide
   icon properly centered against the input's full height.
+- **Faster table loads**: table metadata (columns, primary key) is now
+  cached, and the row-count and data queries run in parallel instead of
+  sequentially.
 
 ### Removed
 
