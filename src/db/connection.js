@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const postgres = require('postgres');
 
 const logger = require('../log');
+const { quoteIdent } = require('./identifier');
 const { CONNECTIONS_FILE, ensureLayout } = require('../config/paths');
 const {
   parseConnectionUrl,
@@ -32,6 +33,22 @@ function createPoolWrapper(sqlClient) {
       const result = await sqlClient.unsafe(queryText, params || []);
       return { rows: result, fields: result.columns || [], rowCount: result.count };
     },
+    /**
+     * Run `queryText` with `search_path` pinned to `schema` on a single
+     * reserved connection. `SET search_path` and the query must share one
+     * backend connection — issuing them as separate pool queries can land on
+     * different pooled connections, so the search_path would not apply.
+     */
+    queryWithSchema: async (schema, queryText, params) => {
+      const reserved = await sqlClient.reserve();
+      try {
+        await reserved.unsafe(`SET search_path TO ${quoteIdent(schema)}`);
+        const result = await reserved.unsafe(queryText, params || []);
+        return { rows: result, fields: result.columns || [], rowCount: result.count };
+      } finally {
+        reserved.release();
+      }
+    },
     end: () => sqlClient.end(),
   };
 }
@@ -40,10 +57,17 @@ function getSslConfig(sslMode) {
   switch (sslMode?.toLowerCase()) {
     case 'disable':
       return null;
+    // `require` is treated as "must be encrypted AND the certificate must
+    // verify". This is stricter than libpq (where `require` skips cert
+    // checks) but matches user expectations: choosing `require` should not
+    // silently accept a MITM cert. Self-signed/dev setups should use
+    // `prefer` (best-effort, unverified) or `disable`.
+    case 'require':
     case 'verify-ca':
     case 'verify-full':
       return { rejectUnauthorized: true };
-    case 'require':
+    // `prefer` (and the default) opportunistically encrypt without verifying
+    // the certificate — keeps self-signed and dev databases working.
     case 'prefer':
     default:
       return { rejectUnauthorized: false };

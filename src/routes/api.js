@@ -379,8 +379,11 @@ router.get('/export', requireConnection, async (req, res) => {
     const pool = req.pool;
     const schema = req.schema;
 
+    // Strip anything that could break the header's quoted-string (quotes,
+    // control chars, path separators) before interpolating the schema name.
+    const safeName = `${schema}_backup.sql`.replace(/[^A-Za-z0-9._-]/g, '_');
     res.setHeader('Content-Type', 'application/sql');
-    res.setHeader('Content-Disposition', `attachment; filename="${schema}_backup.sql"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
 
     res.write('-- pglens Database logical dump\n');
     res.write(`-- Schema: ${schema}\n\n`);
@@ -452,28 +455,6 @@ router.get('/export', requireConnection, async (req, res) => {
     }
     res.end();
   }
-});
-
-router.post('/import', requireConnection, async (req, res) => {
-  let sqlString = '';
-  req.on('data', chunk => { sqlString += chunk.toString(); });
-  req.on('end', async () => {
-    if (!sqlString.trim()) {
-      return sendError(res, 400, codes.BAD_REQUEST, 'SQL file is empty');
-    }
-    try {
-      await req.pool.query(`SET search_path TO ${quoteIdent(req.schema)};\n${sqlString}`);
-      invalidateMetadata(req.connectionId);
-      res.json({ success: true });
-    } catch (err) {
-      logger.error({ err: err.message }, 'import failed');
-      return sendError(res, 500, codes.DB_ERROR, err.message);
-    }
-  });
-  req.on('error', err => {
-    logger.error({ err: err.message }, 'import stream error');
-    return sendError(res, 500, codes.INTERNAL, err.message);
-  });
 });
 
 router.get('/schema', requireConnection, async (req, res) => {
@@ -568,8 +549,9 @@ router.post('/query',
     const schema = req.schema;
     const started = Date.now();
     try {
-      await pool.query(`SET search_path TO ${quoteIdent(schema)}`);
-      const result = await pool.query(sql, params);
+      // search_path + the user's SQL must run on one reserved connection,
+      // otherwise the SET can land on a different pooled backend.
+      const result = await pool.queryWithSchema(schema, sql, params);
       // Raw SQL may include DDL — drop cached metadata for this connection.
       invalidateMetadata(req.connectionId);
       const fields = (result.fields || []).map(f => ({ name: f.name, dataTypeID: f.dataTypeID }));

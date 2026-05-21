@@ -4,12 +4,87 @@ const { program } = require('commander');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const https = require('https');
 const { spawn } = require('child_process');
 
 const PID_FILE = path.join(os.homedir(), '.pglens.pid');
 const PORT_FILE = path.join(os.homedir(), '.pglens.port');
 const TOKEN_FILE = path.join(os.homedir(), '.pglens', 'token');
 const LOG_FILE = path.join(os.homedir(), '.pglens', 'logs', 'pglens.log');
+const UPDATE_CACHE = path.join(os.homedir(), '.pglens', 'update-check.json');
+const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24h
+const CURRENT_VERSION = require('../package.json').version;
+
+function semverGt(a, b) {
+  // compare release portion only; pre-release (-beta) never beats a release
+  const pa = a.split('-')[0].split('.').map(Number);
+  const pb = b.split('-')[0].split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+function fetchLatestVersion() {
+  return new Promise((resolve) => {
+    const req = https.get(
+      'https://registry.npmjs.org/pglens/latest',
+      (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => {
+          try { resolve(JSON.parse(body).version || null); } catch { resolve(null); }
+        });
+      }
+    );
+    req.on('error', () => resolve(null));
+    req.setTimeout(1500, () => { req.destroy(); resolve(null); });
+  });
+}
+
+function printUpdateNotice(latest) {
+  const lines = [
+    `Update available  ${CURRENT_VERSION} → ${latest}`,
+    `Run  npm i -g pglens@latest`,
+  ];
+  const w = Math.max(...lines.map((l) => l.length));
+  console.log('\n┌' + '─'.repeat(w + 2) + '┐');
+  lines.forEach((l) => console.log('│ ' + l.padEnd(w) + ' │'));
+  console.log('└' + '─'.repeat(w + 2) + '┘\n');
+}
+
+// Opt out: PGLENS_NO_UPDATE_CHECK=1. Shows cached result instantly,
+// refreshes from npm registry at most once per UPDATE_INTERVAL.
+async function checkForUpdate() {
+  if (process.env.PGLENS_NO_UPDATE_CHECK) return;
+
+  let cache = null;
+  try { cache = JSON.parse(fs.readFileSync(UPDATE_CACHE, 'utf8')); } catch {}
+
+  const cachedLatest = cache?.latest || null;
+  let notified = false;
+  if (cachedLatest && semverGt(cachedLatest, CURRENT_VERSION)) {
+    printUpdateNotice(cachedLatest);
+    notified = true;
+  }
+
+  if (cache && Date.now() - cache.lastCheck < UPDATE_INTERVAL) return;
+
+  const latest = await fetchLatestVersion();
+  try {
+    fs.mkdirSync(path.dirname(UPDATE_CACHE), { recursive: true });
+    fs.writeFileSync(
+      UPDATE_CACHE,
+      JSON.stringify({ lastCheck: Date.now(), latest: latest || cachedLatest })
+    );
+  } catch {}
+
+  if (latest && !notified && semverGt(latest, CURRENT_VERSION)) {
+    printUpdateNotice(latest);
+  }
+}
 
 program
   .name('pglens')
@@ -35,6 +110,8 @@ program
   .command('start')
   .description('Start the pglens server in background')
   .action(async () => {
+    await checkForUpdate();
+
     if (fs.existsSync(PID_FILE)) {
       try {
         const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));

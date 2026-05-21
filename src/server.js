@@ -46,6 +46,23 @@ async function startServer({ standalone = true } = {}) {
   app.use(cors({ origin: false }));
   app.use(express.json({ limit: '10mb' }));
 
+  // DNS-rebinding defense: only serve requests whose Host header is a known
+  // loopback name. A rebound attacker domain (resolving to 127.0.0.1) would
+  // arrive with its own Host header and be rejected here.
+  const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', BIND_HOST]);
+  app.use((req, res, next) => {
+    const raw = req.headers.host || '';
+    // Strip the port. Bracketed IPv6 (`[::1]:54321`) keeps the address inside
+    // the brackets; otherwise split on the last colon.
+    const host = raw.startsWith('[')
+      ? raw.slice(1, raw.indexOf(']'))
+      : raw.split(':')[0];
+    if (!ALLOWED_HOSTS.has(host)) {
+      return sendError(res, 403, codes.BAD_REQUEST, 'Invalid Host header');
+    }
+    next();
+  });
+
   // Health probe — no auth, used by the landing page + Playwright.
   app.get('/api/v3/health', (_req, res) => {
     res.json({ ok: true, version: pkg.version });
@@ -59,7 +76,10 @@ async function startServer({ standalone = true } = {}) {
   // Legacy redirect: prior versions printed URLs under /v3. Keep the prefix
   // working by 301-redirecting to root so old bookmarks don't 404.
   app.get(/^\/v3(\/.*)?$/, (req, res) => {
-    const tail = req.params[0] || '/';
+    let tail = req.params[0] || '/';
+    // Force a single-slash, same-origin path. `/v3//evil.com` would otherwise
+    // yield a protocol-relative `//evil.com` redirect (open redirect).
+    tail = '/' + tail.replace(/^\/+/, '');
     res.redirect(301, tail);
   });
 
@@ -71,9 +91,10 @@ async function startServer({ standalone = true } = {}) {
   app.get('*', (_req, res) => res.sendFile(path.join(clientPath, 'index.html')));
 
   app.use((err, _req, res, _next) => {
+    // Log the full error server-side, but never leak internals to the client.
     logger.error({ err: err.message, stack: err.stack }, 'unhandled error');
     if (res.headersSent) return;
-    sendError(res, 500, codes.INTERNAL, err.message || 'Internal error');
+    sendError(res, 500, codes.INTERNAL, 'Internal error');
   });
 
   return new Promise((resolve) => {
