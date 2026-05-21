@@ -3,6 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Loading, Spinner } from '@/components/ui/spinner'
 import { DataGrid } from '@/components/DataGrid'
 import { runQuery, type QueryResult, type ColumnMeta } from '@/lib/api'
 import { useConnectionStore } from '@/store/connection'
@@ -75,8 +76,12 @@ export function QueryRunner() {
           onClick={() => mutation.mutate()}
           disabled={mutation.isPending}
         >
-          <Play className="h-4 w-4" />
-          {mutation.isPending ? 'Running…' : 'Run'}
+          {mutation.isPending ? (
+            <Spinner aria-label="Running" />
+          ) : (
+            <Play className="h-4 w-4" />
+          )}
+          {mutation.isPending ? 'Running query…' : 'Run'}
         </Button>
       </header>
 
@@ -84,9 +89,9 @@ export function QueryRunner() {
         <div className="border-b border-border">
           <Suspense
             fallback={
-              <div className="p-4 text-sm text-muted-foreground">
+              <Loading className="p-4 text-sm text-muted-foreground">
                 Loading editor…
-              </div>
+              </Loading>
             }
           >
             <MonacoEditor

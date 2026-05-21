@@ -6,6 +6,7 @@ import { z } from 'zod'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Loading } from '@/components/ui/spinner'
 import { ConnectionDialog } from '@/components/ConnectionDialog'
 import { listConnections } from '@/lib/api'
 import { useConnectionStore } from '@/store/connection'
@@ -82,7 +83,9 @@ export function Home() {
 
       <ul className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {connections.isLoading && (
-          <li className="text-sm text-muted-foreground">Loading connections…</li>
+          <li className="text-sm text-muted-foreground">
+            <Loading>Loading connections…</Loading>
+          </li>
         )}
         {connections.data?.length === 0 && (
           <li className="rounded-md border border-dashed border-border p-6 text-center text-sm text-muted-foreground">

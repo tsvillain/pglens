@@ -5,6 +5,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { Loading } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import {
   connect,
@@ -141,7 +142,13 @@ export function ConnectionDialog({ open, onClose, edit }: ConnectionDialogProps)
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending}
           >
-            {mutation.isPending ? 'Connecting…' : edit ? 'Save' : 'Connect'}
+            {mutation.isPending ? (
+              <Loading>{edit ? 'Saving connection…' : 'Connecting…'}</Loading>
+            ) : edit ? (
+              'Save'
+            ) : (
+              'Connect'
+            )}
           </Button>
         </>
       }

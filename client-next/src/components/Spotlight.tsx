@@ -5,6 +5,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { Search } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
+import { Loading } from '@/components/ui/spinner'
 import { listTables } from '@/lib/api'
 import { useConnectionStore } from '@/store/connection'
 import { cn } from '@/lib/utils'
@@ -105,7 +106,9 @@ export function Spotlight() {
             </li>
           )}
           {tablesQuery.isLoading && (
-            <li className="px-3 py-2 text-xs text-muted-foreground">Loading tables…</li>
+            <li className="px-3 py-2 text-xs text-muted-foreground">
+              <Loading>Loading tables…</Loading>
+            </li>
           )}
           {connectionId && !tablesQuery.isLoading && results.length === 0 && (
             <li className="px-3 py-2 text-xs text-muted-foreground">No matches</li>

@@ -1,27 +1,29 @@
-import { useState } from 'react'
-import { useParams } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
+import { useState } from "react";
+import { useParams } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
-import { Button } from '@/components/ui/button'
-import { Select } from '@/components/ui/select'
-import { DataGrid, type SortState } from '@/components/DataGrid'
-import { getTableData } from '@/lib/api'
-import { cn } from '@/lib/utils'
-import { useConnectionStore } from '@/store/connection'
+import { Loading, Spinner } from "@/components/ui/spinner";
 
-const PAGE_SIZES = [50, 100, 250, 500] as const
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
+import { DataGrid, type SortState } from "@/components/DataGrid";
+import { getTableData } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import { useConnectionStore } from "@/store/connection";
+
+const PAGE_SIZES = [50, 100, 250, 500] as const;
 
 export function TableView() {
-  const { tableName } = useParams({ from: '/tables/$tableName' })
-  const connectionId = useConnectionStore((s) => s.activeConnectionId)
+  const { tableName } = useParams({ from: "/tables/$tableName" });
+  const connectionId = useConnectionStore((s) => s.activeConnectionId);
 
-  const [page, setPage] = useState(1)
-  const [limit, setLimit] = useState<number>(100)
-  const [sort, setSort] = useState<SortState>(null)
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState<number>(100);
+  const [sort, setSort] = useState<SortState>(null);
 
   const query = useQuery({
-    queryKey: ['table', connectionId, tableName, page, limit, sort],
+    queryKey: ["table", connectionId, tableName, page, limit, sort],
     queryFn: ({ signal }) =>
       getTableData(
         connectionId!,
@@ -39,33 +41,33 @@ export function TableView() {
     // table. Switching tables must clear so the grid doesn't briefly
     // render the prior table's rows.
     placeholderData: (prev, prevQuery) => {
-      if (prevQuery?.queryKey?.[2] === tableName) return prev
-      return undefined
+      if (prevQuery?.queryKey?.[2] === tableName) return prev;
+      return undefined;
     },
-  })
+  });
 
   if (!connectionId) {
     return (
       <div className="px-10 py-10 text-sm text-muted-foreground">
         No active connection. Pick one in the sidebar.
       </div>
-    )
+    );
   }
 
-  const data = query.data
-  const totalPages = data ? Math.max(1, Math.ceil(data.totalCount / limit)) : 1
+  const data = query.data;
+  const totalPages = data ? Math.max(1, Math.ceil(data.totalCount / limit)) : 1;
   // True while a refetch (page/sort/limit change) is in flight but we still
   // have prior data on screen — surface a non-blocking loading hint.
-  const isRefetching = query.isFetching && !query.isPending
+  const isRefetching = query.isFetching && !query.isPending;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Top progress bar — visible only mid-refetch. */}
       <div
         className={cn(
-          'h-0.5 origin-left bg-primary transition-opacity',
-          isRefetching ? 'opacity-100' : 'opacity-0',
-          isRefetching && 'animate-pulse',
+          "h-0.5 origin-left bg-primary transition-opacity",
+          isRefetching ? "opacity-100" : "opacity-0",
+          isRefetching && "animate-pulse",
         )}
       />
       <header className="flex items-center justify-between border-b border-border px-6 py-3">
@@ -75,12 +77,12 @@ export function TableView() {
             {data
               ? `${data.totalCount.toLocaleString()} rows · page ${data.page} / ${totalPages}`
               : query.isLoading
-                ? 'Loading…'
-                : ''}
+                ? <Loading>Loading {tableName} rows…</Loading>
+                : ""}
             {isRefetching && (
               <>
-                <Loader2 className="h-3 w-3 animate-spin" />
-                <span>updating…</span>
+                <Spinner className="text-xs" aria-label="Updating" />
+                <span>Updating rows…</span>
               </>
             )}
           </p>
@@ -89,8 +91,8 @@ export function TableView() {
           <Select
             value={String(limit)}
             onChange={(e) => {
-              setPage(1)
-              setLimit(Number(e.target.value))
+              setPage(1);
+              setLimit(Number(e.target.value));
             }}
             className="w-28"
             aria-label="Rows per page"
@@ -129,8 +131,8 @@ export function TableView() {
         {!query.error && data && (
           <div
             className={cn(
-              'h-full transition-opacity duration-150',
-              isRefetching && 'opacity-60',
+              "h-full transition-opacity duration-150",
+              isRefetching && "opacity-60",
             )}
           >
             <DataGrid
@@ -138,16 +140,18 @@ export function TableView() {
               columns={data.columns}
               sort={sort}
               onSortChange={(s) => {
-                setPage(1)
-                setSort(s)
+                setPage(1);
+                setSort(s);
               }}
             />
           </div>
         )}
         {!data && query.isLoading && (
-          <div className="text-sm text-muted-foreground">Loading…</div>
+          <Loading className="text-sm text-muted-foreground">
+            Loading {tableName} rows…
+          </Loading>
         )}
       </div>
     </div>
-  )
+  );
 }

@@ -1,4 +1,6 @@
-import { Database, Loader2, X } from 'lucide-react'
+import { Database, X } from 'lucide-react'
+
+import { Spinner } from '@/components/ui/spinner'
 
 import { Button } from '@/components/ui/button'
 
@@ -19,7 +21,7 @@ export function ExportProgressToast({ bytes, currentTable, onCancel }: Props) {
   return (
     <div className="fixed bottom-4 right-4 z-40 w-80 rounded-lg border border-border bg-card p-3 shadow-lg">
       <div className="flex items-start gap-2">
-        <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
+        <Spinner className="mt-0.5 shrink-0 text-primary" aria-label="Exporting" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">Exporting backup…</p>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">

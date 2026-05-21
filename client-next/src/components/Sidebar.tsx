@@ -9,6 +9,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
+import { Loading, Spinner } from '@/components/ui/spinner'
 import { ConnectionDialog } from '@/components/ConnectionDialog'
 import { ExportProgressToast } from '@/components/ExportProgressToast'
 import { ThemeToggle } from '@/components/ThemeToggle'
@@ -138,7 +139,7 @@ export function Sidebar() {
           </Button>
         }
       >
-        {connections.isLoading && <Hint>Loading…</Hint>}
+        {connections.isLoading && <Hint><Loading>Loading connections…</Loading></Hint>}
         {connections.error && (
           <Hint className="text-destructive">
             {(connections.error as Error).message}
@@ -243,8 +244,12 @@ export function Sidebar() {
             disabled={exportMut.isPending}
             className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent disabled:opacity-50"
           >
-            <Download className="h-3.5 w-3.5 text-muted-foreground" />
-            {exportMut.isPending ? 'Exporting…' : 'Export backup'}
+            {exportMut.isPending ? (
+              <Spinner className="text-muted-foreground" aria-label="Exporting" />
+            ) : (
+              <Download className="h-3.5 w-3.5 text-muted-foreground" />
+            )}
+            {exportMut.isPending ? 'Exporting backup…' : 'Export backup'}
           </button>
         </Section>
       )}
@@ -267,7 +272,7 @@ export function Sidebar() {
 
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           {!resolvedActiveId && <Hint>Pick a connection above.</Hint>}
-          {tables.isLoading && <Hint>Loading tables…</Hint>}
+          {tables.isLoading && <Hint><Loading>Loading tables…</Loading></Hint>}
           {tables.error && (
             <Hint className="text-destructive">{(tables.error as Error).message}</Hint>
           )}

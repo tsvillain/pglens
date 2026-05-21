@@ -26,6 +26,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dropdown, DropdownItem } from '@/components/ui/dropdown'
+import { Loading } from '@/components/ui/spinner'
 import { getDatabaseSchema, type SchemaTable } from '@/lib/api'
 import { toMermaidER } from '@/lib/mermaid'
 import { useConnectionStore } from '@/store/connection'
@@ -404,7 +405,11 @@ export function SchemaViz() {
   }
 
   if (query.isLoading || !query.data) {
-    return <div className="px-10 py-10 text-sm text-muted-foreground">Loading schema…</div>
+    return (
+      <Loading className="px-10 py-10 text-sm text-muted-foreground">
+        Loading schema…
+      </Loading>
+    )
   }
 
   const tables = Object.values(query.data)
