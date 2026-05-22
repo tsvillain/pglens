@@ -1,9 +1,14 @@
 /**
  * Install diagnostics.
  *
- * Detects the classic "upgrade didn't take" problem: multiple `pglens`
- * binaries on PATH (npm global + a leftover self-install in ~/.pglens),
- * a stale shell command-hash, and orphaned PATH entries.
+ * pglens is curl-managed: the supported install lives under ~/.pglens
+ * (see install/install.sh) with a launcher at ~/.pglens/bin/pglens on
+ * PATH. That is the *canonical* copy. Anything else on PATH — most
+ * commonly a `npm i -g pglens` — is a foreign copy that shadows the
+ * curl one and makes "upgrade didn't take" bugs. Doctor flags those.
+ *
+ * Detects: foreign npm-global copies, a curl install that fell off
+ * PATH, pre-3.0 leftovers (~/.pglens/source), and a missing install.
  *
  * Pure-ish: every function takes injectable fs/exec/env so the logic is
  * unit-testable without touching the real machine. Shared by `pglens
@@ -18,10 +23,21 @@ const { execFileSync } = require('child_process');
 
 const SEMVER_RE = /\d+\.\d+\.\d+(?:-[\w.]+)?/;
 const RC_FILES = ['.zshrc', '.zprofile', '.bashrc', '.bash_profile', '.profile'];
+// A real path inside some `node_modules/pglens` — the fingerprint of an
+// npm install (global or local), as opposed to a dev checkout or the
+// curl launcher. Capture group 1 is the module dir to remove.
+const NPM_MODULE_RE = /^(.*[/\\]node_modules[/\\]pglens)(?:[/\\]|$)/;
 
 /** Split a PATH string into directories, dropping empties. */
 function pathDirs(pathStr = process.env.PATH || '', delimiter = path.delimiter) {
   return pathStr.split(delimiter).filter(Boolean);
+}
+
+/** True if `p` is `dir` itself or lives inside it. */
+function isUnderDir(p, dir) {
+  if (!p || !dir) return false;
+  const rel = path.relative(dir, p);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /**
@@ -83,12 +99,12 @@ function compareVersions(a, b) {
 }
 
 /**
- * Leftovers from the pre-3.0 curl self-installer: a bash wrapper +
- * local node_modules under ~/.pglens, and PATH lines in shell rc files.
- * The data files (connections.json, token, logs/) are deliberately
- * NOT reported — they stay.
+ * What's installed under ~/.pglens. The curl launcher + bundled module
+ * are the canonical install; ~/.pglens/source is a dead pre-3.0 layout;
+ * the rc PATH lines are expected and good (curl needs ~/.pglens/bin on
+ * PATH). Data files (connections.json, token, logs/) are never touched.
  */
-function detectStaleSelfInstall(opts = {}) {
+function detectInstalls(opts = {}) {
   const {
     home = os.homedir(),
     existsSync = fs.existsSync,
@@ -106,31 +122,42 @@ function detectStaleSelfInstall(opts = {}) {
     } catch { /* unreadable rc */ }
   }
 
+  const wrapper = pick(path.join(dir, 'bin', 'pglens'));
+  const modulePkg = pick(path.join(dir, 'node_modules', 'pglens', 'package.json'));
+
   return {
-    wrapper: pick(path.join(dir, 'bin', 'pglens')),
-    nodeModules: pick(path.join(dir, 'node_modules')),
-    pkgJson: pick(path.join(dir, 'package.json')),
-    pkgLock: pick(path.join(dir, 'package-lock.json')),
+    curlInstalled: Boolean(wrapper || modulePkg),
+    wrapper,
+    modulePkg,
+    pre3Source: pick(path.join(dir, 'source')),
     rcRefs,
   };
 }
 
 /**
  * Gather the full picture. `selfReal`/`selfVersion` describe the binary
- * doing the asking (the freshly-installed one).
+ * doing the asking. Each copy is tagged:
+ *   isCanonical — the curl install under ~/.pglens (good)
+ *   isNpmGlobal — a foreign `npm i -g` style copy (to remove)
  */
 function collectReport(opts = {}) {
-  const { selfReal, selfVersion } = opts;
-  const copies = findOnPath('pglens', opts).map((c) => ({
-    ...c,
-    version: probeVersion(c.file, opts),
-    isSelf: selfReal != null && c.real === selfReal,
-  }));
+  const { selfReal, selfVersion, home = os.homedir() } = opts;
+  const curlDir = path.join(home, '.pglens');
+  const copies = findOnPath('pglens', opts).map((c) => {
+    const isCanonical = isUnderDir(c.file, curlDir) || isUnderDir(c.real, curlDir);
+    return {
+      ...c,
+      version: probeVersion(c.file, opts),
+      isCanonical,
+      // Foreign only: a node_modules/pglens path that isn't the curl one.
+      isNpmGlobal: !isCanonical && NPM_MODULE_RE.test(c.real || ''),
+    };
+  });
   return {
     selfReal,
     selfVersion,
     copies,
-    staleSelfInstall: detectStaleSelfInstall(opts),
+    installs: detectInstalls(opts),
   };
 }
 
@@ -139,37 +166,49 @@ function collectReport(opts = {}) {
  * { ok, problems: [{ code, message }] }.
  */
 function analyze(report) {
-  const { selfVersion, copies, staleSelfInstall } = report;
+  const { copies, installs } = report;
   const problems = [];
 
+  const npmCopies = copies.filter((c) => c.isNpmGlobal);
+  if (npmCopies.length) {
+    problems.push({
+      code: 'npm-install',
+      message:
+        `pglens was installed via npm (${npmCopies.map((c) => c.file).join(', ')}). ` +
+        `pglens is curl-managed — remove the npm copy and install with the curl script.`,
+    });
+  }
+
+  // A foreign copy resolving first hides the curl install behind it.
   const first = copies[0];
-  if (first && first.version && selfVersion && first.version !== selfVersion) {
+  if (first && !first.isCanonical && installs.curlInstalled) {
     problems.push({
       code: 'shadowed',
-      message:
-        `PATH resolves pglens to ${first.file} (v${first.version}), ` +
-        `not the v${selfVersion} you just installed.`,
+      message: `PATH resolves pglens to ${first.file}, shadowing your curl install in ~/.pglens.`,
     });
   }
 
-  const others = copies.filter((c) => !c.isSelf);
-  if (others.length) {
+  // Curl install on disk but its launcher never made it onto PATH.
+  if (installs.curlInstalled && !copies.some((c) => c.isCanonical)) {
     problems.push({
-      code: 'multiple-copies',
-      message: `${copies.length} pglens binaries on PATH; only one should remain.`,
+      code: 'not-on-path',
+      message: '~/.pglens is installed but ~/.pglens/bin is not on PATH (open a new terminal or re-run the installer).',
     });
   }
 
-  if (staleSelfInstall.wrapper || staleSelfInstall.nodeModules) {
+  // Nothing anywhere.
+  if (!copies.length && !installs.curlInstalled) {
     problems.push({
-      code: 'stale-self-install',
-      message: 'Old self-install found under ~/.pglens (pre-3.0 curl installer).',
+      code: 'no-install',
+      message: 'pglens is not installed. Install it with the curl script.',
     });
   }
-  if (staleSelfInstall.rcRefs.length) {
+
+  // Dead pre-3.0 layout left behind.
+  if (installs.pre3Source) {
     problems.push({
-      code: 'stale-path-entry',
-      message: `Shell rc adds ~/.pglens/bin to PATH: ${staleSelfInstall.rcRefs.join(', ')}.`,
+      code: 'pre3-leftover',
+      message: `Pre-3.0 leftover at ${installs.pre3Source} (safe to remove; data files untouched).`,
     });
   }
 
@@ -188,38 +227,35 @@ function needsSudo(file, opts = {}) {
 }
 
 /**
- * Concrete shell commands to remove the cruft, given a report.
- * Data files are never touched.
+ * Concrete shell commands to make the curl install the only one.
+ * Removes foreign npm copies and pre-3.0 cruft; never touches the
+ * canonical ~/.pglens install, a dev checkout, or data files.
  */
 function buildFixPlan(report, opts = {}) {
   const cmds = [];
-  const { copies, staleSelfInstall, selfReal, selfVersion } = report;
-  const selfModule = (selfReal || '').replace(/[/\\]bin[/\\]pglens$/, '');
+  const { copies, installs } = report;
 
+  let sawNpm = false;
   for (const c of copies) {
-    if (c.isSelf) continue;
-    // Never delete an equally-new binary (covers dev-checkout / npx, where
-    // selfReal is a different path than the installed copy on PATH).
-    if (selfVersion && c.version === selfVersion) continue;
-    // The ~/.pglens wrapper is handled wholesale by the self-install block.
-    if (c.file === staleSelfInstall.wrapper) continue;
-
+    if (!c.isNpmGlobal) continue; // leave canonical + dev checkouts alone
+    sawNpm = true;
     const sudo = needsSudo(c.file, opts) ? 'sudo ' : '';
     cmds.push(`${sudo}rm -f ${c.file}`);
-    // npm symlinks point into <prefix>/lib/node_modules/pglens — drop the module too.
-    const m = c.real && c.real.match(/^(.*[/\\]node_modules[/\\]pglens)[/\\]/);
-    if (m && m[1] !== selfModule) {
+    const m = (c.real || '').match(NPM_MODULE_RE);
+    if (m) {
       const modSudo = needsSudo(m[1], opts) ? 'sudo ' : '';
       cmds.push(`${modSudo}rm -rf ${m[1]}`);
     }
   }
+  if (sawNpm) cmds.push('# (if it came from a global install you can instead run: npm rm -g pglens)');
 
-  const s = staleSelfInstall;
-  const selfTargets = [s.wrapper, s.nodeModules, s.pkgJson, s.pkgLock].filter(Boolean);
-  if (selfTargets.length) cmds.push(`rm -rf ${selfTargets.join(' ')}`);
+  if (installs.pre3Source) cmds.push(`rm -rf ${installs.pre3Source}`);
 
-  for (const rc of s.rcRefs) {
-    cmds.push(`# edit ${rc}: delete the line exporting ~/.pglens/bin to PATH`);
+  const canonicalOnPath = copies.some((c) => c.isCanonical);
+  if (!installs.curlInstalled && !canonicalOnPath) {
+    cmds.push('curl -fsSL https://pglens.org/install.sh | bash   # install via curl');
+  } else if (installs.curlInstalled && !canonicalOnPath) {
+    cmds.push('# re-run the installer to restore PATH: curl -fsSL https://pglens.org/install.sh | bash');
   }
 
   if (cmds.length) cmds.push('hash -r   # refresh shell command cache (or open a new terminal)');
@@ -228,10 +264,11 @@ function buildFixPlan(report, opts = {}) {
 
 module.exports = {
   pathDirs,
+  isUnderDir,
   findOnPath,
   probeVersion,
   compareVersions,
-  detectStaleSelfInstall,
+  detectInstalls,
   collectReport,
   analyze,
   needsSudo,

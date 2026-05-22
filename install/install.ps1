@@ -88,7 +88,12 @@ if ($InstallNode) {
 # 2. Install (or upgrade) pglens via npm. @latest makes a re-run a clean upgrade.
 Write-Host "Installing pglens via npm..."
 Set-Location -Path $InstallDir
+# Suppress the package's postinstall doctor notice: the launcher and PATH
+# entry aren't written until later in this script, so it would otherwise warn
+# that the install "isn't on PATH" mid-run. We print our own status below.
+$env:PGLENS_NO_POSTINSTALL = "1"
 & $NpmCmd install --prefix "$InstallDir" pglens@latest
+Remove-Item Env:\PGLENS_NO_POSTINSTALL -ErrorAction SilentlyContinue
 
 # 3. Create launcher script
 $TargetScript = "$InstallDir\node_modules\pglens\bin\pglens"

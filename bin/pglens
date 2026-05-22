@@ -47,7 +47,7 @@ function fetchLatestVersion() {
 function printUpdateNotice(latest) {
   const lines = [
     `Update available  ${CURRENT_VERSION} → ${latest}`,
-    `Run  npm i -g pglens@latest`,
+    `Run  curl -fsSL https://pglens.org/install.sh | bash`,
   ];
   const w = Math.max(...lines.map((l) => l.length));
   console.log('\n┌' + '─'.repeat(w + 2) + '┐');
@@ -274,9 +274,11 @@ program
       console.log('  (none — PATH lookup found nothing; unusual)');
     }
     for (const c of report.copies) {
-      const mark = c.isSelf ? '✓' : '✗';
+      const mark = c.isCanonical ? '✓' : '✗';
       const ver = c.version ? `v${c.version}` : 'v?';
-      const note = c.isSelf ? '' : '  (stale — remove)';
+      const note = c.isCanonical ? '  (curl install)'
+        : c.isNpmGlobal ? '  (npm install — remove)'
+        : '  (not curl-managed)';
       console.log(`  ${mark} ${c.file.padEnd(40)} ${ver}${note}`);
     }
 

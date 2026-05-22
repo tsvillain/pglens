@@ -2,10 +2,11 @@
 /**
  * Post-install notice.
  *
- * npm only updates the binary in *its* prefix. If a user has a leftover
- * copy elsewhere (an old npm prefix, or the pre-3.0 ~/.pglens self-install)
- * the freshly installed version gets shadowed and the upgrade looks like a
- * no-op. We can't fix another channel from here, but we can warn loudly.
+ * pglens is curl-managed (install/install.sh, under ~/.pglens). When this
+ * runs from the curl installer's `npm install --prefix ~/.pglens` it sits
+ * under ~/.pglens and analyze() reports ok — silent. When it runs from a
+ * direct `npm i -g pglens`, that's the discouraged channel: analyze()
+ * flags it and we steer the user back to the curl script.
  *
  * MUST never fail the install: everything is wrapped, exit is always 0.
  */
@@ -27,7 +28,7 @@ try {
 
   const line = (s = '') => console.warn(s);
   line();
-  line('  ⚠  pglens: install may be shadowed by an older copy.');
+  line('  ⚠  pglens: install needs attention.');
   for (const p of problems) line(`     • ${p.message}`);
   line();
   line('     Run  pglens doctor  for an exact cleanup, then `hash -r`');

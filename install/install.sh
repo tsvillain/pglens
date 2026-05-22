@@ -90,7 +90,10 @@ fi
 # 2. Install (or upgrade) pglens via npm, strictly under ~/.pglens to avoid
 # global side effects. @latest makes a re-run a clean upgrade.
 echo "Installing pglens via npm..."
-"$NPM_CMD" install --prefix "$INSTALL_DIR" pglens@latest
+# Suppress the package's postinstall doctor notice: the launcher and PATH
+# line aren't written until later in this script, so it would otherwise warn
+# that the install "isn't on PATH" mid-run. We print our own status below.
+PGLENS_NO_POSTINSTALL=1 "$NPM_CMD" install --prefix "$INSTALL_DIR" pglens@latest
 
 # 3. Create launcher script
 BINARY_PATH="$INSTALL_DIR/node_modules/.bin/pglens"

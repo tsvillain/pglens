@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-05-22
+
+### Fixed
+
+- **`pglens doctor` no longer tells curl users to delete their working install.**
+  Doctor had the install model backwards: it treated the curl install under
+  `~/.pglens` as a "pre-3.0 leftover to remove" and, because the curl launcher is
+  a wrapper script (not a symlink), failed to recognize the running copy as its
+  own — so a single healthy install was reported as a stale duplicate. Following
+  the cleanup recreated the same install, producing an endless "stale → delete →
+  reinstall → stale" loop. The model is now inverted to match how pglens actually
+  ships: **the curl install under `~/.pglens` is canonical**, and a
+  `npm install -g pglens` copy is the foreign one doctor flags and removes. New
+  problem codes: `npm-install`, `shadowed`, `not-on-path`, `no-install`,
+  `pre3-leftover` (the genuine `~/.pglens/source` pre-3.0 layout). Data files are
+  still never touched.
+- **Update notice** now points to the curl installer
+  (`curl -fsSL https://pglens.org/install.sh | bash`) instead of
+  `npm i -g pglens@latest`, which would have created exactly the npm copy doctor
+  flags.
+- **Post-install notice** is suppressed during a curl install (the installer sets
+  `PGLENS_NO_POSTINSTALL=1` around its `npm install`), so it no longer warns that
+  the install "isn't on PATH" before the launcher and `PATH` line are written.
+
+### Changed
+
+- **README** demotes `npm install -g pglens` to "not recommended"; the curl
+  script is documented as the supported, canonical install.
+
 ## [3.0.1] - 2026-05-22
 
 ### Added
