@@ -1,436 +1,313 @@
 /**
  * Database Connection Pool Manager
- * 
- * Manages PostgreSQL connection pools using postgres library.
- * Provides connection pooling for efficient database access.
- * Supports multiple simultaneous connections.
+ *
+ * Manages PostgreSQL connection pools using the `postgres` library and the
+ * OS keychain for secrets. Each connection is stored as a metadata-only
+ * record in `~/.pglens/connections.json`; the password lives in the
+ * keychain keyed by connection id.
  */
 
-const postgres = require('postgres');
-const crypto = require('crypto');
 const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const crypto = require('crypto');
+const postgres = require('postgres');
 
-// Persistence file path: ~/.pglens/connections.json
-const PGLENS_DIR = path.join(os.homedir(), '.pglens');
-const CONNECTIONS_FILE = path.join(PGLENS_DIR, 'connections.json');
+const logger = require('../log');
+const { quoteIdent } = require('./identifier');
+const { CONNECTIONS_FILE, ensureLayout } = require('../config/paths');
+const {
+  parseConnectionUrl,
+  buildConnectionUrl,
+  maskedConnectionUrl,
+  setPassword,
+  getPassword,
+  deletePassword,
+} = require('./secrets');
 
-// Map to store multiple connections: id -> { pool, name, connectionString, sslMode, schema }
+// In-memory: id -> { pool, name, meta, sslMode, schema }
+//   meta = { protocol, username, host, port, database, params, password? (in mem only) }
 const connections = new Map();
 
-/**
- * Create a wrapper that provides pg-compatible query interface.
- * The postgres package uses a different API, so we wrap it to maintain compatibility.
- * @param {object} sqlClient - The postgres client instance
- * @returns {object} Wrapped client with .query() method
- */
 function createPoolWrapper(sqlClient) {
   return {
     query: async (queryText, params) => {
       const result = await sqlClient.unsafe(queryText, params || []);
-      return { rows: result };
+      return { rows: result, fields: result.columns || [], rowCount: result.count };
+    },
+    /**
+     * Run `queryText` with `search_path` pinned to `schema` on a single
+     * reserved connection. `SET search_path` and the query must share one
+     * backend connection — issuing them as separate pool queries can land on
+     * different pooled connections, so the search_path would not apply.
+     */
+    queryWithSchema: async (schema, queryText, params) => {
+      const reserved = await sqlClient.reserve();
+      try {
+        await reserved.unsafe(`SET search_path TO ${quoteIdent(schema)}`);
+        const result = await reserved.unsafe(queryText, params || []);
+        return { rows: result, fields: result.columns || [], rowCount: result.count };
+      } finally {
+        reserved.release();
+      }
     },
     end: () => sqlClient.end(),
   };
 }
 
-/**
- * Extract database name from connection string
- * @param {string} connectionString 
- * @returns {string} Database name or 'Unknown'
- */
-function getDatabaseName(connectionString) {
-  try {
-    const url = new URL(connectionString);
-    return url.pathname.replace(/^\//, '') || 'postgres';
-  } catch (e) {
-    return 'postgres';
-  }
-}
-
-/**
- * Create a new connection pool.
- * @param {string} connectionString - PostgreSQL connection string
- * @param {string} sslMode - SSL mode: disable, require, prefer, verify-ca, verify-full
- * @param {string} [customName] - Optional custom name for the connection
- * @param {string} [schema] - Schema to use (default: 'public')
- * @returns {Promise<{id: string, name: string}>} The created connection info
- */
-function createPool(connectionString, sslMode = 'prefer', customName = null, schema = 'public') {
-  const sslConfig = getSslConfig(sslMode);
-  const poolConfig = {
-    max: 10,
-    idle_timeout: 30,
-    connect_timeout: 10,
-    timeout: 30,
-  };
-
-  if (sslConfig !== null) {
-    poolConfig.ssl = sslConfig;
-  }
-
-  const sql = postgres(connectionString, poolConfig);
-
-  // Test the connection
-  return sql`SELECT NOW()`
-    .then(() => {
-      console.log('✓ Connected to PostgreSQL database');
-
-      for (const [existingId, existingConn] of connections.entries()) {
-        if (existingConn.connectionString === connectionString) {
-          if (customName && customName !== existingConn.name) {
-            existingConn.name = customName;
-          }
-          sql.end();
-          return { id: existingId, name: existingConn.name, reused: true };
-        }
-      }
-
-      const id = crypto.randomUUID();
-      const name = customName || getDatabaseName(connectionString);
-
-      connections.set(id, {
-        pool: sql,
-        name,
-        connectionString,
-        sslMode,
-        schema: schema || 'public'
-      });
-
-      saveConnectionsToFile();
-
-      return { id, name };
-    })
-    .catch((err) => {
-      console.error('✗ Failed to connect to PostgreSQL database:', err.message);
-      const recommendation = getSslModeRecommendation(err, sslMode);
-      if (recommendation) {
-        console.error(`\n💡 SSL Mode Recommendation: Try using sslmode '${recommendation}'`);
-      }
-      throw err;
-    });
-}
-
-/**
- * Check if a specific connection is active.
- * @param {string} connectionId - Connection ID
- * @returns {Promise<boolean>} True if connected
- */
-function checkConnection(connectionId) {
-  const conn = connections.get(connectionId);
-  if (!conn) {
-    return Promise.resolve(false);
-  }
-
-  return conn.pool`SELECT 1`
-    .then(() => true)
-    .catch(() => false);
-}
-
-/**
- * Analyze connection error and recommend appropriate SSL mode.
- * @param {Error} error - Connection error object
- * @param {string} currentSslMode - Current SSL mode that failed
- * @returns {string|null} Recommended SSL mode or null if not SSL-related
- */
-function getSslModeRecommendation(error, currentSslMode) {
-  const errorMessage = error.message?.toLowerCase() || '';
-  const errorCode = error.code;
-  const errorStack = error.stack?.toLowerCase() || '';
-
-  // Certificate verification errors
-  if (
-    errorMessage.includes('certificate') ||
-    errorMessage.includes('self signed') ||
-    errorMessage.includes('unable to verify') ||
-    errorCode === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' ||
-    errorCode === 'SELF_SIGNED_CERT_IN_CHAIN'
-  ) {
-    if (currentSslMode === 'verify-full' || currentSslMode === 'verify-ca') {
-      return 'require';
-    }
-    if (currentSslMode === 'prefer') {
-      return 'require';
-    }
-  }
-
-  // Hostname mismatch errors
-  if (
-    errorMessage.includes('hostname') ||
-    errorMessage.includes('host name') ||
-    errorCode === 'ERR_TLS_CERT_ALTNAME_INVALID'
-  ) {
-    if (currentSslMode === 'verify-full') {
-      return 'verify-ca';
-    }
-    return 'require';
-  }
-
-  // SSL/TLS protocol errors (but not connection refused, which is handled separately)
-  if (
-    (errorMessage.includes('ssl') ||
-      errorMessage.includes('tls') ||
-      errorMessage.includes('protocol') ||
-      errorStack.includes('ssl')) &&
-    errorCode !== 'ECONNREFUSED'
-  ) {
-    // If SSL is enabled and failing, try disabling
-    if (currentSslMode !== 'disable' && currentSslMode !== 'prefer') {
-      // First try prefer (allows fallback to non-SSL)
-      if (currentSslMode === 'require' || currentSslMode === 'verify-ca' || currentSslMode === 'verify-full') {
-        return 'prefer';
-      }
-    }
-    // If prefer failed, try disable
-    if (currentSslMode === 'prefer') {
-      return 'disable';
-    }
-  }
-
-  // Connection refused might indicate SSL requirement
-  if (errorCode === 'ECONNREFUSED' || errorMessage.includes('connection refused')) {
-    // If SSL is disabled, server might require SSL
-    if (currentSslMode === 'disable') {
-      return 'prefer';
-    }
-  }
-
-  // Connection timeout with SSL might need different mode
-  if (
-    (errorCode === 'ETIMEDOUT' || errorMessage.includes('timeout')) &&
-    currentSslMode !== 'disable'
-  ) {
-    return 'prefer';
-  }
-
-  return null;
-}
-
-/**
- * Get SSL configuration based on SSL mode.
- * @param {string} sslMode - SSL mode string
- * @returns {object|null} SSL configuration object or null to disable SSL
- */
 function getSslConfig(sslMode) {
   switch (sslMode?.toLowerCase()) {
     case 'disable':
       return null;
+    // `require` is treated as "must be encrypted AND the certificate must
+    // verify". This is stricter than libpq (where `require` skips cert
+    // checks) but matches user expectations: choosing `require` should not
+    // silently accept a MITM cert. Self-signed/dev setups should use
+    // `prefer` (best-effort, unverified) or `disable`.
     case 'require':
-      return { rejectUnauthorized: false };
-    case 'prefer':
-      return { rejectUnauthorized: false };
     case 'verify-ca':
-      return { rejectUnauthorized: true };
     case 'verify-full':
       return { rejectUnauthorized: true };
+    // `prefer` (and the default) opportunistically encrypt without verifying
+    // the certificate — keeps self-signed and dev databases working.
+    case 'prefer':
     default:
       return { rejectUnauthorized: false };
   }
 }
 
-/**
- * Get a connection pool by ID.
- * @param {string} connectionId - The connection ID
- * @returns {object|null} The connection pool wrapper or null if not found
- */
-function getPool(connectionId) {
-  const conn = connections.get(connectionId);
-  if (!conn) {
-    return null;
+function poolConfig(sslMode) {
+  const cfg = { max: 10, idle_timeout: 30, connect_timeout: 10, timeout: 30 };
+  const ssl = getSslConfig(sslMode);
+  if (ssl !== null) cfg.ssl = ssl;
+  return cfg;
+}
+
+function getSslModeRecommendation(error, currentSslMode) {
+  const msg = (error.message || '').toLowerCase();
+  const code = error.code;
+  if (msg.includes('certificate') || msg.includes('self signed') || msg.includes('unable to verify') ||
+      code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || code === 'SELF_SIGNED_CERT_IN_CHAIN') {
+    if (currentSslMode === 'verify-full' || currentSslMode === 'verify-ca' || currentSslMode === 'prefer') {
+      return 'require';
+    }
   }
-  return createPoolWrapper(conn.pool);
+  if (msg.includes('hostname') || code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
+    return currentSslMode === 'verify-full' ? 'verify-ca' : 'require';
+  }
+  if (code === 'ECONNREFUSED' && currentSslMode === 'disable') return 'prefer';
+  return null;
 }
 
 /**
- * Get list of all active connections.
- * @returns {Array<{id: string, name: string}>} List of connections
+ * Test + open a postgres pool against the given metadata.
  */
+async function openPool(meta, password, sslMode) {
+  const url = buildConnectionUrl(meta, password);
+  const sql = postgres(url, poolConfig(sslMode));
+  await sql`SELECT NOW()`;
+  return sql;
+}
+
+async function createPool(connectionString, sslMode = 'prefer', customName = null, schema = 'public') {
+  const meta = parseConnectionUrl(connectionString);
+  if (!meta) {
+    throw new Error('Could not parse connection string');
+  }
+  const password = meta.password;
+  delete meta.password;
+
+  try {
+    const sql = await openPool(meta, password, sslMode);
+    logger.info({ host: meta.host, database: meta.database }, 'connected');
+
+    // Deduplicate against existing connections by (host, port, database, username).
+    for (const [existingId, existingConn] of connections.entries()) {
+      const m = existingConn.meta;
+      if (m.host === meta.host && m.port === meta.port &&
+          m.database === meta.database && m.username === meta.username) {
+        if (customName && customName !== existingConn.name) existingConn.name = customName;
+        sql.end();
+        return { id: existingId, name: existingConn.name, reused: true };
+      }
+    }
+
+    const id = crypto.randomUUID();
+    const name = customName || meta.database || 'postgres';
+    connections.set(id, { pool: sql, name, meta, sslMode, schema: schema || 'public' });
+
+    await setPassword(id, password);
+    saveConnectionsToFile();
+    return { id, name };
+  } catch (err) {
+    logger.error({ err: err.message }, 'connect failed');
+    const rec = getSslModeRecommendation(err, sslMode);
+    if (rec) err.sslHint = `Try sslmode '${rec}'`;
+    throw err;
+  }
+}
+
+async function updateConnection(id, connectionString, sslMode, name, schema = 'public') {
+  const existing = connections.get(id);
+  if (!existing) throw new Error('Connection not found');
+
+  const meta = parseConnectionUrl(connectionString);
+  if (!meta) throw new Error('Could not parse connection string');
+  let password = meta.password;
+  delete meta.password;
+
+  // "***" is the masked-password sentinel surfaced by maskedConnectionUrl().
+  // When the client submits an unmodified URL/Params edit, swap it for the
+  // real keychain entry so the connection re-opens successfully.
+  if (password === '***') {
+    password = await getPassword(id);
+  }
+
+  const sql = await openPool(meta, password, sslMode);
+  await existing.pool.end();
+
+  const finalName = name || meta.database || existing.name;
+  connections.set(id, { pool: sql, name: finalName, meta, sslMode, schema: schema || 'public' });
+  await setPassword(id, password);
+  saveConnectionsToFile();
+  logger.info({ id, host: meta.host, database: meta.database }, 'connection updated');
+  return { id, name: finalName };
+}
+
+function checkConnection(connectionId) {
+  const conn = connections.get(connectionId);
+  if (!conn) return Promise.resolve(false);
+  return conn.pool`SELECT 1`.then(() => true).catch(() => false);
+}
+
+function getPool(connectionId) {
+  const conn = connections.get(connectionId);
+  return conn ? createPoolWrapper(conn.pool) : null;
+}
+
 function getConnections() {
   const result = [];
   for (const [id, conn] of connections.entries()) {
     result.push({
       id,
       name: conn.name,
-      connectionString: conn.connectionString,
+      host: conn.meta.host,
+      port: conn.meta.port,
+      database: conn.meta.database,
+      username: conn.meta.username,
+      // Masked URL — never expose the raw password.
+      connectionString: maskedConnectionUrl({ ...conn.meta, password: true }),
       sslMode: conn.sslMode,
-      schema: conn.schema || 'public'
+      schema: conn.schema || 'public',
     });
   }
   return result;
 }
 
-/**
- * Update an existing connection.
- * @param {string} id - Connection ID to update
- * @param {string} connectionString - New connection string
- * @param {string} sslMode - New SSL mode
- * @param {string} name - New name
- * @param {string} [schema] - Schema to use (default: 'public')
- * @returns {Promise<{id: string, name: string}>} Updated connection info
- */
-async function updateConnection(id, connectionString, sslMode, name, schema = 'public') {
-  const existingConn = connections.get(id);
-  if (!existingConn) {
-    throw new Error('Connection not found');
-  }
-
-  const sslConfig = getSslConfig(sslMode);
-  const poolConfig = {
-    max: 10,
-    idle_timeout: 30,
-    connect_timeout: 10,
-    timeout: 30,
-  };
-
-  if (sslConfig !== null) {
-    poolConfig.ssl = sslConfig;
-  }
-
-  const sql = postgres(connectionString, poolConfig);
-
-  return sql`SELECT NOW()`
-    .then(async () => {
-      console.log('✓ Updated connection to PostgreSQL database');
-
-      await existingConn.pool.end();
-
-      connections.set(id, {
-        pool: sql,
-        name: name || getDatabaseName(connectionString),
-        connectionString,
-        sslMode,
-        schema: schema || 'public'
-      });
-
-      saveConnectionsToFile();
-
-      return { id, name: connections.get(id).name };
-    })
-    .catch((err) => {
-      console.error('✗ Failed to update connection:', err.message);
-      throw err;
-    });
-}
-
-/**
- * Close a specific connection pool.
- * @param {string} connectionId - The connection ID to close
- * @returns {Promise} Promise that resolves when pool is closed
- */
 async function closePool(connectionId) {
   if (connectionId) {
     const conn = connections.get(connectionId);
     if (conn) {
       await conn.pool.end();
       connections.delete(connectionId);
+      await deletePassword(connectionId);
       saveConnectionsToFile();
     }
   } else {
-    const promises = [];
-    for (const conn of connections.values()) {
-      promises.push(conn.pool.end());
-    }
-    await Promise.all(promises);
+    await Promise.all([...connections.values()].map(c => c.pool.end()));
     connections.clear();
   }
 }
 
-/**
- * Save connections metadata to file for persistence.
- * Only saves metadata (id, name, connectionString, sslMode), not pool objects.
- */
 function saveConnectionsToFile() {
   try {
-    if (!fs.existsSync(PGLENS_DIR)) {
-      fs.mkdirSync(PGLENS_DIR, { recursive: true });
-    }
-
-    const connectionsData = [];
+    ensureLayout();
+    const data = [];
     for (const [id, conn] of connections.entries()) {
-      connectionsData.push({
+      data.push({
         id,
         name: conn.name,
-        connectionString: conn.connectionString,
+        meta: conn.meta,
         sslMode: conn.sslMode,
-        schema: conn.schema || 'public'
+        schema: conn.schema || 'public',
       });
     }
-
-    fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(connectionsData, null, 2));
+    fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
   } catch (err) {
-    console.error('Failed to save connections to file:', err.message);
+    logger.error({ err: err.message }, 'failed to save connections file');
   }
 }
 
-/**
- * Load connections metadata from file.
- * @returns {Array} Array of saved connection configs
- */
 function loadConnectionsFromFile() {
   try {
-    if (fs.existsSync(CONNECTIONS_FILE)) {
-      const data = fs.readFileSync(CONNECTIONS_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
+    if (!fs.existsSync(CONNECTIONS_FILE)) return [];
+    const data = JSON.parse(fs.readFileSync(CONNECTIONS_FILE, 'utf8'));
+    return Array.isArray(data) ? data : [];
   } catch (err) {
-    console.error('Failed to load connections from file:', err.message);
+    logger.error({ err: err.message }, 'failed to load connections file');
+    return [];
   }
-  return [];
 }
 
 /**
- * Restore connections from file on server startup.
- * Re-creates connection pools for all saved connections.
- * @returns {Promise<void>}
+ * Migrate legacy records that stored `connectionString` (with the password
+ * embedded) into the keychain-backed shape. Idempotent: only writes to the
+ * keychain when password material is found.
  */
-async function restoreConnections() {
-  const savedConnections = loadConnectionsFromFile();
-
-  if (savedConnections.length === 0) {
-    return;
-  }
-
-  console.log(`Restoring ${savedConnections.length} saved connection(s)...`);
-
-  for (const connConfig of savedConnections) {
+async function migrateLegacyRecord(rec) {
+  if (rec.meta) return rec;
+  if (typeof rec.connectionString !== 'string') return null;
+  const meta = parseConnectionUrl(rec.connectionString);
+  if (!meta) return null;
+  const password = meta.password;
+  delete meta.password;
+  if (password) {
     try {
-      const sslConfig = getSslConfig(connConfig.sslMode);
-      const poolConfig = {
-        max: 10,
-        idle_timeout: 30,
-        connect_timeout: 10,
-        timeout: 30,
-      };
-
-      if (sslConfig !== null) {
-        poolConfig.ssl = sslConfig;
-      }
-
-      const sql = postgres(connConfig.connectionString, poolConfig);
-
-      await sql`SELECT NOW()`;
-
-      connections.set(connConfig.id, {
-        pool: sql,
-        name: connConfig.name,
-        connectionString: connConfig.connectionString,
-        sslMode: connConfig.sslMode,
-        schema: connConfig.schema || 'public'
-      });
-
-      console.log(`✓ Restored connection: ${connConfig.name}`);
+      await setPassword(rec.id, password);
+      logger.info({ id: rec.id }, 'migrated password to keychain');
     } catch (err) {
-      console.error(`✗ Failed to restore connection "${connConfig.name}": ${err.message}`);
+      logger.warn({ id: rec.id, err: err.message }, 'keychain write failed during migration');
     }
   }
+  return { id: rec.id, name: rec.name, meta, sslMode: rec.sslMode, schema: rec.schema || 'public' };
 }
 
-/**
- * Update just the schema for an existing connection (no reconnect needed).
- * @param {string} connectionId
- * @param {string} schema
- */
+async function restoreConnections() {
+  const saved = loadConnectionsFromFile();
+  if (saved.length === 0) return;
+
+  logger.info({ count: saved.length }, 'restoring connections');
+  const migrated = [];
+  let needsResave = false;
+
+  for (const rec of saved) {
+    if (!rec.meta && rec.connectionString) {
+      needsResave = true;
+      const m = await migrateLegacyRecord(rec);
+      if (m) migrated.push(m);
+    } else if (rec.meta) {
+      migrated.push(rec);
+    }
+  }
+
+  for (const rec of migrated) {
+    try {
+      const password = await getPassword(rec.id);
+      const sql = await openPool(rec.meta, password, rec.sslMode);
+      connections.set(rec.id, {
+        pool: sql,
+        name: rec.name,
+        meta: rec.meta,
+        sslMode: rec.sslMode,
+        schema: rec.schema || 'public',
+      });
+      logger.info({ id: rec.id, name: rec.name }, 'restored connection');
+    } catch (err) {
+      logger.error({ id: rec.id, name: rec.name, err: err.message }, 'restore failed');
+    }
+  }
+
+  if (needsResave) saveConnectionsToFile();
+}
+
 function updateConnectionSchema(connectionId, schema) {
   const conn = connections.get(connectionId);
   if (!conn) throw new Error('Connection not found');
@@ -438,24 +315,16 @@ function updateConnectionSchema(connectionId, schema) {
   saveConnectionsToFile();
 }
 
-/**
- * Get the schema for a given connection ID.
- * @param {string} connectionId
- * @returns {string|null} Schema name or null if not found
- */
 function getConnectionSchema(connectionId) {
   const conn = connections.get(connectionId);
   return conn ? (conn.schema || null) : null;
 }
 
-/**
- * Get the connection string for a given connection ID.
- * @param {string} connectionId
- * @returns {string|null} Connection string or null if not found
- */
 function getConnectionString(connectionId) {
+  // Returns the *masked* URL. Callers needing the real URL should call the
+  // pool directly; passwords no longer leave this module.
   const conn = connections.get(connectionId);
-  return conn ? conn.connectionString : null;
+  return conn ? maskedConnectionUrl({ ...conn.meta, password: true }) : null;
 }
 
 module.exports = {
@@ -468,5 +337,5 @@ module.exports = {
   updateConnectionSchema,
   updateConnection,
   restoreConnections,
-  getConnectionString
+  getConnectionString,
 };

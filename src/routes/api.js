@@ -1,815 +1,570 @@
 /**
  * API Routes
- * 
- * RESTful API endpoints for database operations.
- * 
- * Endpoints:
- * - GET /api/tables - List all tables in the database
- * - GET /api/tables/:tableName - Get paginated table data
- * 
- * Features:
- * - SQL injection prevention via table name sanitization
- * - Cursor-based pagination for efficient large table navigation
- * - Automatic primary key detection for optimized pagination
+ *
+ * All routes use:
+ *   - Zod request validation (body/query/params)
+ *   - The standard error envelope from ../http/errors
+ *   - The proper Postgres identifier escaper from ../db/identifier
  */
 
 const express = require('express');
-const { getPool, createPool, closePool, checkConnection, getConnections, getConnectionSchema, updateConnectionSchema, updateConnection } = require('../db/connection');
+const { z } = require('zod');
+
+const {
+  getPool, createPool, closePool, checkConnection, getConnections,
+  getConnectionSchema, updateConnectionSchema, updateConnection,
+} = require('../db/connection');
+const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
+const { sendError, codes } = require('../http/errors');
+const { validate } = require('../http/validate');
+const logger = require('../log');
 
 const router = express.Router();
 
-/**
- * Middleware to check if connected to database
- */
-const requireConnection = async (req, res, next) => {
+// ---- Shared schemas --------------------------------------------------------
+
+const SslModeSchema = z.enum(['prefer', 'require', 'disable', 'verify-ca', 'verify-full']);
+const SchemaNameSchema = z.string().min(1).max(255).refine(s => !s.includes('\0'), 'null byte');
+const TableNameSchema = z.string().min(1).max(255).refine(s => !s.includes('\0'), 'null byte');
+
+const ConnectBodySchema = z.object({
+  url: z.string().min(1),
+  sslMode: SslModeSchema.optional(),
+  name: z.string().optional(),
+  schema: SchemaNameSchema.optional(),
+});
+
+const ConnectionIdParam = z.object({ id: z.string().min(1) });
+
+const TableListQuery = z.object({
+  page: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().positive().max(5000).optional(),
+  cursor: z.union([z.string(), z.number()]).optional(),
+  sortColumn: z.string().min(1).optional(),
+  sortDirection: z.enum(['asc', 'desc', 'ASC', 'DESC']).optional(),
+});
+
+const QueryBodySchema = z.object({
+  sql: z.string().min(1),
+  params: z.array(z.unknown()).optional(),
+});
+
+// ---- requireConnection middleware ------------------------------------------
+
+const requireConnection = (req, res, next) => {
   const connectionId = req.headers['x-connection-id'] || req.query.connectionId;
   if (!connectionId) {
-    return res.status(400).json({ error: 'Connection ID required' });
+    return sendError(res, 400, codes.BAD_REQUEST, 'Connection ID required', {
+      hint: 'Send x-connection-id header or ?connectionId query param.',
+    });
   }
-
   const pool = getPool(connectionId);
   if (!pool) {
-    return res.status(503).json({ error: 'Not connected to database or invalid connection ID' });
+    return sendError(res, 503, codes.NO_CONNECTION,
+      'Not connected to database or invalid connection ID');
   }
-
   req.pool = pool;
-  try {
-    req.schema = sanitizeSchemaName(getConnectionSchema(connectionId));
-  } catch {
-    return res.status(400).json({ error: 'Connection has an invalid schema name' });
+  req.connectionId = connectionId;
+  const schema = getConnectionSchema(connectionId);
+  if (!schema || schema.includes('\0')) {
+    return sendError(res, 400, codes.BAD_REQUEST, 'Connection has an invalid schema name');
   }
+  req.schema = schema;
   next();
 };
 
-/**
- * POST /api/connect
- * Connect to a PostgreSQL database
- */
-router.post('/connect', async (req, res) => {
+// ---- Connect / disconnect / status -----------------------------------------
+
+router.post('/connect', validate({ body: ConnectBodySchema }), async (req, res) => {
   const { url, sslMode, name, schema } = req.body;
-
-  if (!url) {
-    return res.status(400).json({ error: 'Connection string is required' });
-  }
-
   try {
-    const { id, name: connectionName } = await createPool(url, sslMode || 'prefer', name, sanitizeSchemaName(schema || 'public'));
-    res.json({ connected: true, connectionId: id, name: connectionName });
-  } catch (error) {
-    res.status(400).json({
-      connected: false,
-      error: error.message
-    });
+    const result = await createPool(url, sslMode || 'prefer', name, schema || 'public');
+    res.json({ connected: true, connectionId: result.id, name: result.name });
+  } catch (err) {
+    return sendError(res, 400, codes.DB_ERROR, err.message, { hint: err.sslHint });
   }
 });
 
-/**
- * PUT /api/connections/:id
- * Update an existing connection
- */
-router.put('/connections/:id', async (req, res) => {
-  const { id } = req.params;
-  const { url, sslMode, name, schema } = req.body;
+router.put('/connections/:id',
+  validate({ params: ConnectionIdParam, body: ConnectBodySchema }),
+  async (req, res) => {
+    try {
+      const result = await updateConnection(
+        req.params.id, req.body.url,
+        req.body.sslMode || 'prefer', req.body.name,
+        req.body.schema || 'public',
+      );
+      res.json({ updated: true, connectionId: req.params.id, name: result.name });
+    } catch (err) {
+      return sendError(res, 400, codes.DB_ERROR, err.message);
+    }
+  });
 
-  if (!url) {
-    return res.status(400).json({ error: 'Connection string is required' });
-  }
-
-  try {
-    const { name: connectionName } = await updateConnection(id, url, sslMode || 'prefer', name, sanitizeSchemaName(schema || 'public'));
-    res.json({ updated: true, connectionId: id, name: connectionName });
-  } catch (error) {
-    res.status(400).json({
-      updated: false,
-      error: error.message
-    });
-  }
-});
-
-/**
- * GET /api/connections
- * List active connections
- */
 router.get('/connections', (req, res) => {
-  const connections = getConnections();
-  res.json({ connections });
+  res.json({ connections: getConnections() });
 });
 
-/**
- * POST /api/disconnect
- * Disconnect from a database
- */
 router.post('/disconnect', async (req, res) => {
-  const connectionId = req.body.connectionId || req.headers['x-connection-id'];
-
+  const connectionId = req.body?.connectionId || req.headers['x-connection-id'];
   if (!connectionId) {
-    return res.status(400).json({ error: 'Connection ID required' });
+    return sendError(res, 400, codes.BAD_REQUEST, 'Connection ID required');
   }
-
   try {
     await closePool(connectionId);
+    invalidateMetadata(connectionId);
     res.json({ connected: false });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    return sendError(res, 500, codes.INTERNAL, err.message);
   }
 });
 
-/**
- * GET /api/status
- * Check connection status
- */
 router.get('/status', async (req, res) => {
   const connectionId = req.headers['x-connection-id'];
-  if (!connectionId) {
-    return res.json({ connected: false });
-  }
-
+  if (!connectionId) return res.json({ connected: false });
   try {
-    const connected = await checkConnection(connectionId);
-    res.json({ connected });
-  } catch (error) {
-    res.json({ connected: false, error: error.message });
+    res.json({ connected: await checkConnection(connectionId) });
+  } catch (err) {
+    res.json({ connected: false, error: err.message });
   }
 });
 
-/**
- * GET /api/schemas
- * List all schemas in the connected database.
- */
+// ---- Schemas / tables -------------------------------------------------------
+
 router.get('/schemas', requireConnection, async (req, res) => {
   try {
-    const pool = req.pool;
-    const result = await pool.query(`
+    const result = await req.pool.query(`
       SELECT schema_name
       FROM information_schema.schemata
       WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
       ORDER BY schema_name;
     `);
-    const schemas = result.rows.map(row => row.schema_name);
-    res.json({ schemas });
-  } catch (error) {
-    console.error('Error fetching schemas:', error);
-    res.status(500).json({ error: error.message });
+    res.json({ schemas: result.rows.map(r => r.schema_name) });
+  } catch (err) {
+    logger.error({ err: err.message }, 'list schemas failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });
 
-/**
- * Sanitize schema name to prevent SQL injection.
- * Only allows alphanumeric characters and underscores (standard PostgreSQL identifiers).
- * Rejects anything that could break out of double-quote identifier quoting.
- * @param {string} schemaName - Schema name to sanitize
- * @returns {string} Sanitized schema name
- * @throws {Error} If schema name contains invalid characters
- */
-function sanitizeSchemaName(schemaName) {
-  if (!schemaName || !/^[a-zA-Z0-9_]+$/.test(schemaName)) {
-    throw new Error('Invalid schema name');
-  }
-  return schemaName;
-}
-
-/**
- * Sanitize table name to prevent SQL injection.
- * Only allows alphanumeric characters, underscores, and dots.
- * @param {string} tableName - Table name to sanitize
- * @returns {string} Sanitized table name
- * @throws {Error} If table name contains invalid characters
- */
-function sanitizeTableName(tableName) {
-  if (!/^[a-zA-Z0-9_.]+$/.test(tableName)) {
-    throw new Error('Invalid table name');
-  }
-  return tableName;
-}
-
-/**
- * GET /api/tables
- * 
- * Returns a list of all tables in the public schema.
- * Only returns BASE TABLE types (excludes views, sequences, etc.).
- * 
- * Response: { tables: string[] }
- */
 router.get('/tables', requireConnection, async (req, res) => {
   try {
-    const pool = req.pool;
-    const schema = req.schema;
-    const result = await pool.query(`
+    const result = await req.pool.query(`
       SELECT table_name, table_type
       FROM information_schema.tables
       WHERE table_schema = $1
       AND table_type IN ('BASE TABLE', 'VIEW')
       ORDER BY table_name;
-    `, [schema]);
-
-    const tables = result.rows.map(row => ({
-      name: row.table_name,
-      type: row.table_type === 'VIEW' ? 'view' : 'table'
-    }));
-    res.json({ tables });
-  } catch (error) {
-    console.error('Error fetching tables:', error);
-    res.status(500).json({ error: error.message });
+    `, [req.schema]);
+    res.json({
+      tables: result.rows.map(r => ({
+        name: r.table_name,
+        type: r.table_type === 'VIEW' ? 'view' : 'table',
+      })),
+    });
+  } catch (err) {
+    logger.error({ err: err.message }, 'list tables failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });
 
-/**
- * Get the primary key column name for a table.
- * Used to enable cursor-based pagination for better performance.
- * @param {Pool} pool - Database connection pool
- * @param {string} tableName - Name of the table
- * @returns {Promise<string|null>} Primary key column name or null if no primary key exists
- */
-async function getPrimaryKeyColumn(pool, tableName, schema) {
-  try {
-    const pkQuery = `
+// ---- Table-introspection helpers -------------------------------------------
+
+async function getPrimaryKeyColumns(pool, tableName, schema) {
+  const r = await pool.query(`
     SELECT kcu.column_name
     FROM information_schema.table_constraints tc
     JOIN information_schema.key_column_usage kcu
-      ON tc.constraint_name = kcu.constraint_name
-      AND tc.table_schema = kcu.table_schema
+      ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
     WHERE tc.constraint_type = 'PRIMARY KEY'
-      AND tc.table_name = $1
-      AND tc.table_schema = $2
-    LIMIT 1;
-    `;
-    const result = await pool.query(pkQuery, [tableName, schema]);
-    const pkColumn = result.rows.length > 0 ? result.rows[0].column_name : null;
-    return pkColumn;
-  } catch (error) {
-    console.error('Error getting primary key:', error);
-    return null;
-  }
+      AND tc.table_name = $1 AND tc.table_schema = $2;
+  `, [tableName, schema]);
+  return new Set(r.rows.map(x => x.column_name));
 }
 
-/**
- * Get foreign key relationships for a table.
- * Queries information_schema to get foreign key constraints and their references.
- * @param {Pool} pool - Database connection pool
- * @param {string} tableName - Name of the table
- * @returns {Promise<Object>} Object mapping column names to their foreign key references { table, column }
- */
-async function getForeignKeyRelations(pool, tableName, schema) {
-  try {
-    const fkQuery = `
-      SELECT
-        kcu.column_name,
-        ccu.table_name AS foreign_table_name,
-        ccu.column_name AS foreign_column_name
-      FROM information_schema.table_constraints AS tc
-      JOIN information_schema.key_column_usage AS kcu
-        ON tc.constraint_name = kcu.constraint_name
-        AND tc.table_schema = kcu.table_schema
-      JOIN information_schema.constraint_column_usage AS ccu
-        ON ccu.constraint_name = tc.constraint_name
-        AND ccu.table_schema = tc.table_schema
-      WHERE tc.constraint_type = 'FOREIGN KEY'
-        AND tc.table_name = $1
-        AND tc.table_schema = $2;
-    `;
-    const result = await pool.query(fkQuery, [tableName, schema]);
-    const foreignKeys = {};
-    result.rows.forEach(row => {
-      foreignKeys[row.column_name] = {
-        table: row.foreign_table_name,
-        column: row.foreign_column_name
-      };
-    });
-    return foreignKeys;
-  } catch (error) {
-    console.error('Error getting foreign key relations:', error);
-    return {};
-  }
-}
-
-/**
- * Get all primary key columns for a table.
- * @param {Pool} pool - Database connection pool
- * @param {string} tableName - Name of the table
- * @returns {Promise<Set>} Set of primary key column names
- */
-async function getPrimaryKeyColumns(pool, tableName, schema) {
-  try {
-    const pkQuery = `
-      SELECT kcu.column_name
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage kcu
-        ON tc.constraint_name = kcu.constraint_name
-        AND tc.table_schema = kcu.table_schema
-      WHERE tc.constraint_type = 'PRIMARY KEY'
-        AND tc.table_name = $1
-        AND tc.table_schema = $2;
-    `;
-    const result = await pool.query(pkQuery, [tableName, schema]);
-    const pkColumns = new Set();
-    result.rows.forEach(row => {
-      pkColumns.add(row.column_name);
-    });
-    return pkColumns;
-  } catch (error) {
-    console.error('Error getting primary key columns:', error);
-    return new Set();
-  }
-}
-
-/**
- * Get all unique constraint columns for a table.
- * @param {Pool} pool - Database connection pool
- * @param {string} tableName - Name of the table
- * @returns {Promise<Set>} Set of unique constraint column names
- */
 async function getUniqueColumns(pool, tableName, schema) {
-  try {
-    const uniqueQuery = `
-      SELECT kcu.column_name
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage kcu
-        ON tc.constraint_name = kcu.constraint_name
-        AND tc.table_schema = kcu.table_schema
-      WHERE tc.constraint_type = 'UNIQUE'
-        AND tc.table_name = $1
-        AND tc.table_schema = $2;
-    `;
-    const result = await pool.query(uniqueQuery, [tableName, schema]);
-    const uniqueColumns = new Set();
-    result.rows.forEach(row => {
-      uniqueColumns.add(row.column_name);
-    });
-    return uniqueColumns;
-  } catch (error) {
-    console.error('Error getting unique columns:', error);
-    return new Set();
-  }
+  const r = await pool.query(`
+    SELECT kcu.column_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+    WHERE tc.constraint_type = 'UNIQUE'
+      AND tc.table_name = $1 AND tc.table_schema = $2;
+  `, [tableName, schema]);
+  return new Set(r.rows.map(x => x.column_name));
 }
 
-/**
- * Get column metadata (datatypes and key relationships) for a table.
- * Queries information_schema.columns to get column names and their data types,
- * and includes key relationship information (primary keys, foreign keys, unique constraints).
- * @param {Pool} pool - Database connection pool
- * @param {string} tableName - Name of the table
- * @returns {Promise<Object>} Object mapping column names to metadata objects with dataType, isPrimaryKey, isForeignKey, foreignKeyRef, isUnique
- */
+async function getForeignKeyRelations(pool, tableName, schema) {
+  const r = await pool.query(`
+    SELECT kcu.column_name,
+           ccu.table_name AS foreign_table_name,
+           ccu.column_name AS foreign_column_name
+    FROM information_schema.table_constraints AS tc
+    JOIN information_schema.key_column_usage AS kcu
+      ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+    JOIN information_schema.constraint_column_usage AS ccu
+      ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+    WHERE tc.constraint_type = 'FOREIGN KEY'
+      AND tc.table_name = $1 AND tc.table_schema = $2;
+  `, [tableName, schema]);
+  const out = {};
+  for (const row of r.rows) {
+    out[row.column_name] = { table: row.foreign_table_name, column: row.foreign_column_name };
+  }
+  return out;
+}
+
 async function getColumnMetadata(pool, tableName, schema) {
-  try {
-    const metadataQuery = `
-      SELECT column_name, data_type
-      FROM information_schema.columns
-      WHERE table_schema = $2
-      AND table_name = $1
-      ORDER BY ordinal_position;
-    `;
-    const result = await pool.query(metadataQuery, [tableName, schema]);
+  const r = await pool.query(`
+    SELECT column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema = $2 AND table_name = $1
+    ORDER BY ordinal_position;
+  `, [tableName, schema]);
 
-    const primaryKeyColumns = await getPrimaryKeyColumns(pool, tableName, schema);
-    const foreignKeyRelations = await getForeignKeyRelations(pool, tableName, schema);
-    const uniqueColumns = await getUniqueColumns(pool, tableName, schema);
+  const [pkCols, fkRels, uqCols] = await Promise.all([
+    getPrimaryKeyColumns(pool, tableName, schema),
+    getForeignKeyRelations(pool, tableName, schema),
+    getUniqueColumns(pool, tableName, schema),
+  ]);
 
-    const columns = {};
-    result.rows.forEach(row => {
-      const columnName = row.column_name;
-      columns[columnName] = {
-        dataType: row.data_type,
-        isPrimaryKey: primaryKeyColumns.has(columnName),
-        isForeignKey: !!foreignKeyRelations[columnName],
-        foreignKeyRef: foreignKeyRelations[columnName] || null,
-        isUnique: uniqueColumns.has(columnName)
-      };
-    });
-    return columns;
-  } catch (error) {
-    console.error('Error getting column metadata:', error);
-    return {};
+  const out = {};
+  for (const row of r.rows) {
+    out[row.column_name] = {
+      dataType: row.data_type,
+      isPrimaryKey: pkCols.has(row.column_name),
+      isForeignKey: !!fkRels[row.column_name],
+      foreignKeyRef: fkRels[row.column_name] || null,
+      isUnique: uqCols.has(row.column_name),
+    };
   }
+  return out;
 }
 
 /**
- * GET /api/tables/:tableName
- * 
- * Returns paginated table data with support for cursor-based pagination.
- * 
- * Query parameters:
- * - page: Page number (default: 1)
- * - limit: Rows per page (default: 100)
- * - cursor: Cursor value for cursor-based pagination (optional)
- * 
- * Pagination strategy:
- * - If table has primary key and cursor is provided: Use cursor-based pagination (WHERE id > cursor)
- * - If table has primary key and page=1: Start from beginning, return cursor for next page
- * - Otherwise: Use OFFSET-based pagination (for backward nav, page jumps, or tables without PK)
- * 
- * Response: {
- *   rows: Object[],
- *   totalCount: number,
- *   page: number,
- *   limit: number,
- *   isApproximate: boolean,
- *   nextCursor: string|null,
- *   hasPrimaryKey: boolean,
- *   columns: Object - Map of column names to metadata objects with:
- *     - dataType: string
- *     - isPrimaryKey: boolean
- *     - isForeignKey: boolean
- *     - foreignKeyRef: { table: string, column: string } | null
- *     - isUnique: boolean
- * }
+ * Column metadata is static between schema changes but costs ~3 catalog
+ * round-trips to fetch — expensive on remote DBs. Cache it per
+ * (connection, schema, table) with a short TTL so pagination/sort within a
+ * table doesn't re-run the introspection queries on every page.
  */
-router.get('/tables/:tableName', requireConnection, async (req, res) => {
-  try {
-    const tableName = sanitizeTableName(req.params.tableName);
-    const page = parseInt(req.query.page || '1', 10);
-    const limit = parseInt(req.query.limit || '100', 10);
-    const cursor = req.query.cursor;
-    const sortColumn = req.query.sortColumn ? req.query.sortColumn : null;
-    const sortDirection = req.query.sortDirection === 'desc' ? 'DESC' : 'ASC';
+const META_TTL_MS = 30_000;
+const metaCache = new Map(); // key -> { expires, columns, primaryKeyColumn }
 
-    if (page < 1 || limit < 1) {
-      return res.status(400).json({ error: 'Page and limit must be positive integers' });
-    }
+function invalidateMetadata(connectionId) {
+  const prefix = `${connectionId}\0`;
+  for (const key of metaCache.keys()) {
+    if (key.startsWith(prefix)) metaCache.delete(key);
+  }
+}
 
-    const pool = req.pool;
-    const schema = req.schema;
-    const qualifiedTable = `"${schema}"."${tableName}"`;
-    const primaryKeyColumn = await getPrimaryKeyColumn(pool, tableName, schema);
-    const columnMetadata = await getColumnMetadata(pool, tableName, schema);
+async function getTableMetadata(pool, connectionId, schema, tableName) {
+  const key = `${connectionId}\0${schema}\0${tableName}`;
+  const hit = metaCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit;
 
-    // Validate sortColumn if provided
-    if (sortColumn && !columnMetadata[sortColumn]) {
-      return res.status(400).json({ error: 'Invalid sort column' });
-    }
+  const columns = await getColumnMetadata(pool, tableName, schema);
+  // First primary-key column (ordinal order preserved) drives ordering/cursor.
+  const primaryKeyColumn =
+    Object.keys(columns).find((name) => columns[name].isPrimaryKey) || null;
 
-    const countQuery = `SELECT COUNT(*) as total FROM ${qualifiedTable}`;
-    const countResult = await pool.query(countQuery);
-    const totalCount = parseInt(countResult.rows[0].total, 10);
-    const isApproximate = false;
+  const entry = { expires: Date.now() + META_TTL_MS, columns, primaryKeyColumn };
+  metaCache.set(key, entry);
+  return entry;
+}
 
-    let dataResult;
-    let nextCursor = null;
+// ---- Table data -------------------------------------------------------------
 
-    if (sortColumn) {
-      // Custom Sorting: Use OFFSET-based pagination
-      // Always add primary key (if exists) as secondary sort for stability
-      const offset = (page - 1) * limit;
-      let orderByClause = `ORDER BY "${sortColumn}" ${sortDirection}`;
+router.get('/tables/:tableName',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    query: TableListQuery,
+  }),
+  async (req, res) => {
+    try {
+      const tableName = req.params.tableName;
+      const page = req.query.page || 1;
+      const limit = req.query.limit || 100;
+      const cursor = req.query.cursor;
+      const sortColumn = req.query.sortColumn || null;
+      const sortDirection = (req.query.sortDirection || 'asc').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
-      if (primaryKeyColumn && sortColumn !== primaryKeyColumn) {
-        orderByClause += `, "${primaryKeyColumn}" ASC`;
+      const pool = req.pool;
+      const schema = req.schema;
+      const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+
+      const { columns: columnMetadata, primaryKeyColumn } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      if (sortColumn && !columnMetadata[sortColumn]) {
+        return sendError(res, 400, codes.BAD_REQUEST, 'Invalid sort column');
       }
 
-      const query = `SELECT * FROM ${qualifiedTable} ${orderByClause} LIMIT $1 OFFSET $2`;
-      dataResult = await pool.query(query, [limit, offset]);
+      // COUNT and the data query are independent — run them concurrently to
+      // collapse two latency round-trips into one. The data query is built
+      // inline below; count runs alongside it.
+      const countPromise = pool.query(`SELECT COUNT(*) as total FROM ${qualifiedTable}`);
+      // Build the data query without awaiting, so it runs alongside the count.
+      // `emitCursor` marks branches where nextCursor is the last row's PK.
+      let dataPromise, emitCursor = false;
 
-      // Cursor not valid for custom sorts in this simple implementation
-      nextCursor = null;
-    } else if (primaryKeyColumn && cursor) {
-      // Cursor-based pagination: WHERE id > cursor (most efficient for forward navigation)
-      const cursorQuery = `SELECT * FROM ${qualifiedTable} WHERE "${primaryKeyColumn}" > $1 ORDER BY "${primaryKeyColumn}" ASC LIMIT $2`;
-      const cursorParams = [cursor, limit];
-      dataResult = await pool.query(cursorQuery, cursorParams);
-
-      if (dataResult.rows.length > 0) {
-        const lastRow = dataResult.rows[dataResult.rows.length - 1];
-        nextCursor = lastRow[primaryKeyColumn];
-      }
-    } else if (primaryKeyColumn && page === 1) {
-      // First page with primary key: start from beginning, return cursor
-      const firstPageQuery = `SELECT * FROM ${qualifiedTable} ORDER BY "${primaryKeyColumn}" ASC LIMIT $1`;
-      const firstPageParams = [limit];
-      dataResult = await pool.query(firstPageQuery, firstPageParams);
-
-      if (dataResult.rows.length > 0) {
-        const lastRow = dataResult.rows[dataResult.rows.length - 1];
-        nextCursor = lastRow[primaryKeyColumn];
-      }
-    } else {
-      // Fallback to OFFSET-based pagination
-      // Used for: backward navigation, page jumps, or tables without primary key
-      const offset = (page - 1) * limit;
-      let query;
-      const queryParams = [];
-
-      if (primaryKeyColumn) {
-        // Order by primary key for consistent results
-        query = `SELECT * FROM ${qualifiedTable} ORDER BY "${primaryKeyColumn}" ASC LIMIT $1 OFFSET $2`;
-        queryParams.push(limit, offset);
+      if (sortColumn) {
+        const offset = (page - 1) * limit;
+        let orderByClause = `ORDER BY ${quoteIdent(sortColumn)} ${sortDirection}`;
+        if (primaryKeyColumn && sortColumn !== primaryKeyColumn) {
+          orderByClause += `, ${quoteIdent(primaryKeyColumn)} ASC`;
+        }
+        dataPromise = pool.query(
+          `SELECT * FROM ${qualifiedTable} ${orderByClause} LIMIT $1 OFFSET $2`,
+          [limit, offset],
+        );
+      } else if (primaryKeyColumn && cursor !== undefined) {
+        dataPromise = pool.query(
+          `SELECT * FROM ${qualifiedTable} WHERE ${quoteIdent(primaryKeyColumn)} > $1 ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $2`,
+          [cursor, limit],
+        );
+        emitCursor = true;
+      } else if (primaryKeyColumn && page === 1) {
+        dataPromise = pool.query(
+          `SELECT * FROM ${qualifiedTable} ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $1`,
+          [limit],
+        );
+        emitCursor = true;
       } else {
-        // No primary key: no ordering guarantee
-        query = `SELECT * FROM ${qualifiedTable} LIMIT $1 OFFSET $2`;
-        queryParams.push(limit, offset);
+        const offset = (page - 1) * limit;
+        const orderBy = primaryKeyColumn ? `ORDER BY ${quoteIdent(primaryKeyColumn)} ASC ` : '';
+        dataPromise = pool.query(
+          `SELECT * FROM ${qualifiedTable} ${orderBy}LIMIT $1 OFFSET $2`,
+          [limit, offset],
+        );
+        emitCursor = !!primaryKeyColumn;
       }
-      dataResult = await pool.query(query, queryParams);
 
-      // Calculate cursor for next page if primary key exists (only if default sort)
-      if (primaryKeyColumn && dataResult.rows.length > 0) {
-        const lastRow = dataResult.rows[dataResult.rows.length - 1];
-        nextCursor = lastRow[primaryKeyColumn];
-      }
+      const [countResult, dataResult] = await Promise.all([countPromise, dataPromise]);
+      const totalCount = parseInt(countResult.rows[0].total, 10);
+      const nextCursor =
+        emitCursor && dataResult.rows.length
+          ? dataResult.rows[dataResult.rows.length - 1][primaryKeyColumn]
+          : null;
+
+      res.json({
+        rows: dataResult.rows,
+        totalCount,
+        page,
+        limit,
+        isApproximate: false,
+        nextCursor,
+        hasPrimaryKey: !!primaryKeyColumn,
+        columns: columnMetadata,
+      });
+    } catch (err) {
+      logger.error({ err: err.message, table: req.params.tableName }, 'table read failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
     }
+  });
 
-    const responseData = {
-      rows: dataResult.rows,
-      totalCount,
-      page,
-      limit,
-      isApproximate,
-      nextCursor,
-      hasPrimaryKey: !!primaryKeyColumn,
-      columns: columnMetadata,
-    };
-    res.json(responseData);
-  } catch (error) {
-    console.error('Error fetching table data:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+// ---- Schema PATCH + export + import + viz -----------------------------------
 
-/**
- * PATCH /api/connections/:id/schema
- * Update the active schema for an existing connection without reconnecting
- */
-router.patch('/connections/:id/schema', async (req, res) => {
-  const { id } = req.params;
-  const { schema } = req.body;
+router.patch('/connections/:id/schema',
+  validate({ params: ConnectionIdParam, body: z.object({ schema: SchemaNameSchema }) }),
+  (req, res) => {
+    try {
+      updateConnectionSchema(req.params.id, req.body.schema);
+      res.json({ updated: true });
+    } catch (err) {
+      return sendError(res, 400, codes.BAD_REQUEST, err.message);
+    }
+  });
 
-  if (!schema) {
-    return res.status(400).json({ error: 'schema is required' });
-  }
-
-  try {
-    updateConnectionSchema(id, sanitizeSchemaName(schema));
-    res.json({ updated: true });
-  } catch (error) {
-    res.status(400).json({ updated: false, error: error.message });
-  }
-});
-
-/**
- * GET /api/export
- * Exports the database to a downloadable .sql file
- */
 router.get('/export', requireConnection, async (req, res) => {
   try {
     const pool = req.pool;
     const schema = req.schema;
 
-    // Set headers for file download
+    // Strip anything that could break the header's quoted-string (quotes,
+    // control chars, path separators) before interpolating the schema name.
+    const safeName = `${schema}_backup.sql`.replace(/[^A-Za-z0-9._-]/g, '_');
     res.setHeader('Content-Type', 'application/sql');
-    res.setHeader('Content-Disposition', `attachment; filename="${schema}_backup.sql"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
 
     res.write('-- pglens Database logical dump\n');
     res.write(`-- Schema: ${schema}\n\n`);
-    res.write(`SET search_path TO "${schema}";\n\n`);
+    res.write(`SET search_path TO ${quoteIdent(schema)};\n\n`);
 
-    // 1. Fetch all tables in the schema
     const tablesResult = await pool.query(`
-      SELECT table_name
-      FROM information_schema.tables
-      WHERE table_schema = $1
-      AND table_type = 'BASE TABLE'
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = $1 AND table_type = 'BASE TABLE'
     `, [schema]);
-    const tables = tablesResult.rows.map(row => row.table_name);
 
-    for (const tableName of tables) {
-      res.write(`--\n-- Table structure for table "${tableName}"\n--\n\n`);
+    for (const { table_name: tableName } of tablesResult.rows) {
+      res.write(`--\n-- Table structure for table ${quoteIdent(tableName)}\n--\n\n`);
 
-      // 2. Fetch columns for the table
-      const columnsResult = await pool.query(`
+      const cols = await pool.query(`
         SELECT column_name, data_type, udt_name, character_maximum_length, column_default, is_nullable
         FROM information_schema.columns
-        WHERE table_schema = $1
-        AND table_name = $2
+        WHERE table_schema = $1 AND table_name = $2
         ORDER BY ordinal_position
       `, [schema, tableName]);
 
-      let createTableSql = `DROP TABLE IF EXISTS "${tableName}" CASCADE;\n`;
-      createTableSql += `CREATE TABLE "${tableName}" (\n`;
-      const columnDefs = columnsResult.rows.map(col => {
-        let actualDataType = col.data_type;
-        if (col.data_type === 'USER-DEFINED') {
-          actualDataType = col.udt_name;
-        } else if (col.data_type === 'ARRAY') {
-          // udt_name for arrays typically starts with an underscore, e.g., '_text' -> 'text[]'
-          actualDataType = col.udt_name.startsWith('_') ? col.udt_name.substring(1) + '[]' : col.udt_name + '[]';
+      let ddl = `DROP TABLE IF EXISTS ${quoteIdent(tableName)} CASCADE;\n`;
+      ddl += `CREATE TABLE ${quoteIdent(tableName)} (\n`;
+      const defs = cols.rows.map(col => {
+        let type = col.data_type;
+        if (type === 'USER-DEFINED') type = col.udt_name;
+        else if (type === 'ARRAY') {
+          type = col.udt_name.startsWith('_') ? col.udt_name.substring(1) + '[]' : col.udt_name + '[]';
         }
-
-        let isSerial = col.column_default && typeof col.column_default === 'string' && col.column_default.startsWith("nextval(");
-        if (isSerial) {
-          if (actualDataType === 'bigint') actualDataType = 'BIGSERIAL';
-          else actualDataType = 'SERIAL';
-        }
-
-        let def = `  "${col.column_name}" ${actualDataType}`;
-        if (!isSerial && col.character_maximum_length && col.data_type !== 'USER-DEFINED' && col.data_type !== 'ARRAY') {
+        const isSerial = typeof col.column_default === 'string' && col.column_default.startsWith('nextval(');
+        if (isSerial) type = type === 'bigint' ? 'BIGSERIAL' : 'SERIAL';
+        let def = `  ${quoteIdent(col.column_name)} ${type}`;
+        if (!isSerial && col.character_maximum_length &&
+          col.data_type !== 'USER-DEFINED' && col.data_type !== 'ARRAY') {
           def += `(${col.character_maximum_length})`;
         }
-        if (col.is_nullable === 'NO') {
-          def += ' NOT NULL';
-        }
-        if (!isSerial && col.column_default !== null) {
-          def += ` DEFAULT ${col.column_default}`;
-        }
+        if (col.is_nullable === 'NO') def += ' NOT NULL';
+        if (!isSerial && col.column_default !== null) def += ` DEFAULT ${col.column_default}`;
         return def;
       });
-      createTableSql += columnDefs.join(',\n') + '\n);\n\n';
-      res.write(createTableSql);
+      ddl += defs.join(',\n') + '\n);\n\n';
+      res.write(ddl);
 
-      res.write(`--\n-- Data for table "${tableName}"\n--\n\n`);
-
-      // 3. Fetch rows for the table
-      const rowsResult = await pool.query(`SELECT * FROM "${schema}"."${tableName}"`);
-      if (rowsResult.rows.length > 0) {
-        for (const row of rowsResult.rows) {
-          const keys = Object.keys(row).map(k => `"${k}"`).join(', ');
-          const values = Object.values(row).map(val => {
-            if (val === null) return 'NULL';
-            if (typeof val === 'number' || typeof val === 'boolean') return val;
-            if (val instanceof Date) return `'${val.toISOString()}'`;
-            if (Array.isArray(val)) {
-              // Format javascript arrays to postgres array literal '{...}'
-              const arrayLiteral = val.map(v => {
-                if (v === null) return 'NULL';
-                if (typeof v === 'string') return `"${v.replace(/"/g, '""')}"`;
-                return v;
-              }).join(',');
-              return `'{${arrayLiteral}}'`;
-            }
-            if (typeof val === 'object') return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
-            // Escape single quotes for string values
-            return `'${String(val).replace(/'/g, "''")}'`;
-          }).join(', ');
-
-          res.write(`INSERT INTO "${tableName}" (${keys}) VALUES (${values});\n`);
-        }
+      res.write(`--\n-- Data for table ${quoteIdent(tableName)}\n--\n\n`);
+      const rows = await pool.query(`SELECT * FROM ${quoteQualifiedIdent(schema, tableName)}`);
+      for (const row of rows.rows) {
+        const keys = Object.keys(row).map(k => quoteIdent(k)).join(', ');
+        const values = Object.values(row).map(val => {
+          if (val === null) return 'NULL';
+          if (typeof val === 'number' || typeof val === 'boolean') return val;
+          if (val instanceof Date) return `'${val.toISOString()}'`;
+          if (Array.isArray(val)) {
+            const arr = val.map(v => v === null ? 'NULL'
+              : typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : v).join(',');
+            return `'{${arr}}'`;
+          }
+          if (typeof val === 'object') return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
+          return `'${String(val).replace(/'/g, "''")}'`;
+        }).join(', ');
+        res.write(`INSERT INTO ${quoteIdent(tableName)} (${keys}) VALUES (${values});\n`);
       }
       res.write('\n');
     }
-
     res.write('-- Dump completed\n');
     res.end();
-  } catch (error) {
-    console.error('Export error:', error);
+  } catch (err) {
+    logger.error({ err: err.message }, 'export failed');
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to export database', details: error.message });
-    } else {
-      res.end(); // Close stream on error if headers already sent
+      return sendError(res, 500, codes.DB_ERROR, err.message);
     }
+    res.end();
   }
 });
 
-/**
- * POST /api/import
- * Imports a .sql file into the database
- */
-router.post('/import', requireConnection, async (req, res) => {
-  try {
-    const pool = req.pool;
-    const schema = req.schema;
-
-    let sqlString = '';
-    req.on('data', chunk => {
-      sqlString += chunk.toString();
-    });
-
-    req.on('end', async () => {
-      try {
-        if (!sqlString.trim()) {
-          return res.status(400).json({ error: 'SQL file is empty.' });
-        }
-
-        // Execute raw SQL script with schema search_path
-        await pool.query(`SET search_path TO "${schema}";\n${sqlString}`);
-        res.json({ success: true, message: 'Database imported successfully.' });
-      } catch (err) {
-        console.error('Import execution error:', err);
-        res.status(500).json({ error: 'Import failed during execution', details: err.message });
-      }
-    });
-
-    req.on('error', (err) => {
-      console.error('Request stream error:', err);
-      res.status(500).json({ error: 'Error reading upload stream', details: err.message });
-    });
-
-  } catch (error) {
-    console.error('Import setup error:', error);
-    res.status(500).json({ error: 'Failed to initiate import', details: error.message });
-  }
-});
-
-/**
- * GET /api/schema
- * 
- * Returns a structured representation of the database schema for visualization.
- * Includes tables, columns, data types, primary keys, unique constraints, and foreign key relationships.
- */
 router.get('/schema', requireConnection, async (req, res) => {
   try {
     const pool = req.pool;
     const schema = req.schema;
 
-    // Fire all 4 queries in parallel — one round trip each instead of 3N+1
     const [tablesResult, columnsResult, constraintsResult, fkResult] = await Promise.all([
       pool.query(`
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = $1
-          AND table_type = 'BASE TABLE'
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = $1 AND table_type = 'BASE TABLE'
       `, [schema]),
-
       pool.query(`
         SELECT table_name, column_name, data_type, udt_name, character_maximum_length, is_nullable
         FROM information_schema.columns
         WHERE table_schema = $1
         ORDER BY table_name, ordinal_position
       `, [schema]),
-
-      // Primary keys and unique constraints in one query
       pool.query(`
         SELECT tc.table_name, kcu.column_name, tc.constraint_type
         FROM information_schema.table_constraints tc
         JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_name = kcu.constraint_name
-          AND tc.table_schema = kcu.table_schema
-        WHERE tc.table_schema = $1
-          AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_schema = $1 AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
       `, [schema]),
-
       pool.query(`
-        SELECT
-          kcu.table_name,
-          kcu.column_name,
-          ccu.table_name  AS foreign_table_name,
-          ccu.column_name AS foreign_column_name
+        SELECT kcu.table_name, kcu.column_name,
+               ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name
         FROM information_schema.table_constraints AS tc
         JOIN information_schema.key_column_usage AS kcu
-          ON tc.constraint_name = kcu.constraint_name
-          AND tc.table_schema = kcu.table_schema
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
         JOIN information_schema.constraint_column_usage AS ccu
-          ON ccu.constraint_name = tc.constraint_name
-          AND ccu.table_schema = tc.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY'
-          AND tc.table_schema = $1
-      `, [schema])
+          ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1
+      `, [schema]),
     ]);
 
-    // Index constraint results by table for O(1) lookup
-    const pkCols = {};    // { tableName: Set<columnName> }
-    const uqCols = {};    // { tableName: Set<columnName> }
+    const pkCols = {}, uqCols = {};
     for (const row of constraintsResult.rows) {
-      if (row.constraint_type === 'PRIMARY KEY') {
-        (pkCols[row.table_name] ??= new Set()).add(row.column_name);
-      } else {
-        (uqCols[row.table_name] ??= new Set()).add(row.column_name);
-      }
+      const map = row.constraint_type === 'PRIMARY KEY' ? pkCols : uqCols;
+      (map[row.table_name] ??= new Set()).add(row.column_name);
     }
-
-    const fkMap = {};    // { tableName: { columnName: { table, column } } }
+    const fkMap = {};
     for (const row of fkResult.rows) {
       (fkMap[row.table_name] ??= {})[row.column_name] = {
-        table: row.foreign_table_name,
-        column: row.foreign_column_name
+        table: row.foreign_table_name, column: row.foreign_column_name,
       };
     }
-
-    const colsByTable = {};  // { tableName: row[] }
+    const colsByTable = {};
     for (const row of columnsResult.rows) {
       (colsByTable[row.table_name] ??= []).push(row);
     }
 
-    // Build response
     const schemaMap = {};
     for (const { table_name: tableName } of tablesResult.rows) {
       const pkSet = pkCols[tableName] ?? new Set();
       const uqSet = uqCols[tableName] ?? new Set();
       const fkTable = fkMap[tableName] ?? {};
-
       const columns = (colsByTable[tableName] ?? []).map(col => {
-        let actualDataType = col.data_type;
-        if (col.data_type === 'USER-DEFINED') {
-          actualDataType = col.udt_name;
-        } else if (col.data_type === 'ARRAY') {
-          actualDataType = col.udt_name.startsWith('_') ? col.udt_name.substring(1) + '[]' : col.udt_name + '[]';
+        let type = col.data_type;
+        if (type === 'USER-DEFINED') type = col.udt_name;
+        else if (type === 'ARRAY') {
+          type = col.udt_name.startsWith('_') ? col.udt_name.substring(1) + '[]' : col.udt_name + '[]';
         }
         return {
-          name: col.column_name,
-          type: actualDataType,
+          name: col.column_name, type,
           maxLength: col.character_maximum_length,
           isNullable: col.is_nullable === 'YES',
           isPrimaryKey: pkSet.has(col.column_name),
           isUnique: uqSet.has(col.column_name),
           isForeignKey: !!fkTable[col.column_name],
-          foreignKeyRef: fkTable[col.column_name] || null
+          foreignKeyRef: fkTable[col.column_name] || null,
         };
       });
-
       schemaMap[tableName] = { name: tableName, columns };
     }
-
     res.json({ schema: schemaMap });
-  } catch (error) {
-    console.error('Error fetching schema:', error);
-    res.status(500).json({ error: 'Failed to fetch database schema', details: error.message });
+  } catch (err) {
+    logger.error({ err: err.message }, 'schema read failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });
+
+// ---- Raw-SQL escape hatch ---------------------------------------------------
+
+router.post('/query',
+  requireConnection,
+  validate({ body: QueryBodySchema }),
+  async (req, res) => {
+    const { sql, params } = req.body;
+    const pool = req.pool;
+    const schema = req.schema;
+    const started = Date.now();
+    try {
+      // search_path + the user's SQL must run on one reserved connection,
+      // otherwise the SET can land on a different pooled backend.
+      const result = await pool.queryWithSchema(schema, sql, params);
+      // Raw SQL may include DDL — drop cached metadata for this connection.
+      invalidateMetadata(req.connectionId);
+      const fields = (result.fields || []).map(f => ({ name: f.name, dataTypeID: f.dataTypeID }));
+      res.json({
+        rows: result.rows,
+        fields,
+        rowCount: result.rowCount ?? result.rows?.length ?? 0,
+        durationMs: Date.now() - started,
+      });
+    } catch (err) {
+      logger.warn({ err: err.message }, 'query failed');
+      return sendError(res, 400, codes.DB_ERROR, err.message, { hint: `${Date.now() - started}ms` });
+    }
+  });
 
 module.exports = router;

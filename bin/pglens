@@ -1,105 +1,170 @@
 #!/usr/bin/env node
 
 const { program } = require('commander');
-const { startServer } = require('../src/server');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const https = require('https');
 const { spawn } = require('child_process');
 
 const PID_FILE = path.join(os.homedir(), '.pglens.pid');
 const PORT_FILE = path.join(os.homedir(), '.pglens.port');
+const TOKEN_FILE = path.join(os.homedir(), '.pglens', 'token');
+const LOG_FILE = path.join(os.homedir(), '.pglens', 'logs', 'pglens.log');
+const UPDATE_CACHE = path.join(os.homedir(), '.pglens', 'update-check.json');
+const UPDATE_INTERVAL = 24 * 60 * 60 * 1000; // 24h
+const CURRENT_VERSION = require('../package.json').version;
+
+function semverGt(a, b) {
+  // compare release portion only; pre-release (-beta) never beats a release
+  const pa = a.split('-')[0].split('.').map(Number);
+  const pb = b.split('-')[0].split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+function fetchLatestVersion() {
+  return new Promise((resolve) => {
+    const req = https.get(
+      'https://registry.npmjs.org/pglens/latest',
+      (res) => {
+        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+        let body = '';
+        res.on('data', (c) => (body += c));
+        res.on('end', () => {
+          try { resolve(JSON.parse(body).version || null); } catch { resolve(null); }
+        });
+      }
+    );
+    req.on('error', () => resolve(null));
+    req.setTimeout(1500, () => { req.destroy(); resolve(null); });
+  });
+}
+
+function printUpdateNotice(latest) {
+  const lines = [
+    `Update available  ${CURRENT_VERSION} → ${latest}`,
+    `Run  curl -fsSL https://pglens.org/install.sh | bash`,
+  ];
+  const w = Math.max(...lines.map((l) => l.length));
+  console.log('\n┌' + '─'.repeat(w + 2) + '┐');
+  lines.forEach((l) => console.log('│ ' + l.padEnd(w) + ' │'));
+  console.log('└' + '─'.repeat(w + 2) + '┘\n');
+}
+
+// Opt out: PGLENS_NO_UPDATE_CHECK=1. Shows cached result instantly,
+// refreshes from npm registry at most once per UPDATE_INTERVAL.
+async function checkForUpdate() {
+  if (process.env.PGLENS_NO_UPDATE_CHECK) return;
+
+  let cache = null;
+  try { cache = JSON.parse(fs.readFileSync(UPDATE_CACHE, 'utf8')); } catch { }
+
+  const cachedLatest = cache?.latest || null;
+  let notified = false;
+  if (cachedLatest && semverGt(cachedLatest, CURRENT_VERSION)) {
+    printUpdateNotice(cachedLatest);
+    notified = true;
+  }
+
+  if (cache && Date.now() - cache.lastCheck < UPDATE_INTERVAL) return;
+
+  const latest = await fetchLatestVersion();
+  try {
+    fs.mkdirSync(path.dirname(UPDATE_CACHE), { recursive: true });
+    fs.writeFileSync(
+      UPDATE_CACHE,
+      JSON.stringify({ lastCheck: Date.now(), latest: latest || cachedLatest })
+    );
+  } catch { }
+
+  if (latest && !notified && semverGt(latest, CURRENT_VERSION)) {
+    printUpdateNotice(latest);
+  }
+}
 
 program
   .name('pglens')
-  .description('A simple PostgreSQL database viewer tool')
-  .version('1.0.0');
+  .description('No-code PostgreSQL workstation')
+  .version(CURRENT_VERSION);
 
 function getRunningPort() {
-  if (fs.existsSync(PORT_FILE)) {
-    try {
-      return parseInt(fs.readFileSync(PORT_FILE, 'utf8'));
-    } catch (e) {
-      return null;
-    }
-  }
-  return null;
+  if (!fs.existsSync(PORT_FILE)) return null;
+  try { return parseInt(fs.readFileSync(PORT_FILE, 'utf8')); } catch { return null; }
+}
+
+function getToken() {
+  if (!fs.existsSync(TOKEN_FILE)) return null;
+  try { return fs.readFileSync(TOKEN_FILE, 'utf8').trim() || null; } catch { return null; }
+}
+
+function buildUrl(port, token, basePath = '/') {
+  const tokenQuery = token ? `?token=${token}` : '';
+  return `http://127.0.0.1:${port}${basePath}${tokenQuery}`;
 }
 
 program
   .command('start')
   .description('Start the pglens server in background')
   .action(async () => {
-    // Check if already running
+    await checkForUpdate();
+
     if (fs.existsSync(PID_FILE)) {
       try {
         const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
-        process.kill(pid, 0); // Check if process exists
+        process.kill(pid, 0);
         console.log(`pglens is already running (PID: ${pid})`);
-
         const port = getRunningPort();
-        if (port) {
-          console.log(`✓ Server running on http://localhost:${port}`);
-        } else {
-          console.log('  Server URL unknown (check logs)');
-        }
+        const token = getToken();
+        if (port) console.log(`✓ Server running on ${buildUrl(port, token)}`);
         return;
-      } catch (e) {
-        // Stale PID file, remove it
+      } catch {
         fs.unlinkSync(PID_FILE);
         if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
       }
     }
 
-    // Spawn detached child process
     const child = spawn(process.execPath, [__filename, 'serve'], {
       detached: true,
-      stdio: 'ignore'
+      stdio: 'ignore',
     });
-
-    // Save PID
     fs.writeFileSync(PID_FILE, child.pid.toString());
-
-    // Unref to allow parent to exit
     child.unref();
-
     console.log(`  Background process started (PID: ${child.pid})`);
 
-    // Wait for server to start and acquire port
     let attempts = 0;
     const maxAttempts = 50;
-    const checkInterval = 200;
-
     process.stdout.write('  Waiting for server...');
 
     const interval = setInterval(() => {
       const port = getRunningPort();
       if (port) {
         clearInterval(interval);
-        process.stdout.write('\r\x1b[K'); // Clear line
-        const url = `http://localhost:${port}`;
+        process.stdout.write('\r\x1b[K');
+        const token = getToken();
+        const url = buildUrl(port, token);
         console.log(`✓ Server running on ${url}`);
-        // Auto-open in default browser
-        const openCmd = process.platform === 'win32' ? 'start' :
-                        process.platform === 'darwin' ? 'open' : 'xdg-open';
+        const openCmd = process.platform === 'win32' ? 'start'
+          : process.platform === 'darwin' ? 'open' : 'xdg-open';
         spawn(openCmd, [url], { detached: true, stdio: 'ignore' }).unref();
         process.exit(0);
       }
-
-      attempts++;
-      if (attempts >= maxAttempts) {
+      if (++attempts >= maxAttempts) {
         clearInterval(interval);
-        process.stdout.write('\r\x1b[K'); // Clear line
-        console.log('✓ Server started (could not determine port, check logs)');
+        process.stdout.write('\r\x1b[K');
+        console.log('✓ Server started (could not determine port, check `pglens logs`)');
         process.exit(0);
       }
-    }, checkInterval);
+    }, 200);
   });
 
-// Hidden command that actually runs the server
 program
   .command('serve', { hidden: true })
   .action(() => {
+    const { startServer } = require('../src/server');
     startServer();
   });
 
@@ -111,7 +176,6 @@ program
       console.log('pglens is not running');
       return;
     }
-
     try {
       const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
       process.kill(pid, 'SIGTERM');
@@ -120,7 +184,6 @@ program
       console.log('pglens stopped');
     } catch (e) {
       console.error(`Error stopping pglens: ${e.message}`);
-      // Clean up if process not found
       if (e.code === 'ESRCH') {
         fs.unlinkSync(PID_FILE);
         if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
@@ -130,30 +193,110 @@ program
 
 program
   .command('url')
-  .description('Show the URL where pglens is running')
+  .description('Print the URL pglens is running on (including token)')
   .action(() => {
     if (!fs.existsSync(PID_FILE)) {
       console.log('pglens is not running');
       return;
     }
-
-    // Verify process is actually running
     try {
-      const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
-      process.kill(pid, 0);
-    } catch (e) {
+      process.kill(parseInt(fs.readFileSync(PID_FILE, 'utf8')), 0);
+    } catch {
       console.log('pglens is not running (stale PID file)');
       fs.unlinkSync(PID_FILE);
       if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
       return;
     }
-
     const port = getRunningPort();
-    if (port) {
-      console.log(`http://localhost:${port}`);
-    } else {
-      console.log('Could not determine server URL.');
+    if (!port) { console.log('Could not determine server URL.'); return; }
+    console.log(buildUrl(port, getToken()));
+  });
+
+program
+  .command('logs')
+  .description('Tail the pglens log file')
+  .option('-f, --follow', 'Follow the log (like tail -f)')
+  .option('-n, --lines <n>', 'Print the last N lines', '200')
+  .action((opts) => {
+    const logDir = path.dirname(LOG_FILE);
+    if (!fs.existsSync(logDir)) {
+      console.log(`No log directory at ${logDir}`);
+      return;
     }
+    // pino-roll writes pglens.log.1, .2, ... — pick the most recent.
+    const candidates = fs.readdirSync(logDir)
+      .filter(f => f.startsWith('pglens.log'))
+      .map(f => path.join(logDir, f))
+      .map(p => ({ p, m: fs.statSync(p).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    if (candidates.length === 0) {
+      console.log(`No log files in ${logDir}`);
+      return;
+    }
+    const latest = candidates[0].p;
+    const args = ['-n', String(opts.lines)];
+    if (opts.follow) args.unshift('-f');
+    args.push(latest);
+    const child = spawn('tail', args, { stdio: 'inherit' });
+    child.on('exit', (code) => process.exit(code ?? 0));
+  });
+
+program
+  .command('token')
+  .description('Print the per-install auth token')
+  .action(() => {
+    const token = getToken();
+    if (!token) {
+      console.log('No token yet — run `pglens start` once to generate one.');
+      return;
+    }
+    console.log(token);
+  });
+
+program
+  .command('doctor')
+  .description('Diagnose install problems (shadowed binaries, stale upgrades)')
+  .action(() => {
+    const diag = require('../src/diagnostics');
+    let selfReal = __filename;
+    try { selfReal = fs.realpathSync(__filename); } catch { }
+
+    const report = diag.collectReport({ selfReal, selfVersion: CURRENT_VERSION });
+    const { ok, problems } = diag.analyze(report);
+
+    console.log(`\npglens doctor\n`);
+    console.log(`Running : ${__filename}  (v${CURRENT_VERSION})`);
+    const first = report.copies[0];
+    if (first) console.log(`PATH    : ${first.file}  (first match${first.version ? `, v${first.version}` : ''})`);
+
+    console.log(`\npglens on PATH:`);
+    if (report.copies.length === 0) {
+      console.log('  (none — PATH lookup found nothing; unusual)');
+    }
+    for (const c of report.copies) {
+      const mark = c.isCanonical ? '✓' : '✗';
+      const ver = c.version ? `v${c.version}` : 'v?';
+      const note = c.isCanonical ? '  (curl install)'
+        : c.isNpmGlobal ? '  (npm install — remove)'
+        : '  (not curl-managed)';
+      console.log(`  ${mark} ${c.file.padEnd(40)} ${ver}${note}`);
+    }
+
+    if (ok) {
+      console.log(`\nNo problems found. You're on v${CURRENT_VERSION}.\n`);
+      return;
+    }
+
+    console.log(`\nIssues:`);
+    for (const p of problems) console.log(`  • ${p.message}`);
+
+    const plan = diag.buildFixPlan(report);
+    if (plan.length) {
+      console.log(`\nFix:`);
+      for (const cmd of plan) console.log(`  ${cmd}`);
+    }
+    console.log(`\nYour data is kept: connections.json, queries.json, logs/, token.\n`);
+    process.exitCode = 1;
   });
 
 program.parse(process.argv);

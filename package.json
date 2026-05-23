@@ -1,12 +1,26 @@
 {
   "name": "pglens",
-  "version": "2.3.0",
+  "version": "3.0.2",
   "description": "A simple PostgreSQL database viewer tool",
   "bin": {
     "pglens": "./bin/pglens"
   },
+  "files": [
+    "bin",
+    "src",
+    "scripts/postinstall.js",
+    "client-next/dist",
+    "README.md"
+  ],
   "scripts": {
-    "start": "node bin/pglens"
+    "prepack": "npm --prefix client-next ci && npm --prefix client-next run build",
+    "postinstall": "node scripts/postinstall.js",
+    "start": "node bin/pglens",
+    "test": "node scripts/run-tests.js test/unit",
+    "test:coverage": "node scripts/run-tests.js test/unit --experimental-test-coverage --test-coverage-include=src/** --test-reporter=spec",
+    "test:integration": "node scripts/run-tests.js test/integration",
+    "test:e2e": "playwright test",
+    "test:all": "npm test && npm run test:integration && npm --prefix client-next test"
   },
   "keywords": [
     "postgresql",
@@ -30,8 +44,16 @@
   "license": "MIT",
   "dependencies": {
     "commander": "^11.1.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express": "^4.18.2",
-    "postgres": "^3.4.3"
+    "keytar": "^7.9.0",
+    "pino": "^9.14.0",
+    "pino-roll": "^3.1.0",
+    "postgres": "^3.4.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
   }
 }
