@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
-import { useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { Loading, Spinner } from "@/components/ui/spinner";
@@ -10,7 +10,10 @@ import { Select } from "@/components/ui/select";
 import { DataGrid, type SortState } from "@/components/DataGrid";
 import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
 import { SortBar } from "@/components/SortBar";
-import { getTableData, type FilterGroup } from "@/lib/api";
+import { ViewBar } from "@/components/ViewBar";
+import {
+  getTableData, listViews, type FilterGroup, type SavedView,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/store/connection";
 
@@ -36,22 +39,91 @@ function pruneIncomplete(filter: FilterGroup): FilterGroup {
   };
 }
 
+/** Materialize a saved view into the working filter/sort the table renders. */
+function snapshotFromView(view: SavedView): {
+  filter: FilterGroup;
+  sort: SortState;
+} {
+  const filter =
+    view.filter && view.filter.children.length > 0
+      ? (view.filter as FilterGroup)
+      : EMPTY_FILTER;
+  const sort: SortState = (view.sort ?? []).map((s) => ({
+    column: s.column,
+    // Persisted views may have upper-case directions; normalize.
+    direction: s.direction.toLowerCase() as "asc" | "desc",
+  }));
+  return { filter, sort };
+}
+
 export function TableView() {
   const { tableName } = useParams({ from: "/tables/$tableName" });
+  const search = useSearch({ from: "/tables/$tableName" });
+  const navigate = useNavigate({ from: "/tables/$tableName" });
   const connectionId = useConnectionStore((s) => s.activeConnectionId);
+  const qc = useQueryClient();
 
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState<number>(100);
   const [sort, setSort] = useState<SortState>([]);
   const [filter, setFilter] = useState<FilterGroup>(EMPTY_FILTER);
 
+  // Selected saved view id. `null` means the synthetic "All rows" default.
+  // The URL is the source of truth so the picker is deep-linkable.
+  const selectedViewId = search.view ?? null;
+
   // Switching tables: drop filter + sort + page, since column names referenced
-  // by the prior table's filter won't exist on the new one.
+  // by the prior table's filter won't exist on the new one. The selected
+  // view id lives in the URL search params, which TanStack Router clears
+  // when the path param changes — but we still reset working state here.
   useEffect(() => {
     setFilter(EMPTY_FILTER);
     setSort([]);
     setPage(1);
   }, [tableName]);
+
+  // Hydrate filter + sort from the selected view. We re-fetch the list to
+  // avoid a separate single-view endpoint; the data is already cached for
+  // the ViewBar so this is free in steady state.
+  const lastHydratedView = useRef<string | null>(null);
+  useEffect(() => {
+    if (!connectionId) return;
+    // Re-hydrate when the URL view id changes (including becoming null).
+    if (lastHydratedView.current === selectedViewId) return;
+    lastHydratedView.current = selectedViewId;
+
+    if (selectedViewId === null) {
+      // "All rows" — reset to a clean slate.
+      setFilter(EMPTY_FILTER);
+      setSort([]);
+      setPage(1);
+      return;
+    }
+
+    let cancelled = false;
+    qc.fetchQuery({
+      queryKey: ['views', connectionId, tableName],
+      queryFn: ({ signal }) =>
+        listViews({ connectionId, tableName }, signal).then((r) => r.views),
+    }).then((vs) => {
+      if (cancelled) return;
+      const view = vs.find((v) => v.id === selectedViewId);
+      if (!view) {
+        // Stale URL — clear the param so we don't re-attempt every render.
+        navigate({ search: {}, replace: true });
+        return;
+      }
+      const snap = snapshotFromView(view);
+      setFilter(snap.filter);
+      setSort(snap.sort);
+      setPage(1);
+    }).catch(() => {
+      // Network failure leaves working state untouched.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedViewId, connectionId, tableName, qc, navigate]);
 
   // Incomplete conditions (newly-added rows with empty values) would 400 the
   // server, so prune them from the version sent — the UI keeps the row open
@@ -157,6 +229,20 @@ export function TableView() {
           </Button>
         </div>
       </header>
+
+      <ViewBar
+        connectionId={connectionId}
+        tableName={tableName}
+        selectedViewId={selectedViewId}
+        onSelectView={(id) =>
+          navigate({
+            search: id ? { view: id } : {},
+            replace: true,
+          })
+        }
+        filter={filter}
+        sort={sort}
+      />
 
       {data?.columns && (
         <>

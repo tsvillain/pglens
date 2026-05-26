@@ -390,6 +390,110 @@ export function getDatabaseSchema(connectionId: string, signal?: AbortSignal) {
   return api('/api/schema', SchemaResponse, { connectionId, signal })
 }
 
+// ---- Saved views ------------------------------------------------------------
+
+const FilterConditionApi = z.object({
+  type: z.literal('condition'),
+  column: z.string(),
+  op: z.string(),
+  value: z.unknown().optional(),
+})
+type FilterGroupApi = {
+  type: 'group'
+  combinator: 'and' | 'or'
+  children: Array<z.infer<typeof FilterConditionApi> | FilterGroupApi>
+}
+const FilterGroupApiSchema: z.ZodType<FilterGroupApi> = z.lazy(() =>
+  z.object({
+    type: z.literal('group'),
+    combinator: z.enum(['and', 'or']),
+    children: z.array(z.union([FilterConditionApi, FilterGroupApiSchema])),
+  }),
+)
+
+const SortEntryApi = z.object({
+  column: z.string(),
+  direction: z.enum(['asc', 'desc', 'ASC', 'DESC']),
+})
+
+const SavedViewSchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  tableName: z.string(),
+  name: z.string(),
+  filter: FilterGroupApiSchema.nullable().optional(),
+  sort: z.array(SortEntryApi).optional(),
+  visibleColumns: z.array(z.string()).nullable().optional(),
+  columnWidths: z.record(z.string(), z.number()).nullable().optional(),
+  timezone: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+export type SavedView = z.infer<typeof SavedViewSchema>
+
+const ListViewsResponse = z.object({ views: z.array(SavedViewSchema) })
+const ViewEnvelope = z.object({ view: SavedViewSchema })
+
+export interface SaveViewPayload {
+  connectionId: string
+  tableName: string
+  name: string
+  filter?: FilterGroup | null
+  sort?: SortEntry[]
+  visibleColumns?: string[] | null
+  columnWidths?: Record<string, number> | null
+  timezone?: string | null
+}
+
+export function listViews(
+  params: { connectionId?: string; tableName?: string } = {},
+  signal?: AbortSignal,
+) {
+  const qs = new URLSearchParams()
+  if (params.connectionId) qs.set('connectionId', params.connectionId)
+  if (params.tableName) qs.set('tableName', params.tableName)
+  const q = qs.toString()
+  return api(`/api/views${q ? '?' + q : ''}`, ListViewsResponse, { signal })
+}
+
+export async function createView(payload: SaveViewPayload): Promise<SavedView> {
+  const res = await fetch('/api/views', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return ViewEnvelope.parse(json).view
+}
+
+export async function updateView(
+  id: string,
+  patch: Partial<SaveViewPayload>,
+): Promise<SavedView> {
+  const res = await fetch(`/api/views/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return ViewEnvelope.parse(json).view
+}
+
+export async function deleteView(id: string): Promise<void> {
+  const res = await fetch(`/api/views/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+  })
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+}
+
 export function getTableData(
   connectionId: string,
   tableName: string,

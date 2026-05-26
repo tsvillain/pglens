@@ -17,6 +17,7 @@ const {
 const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
 const { buildWhere } = require('../db/filter');
 const { buildOrderBy } = require('../db/sort');
+const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
@@ -586,6 +587,52 @@ router.get('/schema', requireConnection, async (req, res) => {
     logger.error({ err: err.message }, 'schema read failed');
     return sendError(res, 500, codes.DB_ERROR, err.message);
   }
+});
+
+// ---- Saved views ------------------------------------------------------------
+//
+// Views persist `(filter + sort + visible columns + column widths + timezone)`
+// per (connectionId, tableName). They live in `~/.pglens/views.json` — see
+// `src/db/views.js`. Listing is open (no `requireConnection`) so the sidebar
+// can show views even when the database isn't reachable.
+
+const ViewListQuery = z.object({
+  connectionId: z.string().min(1).max(255).optional(),
+  tableName: z.string().min(1).max(255).optional(),
+});
+
+const ViewIdParam = z.object({ id: z.string().uuid() });
+
+router.get('/views', validate({ query: ViewListQuery }), (req, res) => {
+  res.json({ views: views.listViews(req.query) });
+});
+
+router.post('/views', validate({ body: views.ViewBodySchema }), (req, res) => {
+  try {
+    res.status(201).json({ view: views.createView(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.put('/views/:id',
+  validate({ params: ViewIdParam, body: views.ViewPatchSchema }),
+  (req, res) => {
+    try {
+      const updated = views.updateView(req.params.id, req.body);
+      if (!updated) {
+        return sendError(res, 404, codes.NOT_FOUND, 'View not found');
+      }
+      res.json({ view: updated });
+    } catch (err) {
+      return sendError(res, 400, codes.BAD_REQUEST, err.message);
+    }
+  });
+
+router.delete('/views/:id', validate({ params: ViewIdParam }), (req, res) => {
+  const ok = views.deleteView(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'View not found');
+  res.json({ deleted: true });
 });
 
 // ---- Raw-SQL escape hatch ---------------------------------------------------

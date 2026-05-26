@@ -1,9 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useMatchRoute, useNavigate } from '@tanstack/react-router'
 import {
-  Download, Eye, GitBranch, MoreVertical, Pencil, Plus, Power,
-  Search, Table as TableIcon, Terminal,
+  Link, useMatchRoute, useNavigate, useRouterState,
+} from '@tanstack/react-router'
+import {
+  Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
+  MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon, Terminal,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -15,7 +17,7 @@ import { ExportProgressToast } from '@/components/ExportProgressToast'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import {
   disconnect, downloadBackup, listConnections, listSchemas, listTables,
-  patchSchema, type Connection,
+  listViews, patchSchema, type Connection, type SavedView,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useConnectionStore } from '@/store/connection'
@@ -27,6 +29,12 @@ export function Sidebar() {
   const setActive = useConnectionStore((s) => s.setActive)
   const navigate = useNavigate()
   const matchRoute = useMatchRoute()
+  // Active view id is sourced from URL search params so the nested sidebar
+  // entry highlights without needing a window.location peek.
+  const activeViewId = useRouterState({
+    select: (s) =>
+      (s.location.search as { view?: string } | undefined)?.view ?? null,
+  })
   const openTab = useTabsStore((s) => s.open)
 
   const connections = useQuery({
@@ -51,6 +59,36 @@ export function Sidebar() {
     queryFn: ({ signal }) => listSchemas(resolvedActiveId!, signal).then((r) => r.schemas),
     enabled: !!resolvedActiveId,
   })
+
+  // One bulk fetch per connection. The TableView page also reads this cache
+  // entry (`['views', connectionId, tableName]` filtered), so we keep this
+  // un-filtered fetch separate but share the connection cache via the
+  // TanStack Query cache.
+  const allViews = useQuery({
+    queryKey: ['views', resolvedActiveId],
+    queryFn: ({ signal }) =>
+      listViews({ connectionId: resolvedActiveId! }, signal).then((r) => r.views),
+    enabled: !!resolvedActiveId,
+  })
+
+  const viewsByTable = useMemo(() => {
+    const out: Record<string, SavedView[]> = {}
+    for (const v of allViews.data ?? []) {
+      (out[v.tableName] ??= []).push(v)
+    }
+    return out
+  }, [allViews.data])
+
+  // Tables that the user has expanded to reveal their nested views. Kept
+  // local — collapsing is a UI affordance, not durable state.
+  const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set())
+  const toggleExpanded = (name: string) =>
+    setExpandedTables((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
 
   const patchSchemaMut = useMutation({
     mutationFn: ({ id, schema }: { id: string; schema: string }) =>
@@ -281,25 +319,79 @@ export function Sidebar() {
             {filteredTables.map((t) => {
               const params = { tableName: t.name }
               const isActive = !!matchRoute({ to: '/tables/$tableName', params })
+              const tableViews = viewsByTable[t.name] ?? []
+              const expanded = expandedTables.has(t.name)
+              const hasViews = tableViews.length > 0
               return (
                 <li key={t.name}>
-                  <button
-                    onClick={() => {
-                      openTab({ kind: 'table', tableName: t.name })
-                      navigate({ to: '/tables/$tableName', params })
-                    }}
+                  <div
                     className={cn(
-                      'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent',
+                      'group flex items-center gap-0.5 rounded-md hover:bg-accent',
                       isActive && 'bg-accent text-accent-foreground',
                     )}
                   >
-                    {t.type === 'view' ? (
-                      <Eye className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <TableIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="truncate">{t.name}</span>
-                  </button>
+                    <button
+                      aria-label={expanded ? 'Collapse views' : 'Expand views'}
+                      onClick={() => toggleExpanded(t.name)}
+                      className={cn(
+                        'flex h-6 w-4 shrink-0 items-center justify-center text-muted-foreground',
+                        !hasViews && 'invisible',
+                      )}
+                    >
+                      {expanded ? (
+                        <ChevronDown className="h-3 w-3" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => {
+                        openTab({ kind: 'table', tableName: t.name })
+                        navigate({ to: '/tables/$tableName', params })
+                      }}
+                      className="flex flex-1 items-center gap-2 rounded-md py-1 pr-2 text-left text-sm"
+                    >
+                      {t.type === 'view' ? (
+                        <Eye className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <TableIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="truncate">{t.name}</span>
+                      {hasViews && (
+                        <span className="ml-auto rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
+                          {tableViews.length}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                  {expanded && hasViews && (
+                    <ul className="ml-6 mt-0.5 space-y-0.5 border-l border-border pl-2">
+                      {tableViews.map((v) => {
+                        const isViewActive = isActive && activeViewId === v.id
+                        return (
+                          <li key={v.id}>
+                            <button
+                              onClick={() => {
+                                openTab({ kind: 'table', tableName: t.name })
+                                navigate({
+                                  to: '/tables/$tableName',
+                                  params,
+                                  search: { view: v.id },
+                                })
+                              }}
+                              className={cn(
+                                'flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-accent',
+                                isViewActive && 'bg-accent text-accent-foreground',
+                              )}
+                            >
+                              <Bookmark className="h-3 w-3 shrink-0 text-muted-foreground" />
+                              <span className="truncate">{v.name}</span>
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
                 </li>
               )
             })}

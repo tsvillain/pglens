@@ -34,6 +34,13 @@ const tableRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tables/$tableName',
   component: TableView,
+  // Deep-linkable saved view: `?view=<uuid>` selects a saved view on load.
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { view?: string } => {
+    const v = search.view
+    return typeof v === 'string' && v.length > 0 ? { view: v } : {}
+  },
 })
 
 const schemaRoute = createRoute({
