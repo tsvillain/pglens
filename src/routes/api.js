@@ -15,6 +15,7 @@ const {
   getConnectionSchema, updateConnectionSchema, updateConnection,
 } = require('../db/connection');
 const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
+const { buildWhere } = require('../db/filter');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
@@ -42,6 +43,8 @@ const TableListQuery = z.object({
   cursor: z.union([z.string(), z.number()]).optional(),
   sortColumn: z.string().min(1).optional(),
   sortDirection: z.enum(['asc', 'desc', 'ASC', 'DESC']).optional(),
+  // JSON-encoded filter spec (validated structurally by buildWhere).
+  filter: z.string().max(64_000).optional(),
 });
 
 const QueryBodySchema = z.object({
@@ -298,13 +301,38 @@ router.get('/tables/:tableName',
         return sendError(res, 400, codes.BAD_REQUEST, 'Invalid sort column');
       }
 
+      // Parse the structured filter spec once. The Zod-validated shape +
+      // column-existence check happen inside buildWhere; surface any error
+      // as a 400 so the user can fix the bar input.
+      let filterSpec = null;
+      if (req.query.filter) {
+        try {
+          filterSpec = JSON.parse(req.query.filter);
+        } catch {
+          return sendError(res, 400, codes.BAD_REQUEST, 'Invalid filter JSON');
+        }
+      }
+      let whereClause = '', whereParams = [];
+      try {
+        ({ sql: whereClause, params: whereParams } = buildWhere(filterSpec, columnMetadata));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      const hasFilter = whereClause !== '';
+
       // COUNT and the data query are independent — run them concurrently to
       // collapse two latency round-trips into one. The data query is built
       // inline below; count runs alongside it.
-      const countPromise = pool.query(`SELECT COUNT(*) as total FROM ${qualifiedTable}`);
+      const countPromise = pool.query(
+        `SELECT COUNT(*) as total FROM ${qualifiedTable}${whereClause}`,
+        whereParams,
+      );
       // Build the data query without awaiting, so it runs alongside the count.
       // `emitCursor` marks branches where nextCursor is the last row's PK.
+      // Cursor pagination is disabled when a filter is applied — the cursor's
+      // "next PK > $1" assumption only holds against the unfiltered row order.
       let dataPromise, emitCursor = false;
+      const nextParam = (i) => `$${whereParams.length + i}`;
 
       if (sortColumn) {
         const offset = (page - 1) * limit;
@@ -313,16 +341,16 @@ router.get('/tables/:tableName',
           orderByClause += `, ${quoteIdent(primaryKeyColumn)} ASC`;
         }
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} ${orderByClause} LIMIT $1 OFFSET $2`,
-          [limit, offset],
+          `SELECT * FROM ${qualifiedTable}${whereClause} ${orderByClause} LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
+          [...whereParams, limit, offset],
         );
-      } else if (primaryKeyColumn && cursor !== undefined) {
+      } else if (!hasFilter && primaryKeyColumn && cursor !== undefined) {
         dataPromise = pool.query(
           `SELECT * FROM ${qualifiedTable} WHERE ${quoteIdent(primaryKeyColumn)} > $1 ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $2`,
           [cursor, limit],
         );
         emitCursor = true;
-      } else if (primaryKeyColumn && page === 1) {
+      } else if (!hasFilter && primaryKeyColumn && page === 1) {
         dataPromise = pool.query(
           `SELECT * FROM ${qualifiedTable} ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $1`,
           [limit],
@@ -332,10 +360,10 @@ router.get('/tables/:tableName',
         const offset = (page - 1) * limit;
         const orderBy = primaryKeyColumn ? `ORDER BY ${quoteIdent(primaryKeyColumn)} ASC ` : '';
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} ${orderBy}LIMIT $1 OFFSET $2`,
-          [limit, offset],
+          `SELECT * FROM ${qualifiedTable}${whereClause} ${orderBy}LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
+          [...whereParams, limit, offset],
         );
-        emitCursor = !!primaryKeyColumn;
+        emitCursor = !hasFilter && !!primaryKeyColumn;
       }
 
       const [countResult, dataResult] = await Promise.all([countPromise, dataPromise]);

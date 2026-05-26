@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -8,11 +8,32 @@ import { Loading, Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { DataGrid, type SortState } from "@/components/DataGrid";
-import { getTableData } from "@/lib/api";
+import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
+import { getTableData, type FilterGroup } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/store/connection";
 
 const PAGE_SIZES = [50, 100, 250, 500] as const;
+
+/**
+ * Strip conditions whose value isn't ready yet (newly-added rows with empty
+ * input) so the server isn't asked to filter on an empty string against a
+ * non-text column. Valueless ops (`IS NULL`/`IS NOT NULL`) and array ops
+ * with a populated array stay in.
+ */
+function pruneIncomplete(filter: FilterGroup): FilterGroup {
+  return {
+    ...filter,
+    children: filter.children.filter((c) => {
+      if (c.type !== "condition") return true;
+      if (c.op === "is_null" || c.op === "is_not_null") return true;
+      if (c.op === "in" || c.op === "nin" || c.op === "array_overlaps") {
+        return Array.isArray(c.value) && c.value.length > 0;
+      }
+      return c.value !== "" && c.value != null;
+    }),
+  };
+}
 
 export function TableView() {
   const { tableName } = useParams({ from: "/tables/$tableName" });
@@ -21,9 +42,23 @@ export function TableView() {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState<number>(100);
   const [sort, setSort] = useState<SortState>(null);
+  const [filter, setFilter] = useState<FilterGroup>(EMPTY_FILTER);
+
+  // Switching tables: drop filter + sort + page, since column names referenced
+  // by the prior table's filter won't exist on the new one.
+  useEffect(() => {
+    setFilter(EMPTY_FILTER);
+    setSort(null);
+    setPage(1);
+  }, [tableName]);
+
+  // Incomplete conditions (newly-added rows with empty values) would 400 the
+  // server, so prune them from the version sent — the UI keeps the row open
+  // for editing.
+  const appliedFilter = pruneIncomplete(filter);
 
   const query = useQuery({
-    queryKey: ["table", connectionId, tableName, page, limit, sort],
+    queryKey: ["table", connectionId, tableName, page, limit, sort, appliedFilter],
     queryFn: ({ signal }) =>
       getTableData(
         connectionId!,
@@ -33,6 +68,7 @@ export function TableView() {
           limit,
           sortColumn: sort?.column ?? null,
           sortDirection: sort?.direction,
+          filter: appliedFilter,
         },
         signal,
       ),
@@ -121,6 +157,17 @@ export function TableView() {
           </Button>
         </div>
       </header>
+
+      {data?.columns && (
+        <FilterBar
+          columns={data.columns}
+          filter={filter}
+          onChange={(next) => {
+            setPage(1);
+            setFilter(next);
+          }}
+        />
+      )}
 
       <div className="min-h-0 flex-1 p-4">
         {query.error && (

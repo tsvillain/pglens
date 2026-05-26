@@ -331,11 +331,31 @@ const TableDataResponse = z.object({
 })
 export type TableData = z.infer<typeof TableDataResponse>
 
+export type FilterOp =
+  | 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
+  | 'like' | 'ilike' | 'in' | 'nin'
+  | 'is_null' | 'is_not_null'
+  | 'jsonb_contains' | 'array_overlaps'
+
+export interface FilterCondition {
+  type: 'condition'
+  column: string
+  op: FilterOp
+  value?: unknown
+}
+
+export interface FilterGroup {
+  type: 'group'
+  combinator: 'and' | 'or'
+  children: Array<FilterCondition | FilterGroup>
+}
+
 export interface TableQueryParams {
   page?: number
   limit?: number
   sortColumn?: string | null
   sortDirection?: 'asc' | 'desc'
+  filter?: FilterGroup | null
 }
 
 const SchemaColumnSchema = z.object({
@@ -378,6 +398,9 @@ export function getTableData(
   if (params.sortColumn) {
     qs.set('sortColumn', params.sortColumn)
     qs.set('sortDirection', params.sortDirection ?? 'asc')
+  }
+  if (params.filter && params.filter.children.length > 0) {
+    qs.set('filter', JSON.stringify(params.filter))
   }
   const query = qs.toString()
   return api(
