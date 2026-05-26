@@ -350,11 +350,15 @@ export interface FilterGroup {
   children: Array<FilterCondition | FilterGroup>
 }
 
+export interface SortEntry {
+  column: string
+  direction: 'asc' | 'desc'
+}
+
 export interface TableQueryParams {
   page?: number
   limit?: number
-  sortColumn?: string | null
-  sortDirection?: 'asc' | 'desc'
+  sort?: SortEntry[] | null
   filter?: FilterGroup | null
 }
 
@@ -395,9 +399,8 @@ export function getTableData(
   const qs = new URLSearchParams()
   if (params.page) qs.set('page', String(params.page))
   if (params.limit) qs.set('limit', String(params.limit))
-  if (params.sortColumn) {
-    qs.set('sortColumn', params.sortColumn)
-    qs.set('sortDirection', params.sortDirection ?? 'asc')
+  if (params.sort && params.sort.length > 0) {
+    qs.set('sort', JSON.stringify(params.sort))
   }
   if (params.filter && params.filter.children.length > 0) {
     qs.set('filter', JSON.stringify(params.filter))

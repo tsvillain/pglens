@@ -16,6 +16,7 @@ const {
 } = require('../db/connection');
 const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
 const { buildWhere } = require('../db/filter');
+const { buildOrderBy } = require('../db/sort');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
@@ -43,6 +44,9 @@ const TableListQuery = z.object({
   cursor: z.union([z.string(), z.number()]).optional(),
   sortColumn: z.string().min(1).optional(),
   sortDirection: z.enum(['asc', 'desc', 'ASC', 'DESC']).optional(),
+  // JSON-encoded multi-column sort spec (validated structurally by buildOrderBy).
+  // Wins over legacy sortColumn/sortDirection when both are sent.
+  sort: z.string().max(8_000).optional(),
   // JSON-encoded filter spec (validated structurally by buildWhere).
   filter: z.string().max(64_000).optional(),
 });
@@ -287,8 +291,6 @@ router.get('/tables/:tableName',
       const page = req.query.page || 1;
       const limit = req.query.limit || 100;
       const cursor = req.query.cursor;
-      const sortColumn = req.query.sortColumn || null;
-      const sortDirection = (req.query.sortDirection || 'asc').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
       const pool = req.pool;
       const schema = req.schema;
@@ -297,9 +299,23 @@ router.get('/tables/:tableName',
       const { columns: columnMetadata, primaryKeyColumn } =
         await getTableMetadata(pool, req.connectionId, schema, tableName);
 
-      if (sortColumn && !columnMetadata[sortColumn]) {
-        return sendError(res, 400, codes.BAD_REQUEST, 'Invalid sort column');
+      // Resolve the user sort spec. Prefer the structured `sort` array; fall
+      // back to legacy single-column `sortColumn`/`sortDirection` for the v2
+      // client and older v3 builds.
+      let sortSpec = null;
+      if (req.query.sort) {
+        try {
+          sortSpec = JSON.parse(req.query.sort);
+        } catch {
+          return sendError(res, 400, codes.BAD_REQUEST, 'Invalid sort JSON');
+        }
+      } else if (req.query.sortColumn) {
+        sortSpec = [{
+          column: req.query.sortColumn,
+          direction: (req.query.sortDirection || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc',
+        }];
       }
+      const hasUserSort = Array.isArray(sortSpec) && sortSpec.length > 0;
 
       // Parse the structured filter spec once. The Zod-validated shape +
       // column-existence check happen inside buildWhere; surface any error
@@ -320,6 +336,16 @@ router.get('/tables/:tableName',
       }
       const hasFilter = whereClause !== '';
 
+      // Resolve ORDER BY. The helper validates every column, whitelists the
+      // direction, quotes identifiers, and appends the PK as final tie-break
+      // when the user sort doesn't already include it.
+      let orderByClause = '';
+      try {
+        ({ sql: orderByClause } = buildOrderBy(sortSpec, columnMetadata, primaryKeyColumn));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
       // COUNT and the data query are independent — run them concurrently to
       // collapse two latency round-trips into one. The data query is built
       // inline below; count runs alongside it.
@@ -329,38 +355,34 @@ router.get('/tables/:tableName',
       );
       // Build the data query without awaiting, so it runs alongside the count.
       // `emitCursor` marks branches where nextCursor is the last row's PK.
-      // Cursor pagination is disabled when a filter is applied — the cursor's
-      // "next PK > $1" assumption only holds against the unfiltered row order.
+      // Cursor pagination is disabled when a filter is applied OR a user sort
+      // is active — the cursor's "next PK > $1" assumption only holds against
+      // the default PK-ordered, unfiltered row stream.
       let dataPromise, emitCursor = false;
       const nextParam = (i) => `$${whereParams.length + i}`;
 
-      if (sortColumn) {
+      if (hasUserSort) {
         const offset = (page - 1) * limit;
-        let orderByClause = `ORDER BY ${quoteIdent(sortColumn)} ${sortDirection}`;
-        if (primaryKeyColumn && sortColumn !== primaryKeyColumn) {
-          orderByClause += `, ${quoteIdent(primaryKeyColumn)} ASC`;
-        }
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable}${whereClause} ${orderByClause} LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
+          `SELECT * FROM ${qualifiedTable}${whereClause}${orderByClause} LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
           [...whereParams, limit, offset],
         );
       } else if (!hasFilter && primaryKeyColumn && cursor !== undefined) {
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} WHERE ${quoteIdent(primaryKeyColumn)} > $1 ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $2`,
+          `SELECT * FROM ${qualifiedTable} WHERE ${quoteIdent(primaryKeyColumn)} > $1${orderByClause} LIMIT $2`,
           [cursor, limit],
         );
         emitCursor = true;
       } else if (!hasFilter && primaryKeyColumn && page === 1) {
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $1`,
+          `SELECT * FROM ${qualifiedTable}${orderByClause} LIMIT $1`,
           [limit],
         );
         emitCursor = true;
       } else {
         const offset = (page - 1) * limit;
-        const orderBy = primaryKeyColumn ? `ORDER BY ${quoteIdent(primaryKeyColumn)} ASC ` : '';
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable}${whereClause} ${orderBy}LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
+          `SELECT * FROM ${qualifiedTable}${whereClause}${orderByClause} LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
           [...whereParams, limit, offset],
         );
         emitCursor = !hasFilter && !!primaryKeyColumn;

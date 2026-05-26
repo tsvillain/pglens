@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { DataGrid, type SortState } from "@/components/DataGrid";
 import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
+import { SortBar } from "@/components/SortBar";
 import { getTableData, type FilterGroup } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/store/connection";
@@ -41,14 +42,14 @@ export function TableView() {
 
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState<number>(100);
-  const [sort, setSort] = useState<SortState>(null);
+  const [sort, setSort] = useState<SortState>([]);
   const [filter, setFilter] = useState<FilterGroup>(EMPTY_FILTER);
 
   // Switching tables: drop filter + sort + page, since column names referenced
   // by the prior table's filter won't exist on the new one.
   useEffect(() => {
     setFilter(EMPTY_FILTER);
-    setSort(null);
+    setSort([]);
     setPage(1);
   }, [tableName]);
 
@@ -66,8 +67,7 @@ export function TableView() {
         {
           page,
           limit,
-          sortColumn: sort?.column ?? null,
-          sortDirection: sort?.direction,
+          sort,
           filter: appliedFilter,
         },
         signal,
@@ -159,14 +159,24 @@ export function TableView() {
       </header>
 
       {data?.columns && (
-        <FilterBar
-          columns={data.columns}
-          filter={filter}
-          onChange={(next) => {
-            setPage(1);
-            setFilter(next);
-          }}
-        />
+        <>
+          <FilterBar
+            columns={data.columns}
+            filter={filter}
+            onChange={(next) => {
+              setPage(1);
+              setFilter(next);
+            }}
+          />
+          <SortBar
+            columns={data.columns}
+            sort={sort}
+            onChange={(next) => {
+              setPage(1);
+              setSort(next);
+            }}
+          />
+        </>
       )}
 
       <div className="min-h-0 flex-1 p-4">

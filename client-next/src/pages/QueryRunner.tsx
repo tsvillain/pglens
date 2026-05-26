@@ -125,7 +125,7 @@ export function QueryRunner() {
               <DataGrid
                 rows={mutation.data.rows}
                 columns={columns}
-                sort={null}
+                sort={[]}
                 onSortChange={() => {}}
               />
             ) : (
