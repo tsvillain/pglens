@@ -17,6 +17,7 @@ const {
 const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
 const { buildWhere } = require('../db/filter');
 const { buildOrderBy } = require('../db/sort');
+const { buildUpdateRow } = require('../db/update');
 const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
@@ -222,7 +223,7 @@ async function getForeignKeyRelations(pool, tableName, schema) {
 
 async function getColumnMetadata(pool, tableName, schema) {
   const r = await pool.query(`
-    SELECT column_name, data_type
+    SELECT column_name, data_type, udt_name, is_nullable, column_default
     FROM information_schema.columns
     WHERE table_schema = $2 AND table_name = $1
     ORDER BY ordinal_position;
@@ -236,8 +237,15 @@ async function getColumnMetadata(pool, tableName, schema) {
 
   const out = {};
   for (const row of r.rows) {
+    // `data_type` is the SQL standard name (e.g. "ARRAY", "USER-DEFINED").
+    // Surface the real Postgres type (`udt_name`, e.g. `int4`, `text`,
+    // `_text`, the enum name) so the editor can pick the right widget for
+    // arrays and enums.
     out[row.column_name] = {
       dataType: row.data_type,
+      udtName: row.udt_name,
+      isNullable: row.is_nullable === 'YES',
+      hasDefault: row.column_default !== null,
       isPrimaryKey: pkCols.has(row.column_name),
       isForeignKey: !!fkRels[row.column_name],
       foreignKeyRef: fkRels[row.column_name] || null,
@@ -409,6 +417,60 @@ router.get('/tables/:tableName',
     } catch (err) {
       logger.error({ err: err.message, table: req.params.tableName }, 'table read failed');
       return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Inline row edit --------------------------------------------------------
+//
+// PATCH /api/tables/:tableName/rows
+//   Body: { where: { pk_col: value, ... }, set: { col: value, ... } }
+//   Returns: { row } — the freshly-updated row, post-trigger.
+//
+// `where` must list every primary-key column (so the UPDATE can only touch a
+// single row). `set` keys must be known columns; jsonb values get `::jsonb`
+// cast applied for us. Empty payloads, unknown columns, and missing PK
+// columns all 400 with a hint.
+
+const RowUpdateBodySchema = z.object({
+  where: z.record(z.string().min(1).max(255), z.unknown()),
+  set: z.record(z.string().min(1).max(255), z.unknown()),
+});
+
+router.patch('/tables/:tableName/rows',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    body: RowUpdateBodySchema,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+
+    try {
+      const { columns } = await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      let built;
+      try {
+        built = buildUpdateRow(req.body, columns, qualifiedTable);
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      const result = await pool.query(built.sql, built.params);
+      if (!result.rows.length) {
+        // Either the PK changed underneath us or the row was deleted. The
+        // client should refetch and replay the edit if still applicable.
+        return sendError(res, 404, codes.NOT_FOUND,
+          'Row not found — it may have been deleted or its primary key changed', {
+            hint: 'Refresh the table and try again.',
+          });
+      }
+      res.json({ row: result.rows[0] });
+    } catch (err) {
+      logger.warn({ err: err.message, table: tableName }, 'row update failed');
+      return sendError(res, 400, codes.DB_ERROR, err.message);
     }
   });
 

@@ -310,6 +310,11 @@ export function listTables(connectionId: string, signal?: AbortSignal) {
 
 const ColumnMetaSchema = z.object({
   dataType: z.string(),
+  // Real Postgres type name (e.g. `int4`, `_text`, enum name). Older
+  // servers without this field still parse via `.optional()`.
+  udtName: z.string().optional(),
+  isNullable: z.boolean().optional(),
+  hasDefault: z.boolean().optional(),
   isPrimaryKey: z.boolean(),
   isForeignKey: z.boolean(),
   foreignKeyRef: z
@@ -492,6 +497,39 @@ export async function deleteView(id: string): Promise<void> {
     const json = await res.json().catch(() => null)
     throw parseErrorBody(json, res.status)
   }
+}
+
+// ---- Inline row edit --------------------------------------------------------
+
+const UpdateRowResponse = z.object({
+  row: z.record(z.string(), z.unknown()),
+})
+
+export interface UpdateRowPayload {
+  where: Record<string, unknown>
+  set: Record<string, unknown>
+}
+
+export async function updateRow(
+  connectionId: string,
+  tableName: string,
+  payload: UpdateRowPayload,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/rows`,
+    {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+      },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    },
+  )
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return UpdateRowResponse.parse(json).row
 }
 
 export function getTableData(

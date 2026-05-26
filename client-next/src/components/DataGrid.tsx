@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   flexRender,
   getCoreRowModel,
@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   Braces,
@@ -19,14 +20,35 @@ import { cn } from "@/lib/utils";
 import type { ColumnMeta, SortEntry } from "@/lib/api";
 import { Dialog } from "@/components/ui/dialog";
 import { JsonViewer, coerceJson, isExpandable } from "@/components/JsonViewer";
+import { CellEditor } from "@/components/CellEditor";
+import { Spinner } from "@/components/ui/spinner";
 
 export type SortState = SortEntry[];
+
+/**
+ * `onCommitCell` runs the actual update. It rejects with an Error whose
+ * `.message` the grid surfaces inline next to the cell. Parents are
+ * responsible for the optimistic cache write — the grid only manages the
+ * editor/saving/error UI.
+ */
+export type CommitCell = (
+  rowIndex: number,
+  column: string,
+  newValue: unknown,
+) => Promise<void>;
 
 interface DataGridProps {
   rows: Array<Record<string, unknown>>;
   columns: Record<string, ColumnMeta>;
   sort: SortState;
   onSortChange: (next: SortState) => void;
+  /**
+   * Enables double-click-to-edit. Requires the table to have a primary key
+   * (otherwise we can't pin the UPDATE to one row). Read-only views and PK-
+   * less tables should pass false.
+   */
+  editable?: boolean;
+  onCommitCell?: CommitCell;
 }
 
 /**
@@ -104,9 +126,29 @@ function renderCell(
   }
 }
 
-export function DataGrid({ rows, columns, sort, onSortChange }: DataGridProps) {
+export function DataGrid({
+  rows,
+  columns,
+  sort,
+  onSortChange,
+  editable = false,
+  onCommitCell,
+}: DataGridProps) {
   const columnNames = useMemo(() => Object.keys(columns), [columns]);
   const [jsonCell, setJsonCell] = useState<JsonCell | null>(null);
+
+  // editing: which cell is in editor mode right now. Identified by row index
+  // (within the current page) + column name. Switching tables/pages discards.
+  const [editing, setEditing] = useState<{
+    rowIndex: number;
+    column: string;
+  } | null>(null);
+  // Cells with a save in flight. Keyed `${rowIndex}:${column}` so the same
+  // (row,col) can transition saving → ok → saving again.
+  const [saving, setSaving] = useState<Set<string>>(new Set());
+  // Last error message per cell. Cleared on next edit attempt or after a
+  // ~5s linger so the user can read it.
+  const [cellErrors, setCellErrors] = useState<Record<string, string>>({});
 
   const colDefs = useMemo<ColumnDef<Record<string, unknown>>[]>(
     () =>
@@ -145,6 +187,61 @@ export function DataGrid({ rows, columns, sort, onSortChange }: DataGridProps) {
 
   function toggleSort(name: string, additive: boolean) {
     onSortChange(nextSortState(sort, name, additive));
+  }
+
+  const canEdit = editable && !!onCommitCell;
+
+  const handleCommit = useCallback(
+    async (rowIndex: number, column: string, newValue: unknown) => {
+      const key = `${rowIndex}:${column}`;
+      setEditing(null);
+      if (!onCommitCell) return;
+      setSaving((s) => {
+        const next = new Set(s);
+        next.add(key);
+        return next;
+      });
+      setCellErrors((e) => {
+        if (!(key in e)) return e;
+        const { [key]: _drop, ...rest } = e;
+        return rest;
+      });
+      try {
+        await onCommitCell(rowIndex, column, newValue);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setCellErrors((e) => ({ ...e, [key]: message }));
+        // Clear the error after a few seconds so it doesn't linger forever.
+        setTimeout(() => {
+          setCellErrors((e) => {
+            if (e[key] !== message) return e;
+            const { [key]: _drop, ...rest } = e;
+            return rest;
+          });
+        }, 6000);
+      } finally {
+        setSaving((s) => {
+          const next = new Set(s);
+          next.delete(key);
+          return next;
+        });
+      }
+    },
+    [onCommitCell],
+  );
+
+  function tryStartEdit(rowIndex: number, column: string) {
+    if (!canEdit) return;
+    // Primary-key columns are part of the WHERE used to address the row;
+    // letting users edit them via inline editor would corrupt that mapping.
+    // (PK changes belong in a more deliberate "row edit" surface.)
+    if (columns[column]?.isPrimaryKey) return;
+    // The braces affordance on JSON cells handles its own click → opens a
+    // read-only viewer. A double-click is two clicks plus a dblclick, so the
+    // viewer may already be open. Close it before mounting the edit dialog
+    // so we don't end up with two modals stacked.
+    setJsonCell(null);
+    setEditing({ rowIndex, column });
   }
 
   return (
@@ -231,17 +328,73 @@ export function DataGrid({ rows, columns, sort, onSortChange }: DataGridProps) {
                     vr.index % 2 === 1 && "bg-muted/30",
                   )}
                 >
-                  {row.getVisibleCells().map((cell) => (
-                    <td
-                      key={cell.id}
-                      className="max-w-[420px] truncate px-2 py-1 align-middle font-mono text-xs"
-                    >
-                      {flexRender(
-                        cell.column.columnDef.cell,
-                        cell.getContext(),
-                      )}
-                    </td>
-                  ))}
+                  {row.getVisibleCells().map((cell) => {
+                    const column = cell.column.id;
+                    const meta = columns[column];
+                    const key = `${vr.index}:${column}`;
+                    const isEditing =
+                      editing?.rowIndex === vr.index &&
+                      editing.column === column;
+                    const isSaving = saving.has(key);
+                    const error = cellErrors[key];
+                    const cellEditable =
+                      canEdit && meta != null && !meta.isPrimaryKey;
+                    return (
+                      <td
+                        key={cell.id}
+                        onDoubleClick={() => tryStartEdit(vr.index, column)}
+                        className={cn(
+                          "relative max-w-[420px] truncate px-2 py-1 align-middle font-mono text-xs",
+                          cellEditable && "cursor-text",
+                          isEditing && "overflow-visible",
+                          error &&
+                            "ring-1 ring-inset ring-destructive/60 bg-destructive/5",
+                        )}
+                        title={
+                          error
+                            ? error
+                            : cellEditable
+                              ? "Double-click to edit"
+                              : undefined
+                        }
+                      >
+                        {isEditing && meta ? (
+                          <CellEditor
+                            meta={meta}
+                            value={cell.getValue()}
+                            onCommit={(next) =>
+                              handleCommit(vr.index, column, next)
+                            }
+                            onCancel={() => setEditing(null)}
+                          />
+                        ) : (
+                          <span
+                            className={cn(
+                              "flex items-center gap-1.5",
+                              isSaving && "opacity-50",
+                            )}
+                          >
+                            {flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext(),
+                            )}
+                            {isSaving && (
+                              <Spinner
+                                className="h-3 w-3 shrink-0"
+                                aria-label="Saving"
+                              />
+                            )}
+                            {error && !isSaving && (
+                              <AlertCircle
+                                className="h-3 w-3 shrink-0 text-destructive"
+                                aria-label={error}
+                              />
+                            )}
+                          </span>
+                        )}
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })}

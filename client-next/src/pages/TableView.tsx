@@ -12,7 +12,8 @@ import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
 import { SortBar } from "@/components/SortBar";
 import { ViewBar } from "@/components/ViewBar";
 import {
-  getTableData, listViews, type FilterGroup, type SavedView,
+  getTableData, listViews, updateRow,
+  type FilterGroup, type SavedView, type TableData,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/store/connection";
@@ -285,6 +286,63 @@ export function TableView() {
               onSortChange={(s) => {
                 setPage(1);
                 setSort(s);
+              }}
+              editable={data.hasPrimaryKey}
+              onCommitCell={async (rowIndex, column, newValue) => {
+                const queryKey = [
+                  "table",
+                  connectionId,
+                  tableName,
+                  page,
+                  limit,
+                  sort,
+                  appliedFilter,
+                ] as const;
+                const snapshot = qc.getQueryData<TableData>(queryKey);
+                const row = snapshot?.rows[rowIndex];
+                if (!snapshot || !row) {
+                  throw new Error("Row no longer in view — reload and retry.");
+                }
+                // Build `where` from all PK columns on the row. The server
+                // re-validates and rejects if any column went missing.
+                const pkCols = Object.entries(snapshot.columns)
+                  .filter(([, m]) => m.isPrimaryKey)
+                  .map(([name]) => name);
+                const where: Record<string, unknown> = {};
+                for (const pk of pkCols) where[pk] = row[pk];
+
+                // Optimistic patch — flip the cell now so the grid clears
+                // the editor without flicker. Roll back on error.
+                qc.setQueryData<TableData>(queryKey, (cur) => {
+                  if (!cur) return cur;
+                  const nextRows = cur.rows.slice();
+                  nextRows[rowIndex] = { ...row, [column]: newValue };
+                  return { ...cur, rows: nextRows };
+                });
+
+                try {
+                  const updated = await updateRow(connectionId!, tableName, {
+                    where,
+                    set: { [column]: newValue },
+                  });
+                  // Server-returned row supersedes the optimistic guess
+                  // (triggers, defaults, type coercion may have altered it).
+                  qc.setQueryData<TableData>(queryKey, (cur) => {
+                    if (!cur) return cur;
+                    const nextRows = cur.rows.slice();
+                    nextRows[rowIndex] = updated;
+                    return { ...cur, rows: nextRows };
+                  });
+                } catch (err) {
+                  // Roll back the optimistic write.
+                  qc.setQueryData<TableData>(queryKey, (cur) => {
+                    if (!cur) return cur;
+                    const nextRows = cur.rows.slice();
+                    nextRows[rowIndex] = row;
+                    return { ...cur, rows: nextRows };
+                  });
+                  throw err;
+                }
               }}
             />
           </div>
