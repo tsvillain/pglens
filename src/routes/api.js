@@ -20,7 +20,7 @@ const { buildOrderBy } = require('../db/sort');
 const { computeAggregates } = require('../db/aggregate');
 const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
-const { EXPORT_FORMATS, FORMAT_META, createSerializer } = require('../db/export');
+const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('../db/export');
 const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/import');
 const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
@@ -917,18 +917,7 @@ router.get('/export', requireConnection, async (req, res) => {
       const rows = await pool.query(`SELECT * FROM ${quoteQualifiedIdent(schema, tableName)}`);
       for (const row of rows.rows) {
         const keys = Object.keys(row).map(k => quoteIdent(k)).join(', ');
-        const values = Object.values(row).map(val => {
-          if (val === null) return 'NULL';
-          if (typeof val === 'number' || typeof val === 'boolean') return val;
-          if (val instanceof Date) return `'${val.toISOString()}'`;
-          if (Array.isArray(val)) {
-            const arr = val.map(v => v === null ? 'NULL'
-              : typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : v).join(',');
-            return `'{${arr}}'`;
-          }
-          if (typeof val === 'object') return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
-          return `'${String(val).replace(/'/g, "''")}'`;
-        }).join(', ');
+        const values = Object.values(row).map(sqlLiteral).join(', ');
         res.write(`INSERT INTO ${quoteIdent(tableName)} (${keys}) VALUES (${values});\n`);
       }
       res.write('\n');
