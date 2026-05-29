@@ -12,9 +12,10 @@ import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
 import { SortBar } from "@/components/SortBar";
 import { ViewBar } from "@/components/ViewBar";
 import { InsertRowDialog } from "@/components/InsertRowDialog";
+import { FkPanel, type FkTarget } from "@/components/FkPanel";
 import {
   getTableData, listViews, updateRow,
-  type FilterGroup, type SavedView, type TableData,
+  type ColumnMeta, type FilterGroup, type SavedView, type TableData,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/store/connection";
@@ -39,6 +40,21 @@ function pruneIncomplete(filter: FilterGroup): FilterGroup {
       return c.value !== "" && c.value != null;
     }),
   };
+}
+
+/**
+ * Coerce an FK value that crossed the URL as a string back to the JS type the
+ * referenced column expects, so the equality filter binds correctly (an int
+ * column needs `42`, not `"42"`).
+ */
+function coerceFkValue(raw: string, meta: ColumnMeta | undefined): unknown {
+  const t = (meta?.dataType ?? "").toLowerCase();
+  if (/(int|numeric|decimal|real|double|serial)/.test(t)) {
+    const n = Number(raw);
+    return Number.isNaN(n) ? raw : n;
+  }
+  if (t === "boolean" || t === "bool") return raw === "true";
+  return raw;
 }
 
 /** Materialize a saved view into the working filter/sort the table renders. */
@@ -70,6 +86,8 @@ export function TableView() {
   const [sort, setSort] = useState<SortState>([]);
   const [filter, setFilter] = useState<FilterGroup>(EMPTY_FILTER);
   const [insertOpen, setInsertOpen] = useState(false);
+  // The FK cell the user clicked → drives the referenced-row side panel.
+  const [fkTarget, setFkTarget] = useState<FkTarget | null>(null);
 
   // Selected saved view id. `null` means the synthetic "All rows" default.
   // The URL is the source of truth so the picker is deep-linkable.
@@ -156,6 +174,45 @@ export function TableView() {
       return undefined;
     },
   });
+
+  // FK click-through landing: `?fkcol&fkval` arrives from the panel's "show
+  // all rows that reference this row" jump. Apply it as a single equality
+  // filter once column metadata is loaded (so the value can be type-coerced),
+  // then strip the params — the user owns the filter from there.
+  const lastFkApplied = useRef<string | null>(null);
+  useEffect(() => {
+    const { fkcol, fkval } = search;
+    if (fkcol == null || fkval == null) {
+      lastFkApplied.current = null;
+      return;
+    }
+    const cols = query.data?.columns;
+    if (!cols) return; // wait for metadata so we can type-coerce the value
+    const key = `${tableName}|${fkcol}=${fkval}`;
+    if (lastFkApplied.current === key) return;
+    lastFkApplied.current = key;
+
+    if (cols[fkcol]) {
+      setPage(1);
+      setFilter({
+        type: "group",
+        combinator: "and",
+        children: [
+          {
+            type: "condition",
+            column: fkcol,
+            op: "eq",
+            value: coerceFkValue(fkval, cols[fkcol]),
+          },
+        ],
+      });
+    }
+    navigate({
+      search: (prev: { view?: string }) =>
+        prev.view ? { view: prev.view } : {},
+      replace: true,
+    });
+  }, [search, tableName, query.data, navigate]);
 
   if (!connectionId) {
     return (
@@ -294,6 +351,18 @@ export function TableView() {
                 setPage(1);
                 setSort(s);
               }}
+              onOpenFk={(column, value) => {
+                const meta = data.columns[column];
+                if (!meta?.foreignKeyRef || value == null) return;
+                setFkTarget({
+                  refTable: meta.foreignKeyRef.table,
+                  refColumn: meta.foreignKeyRef.column,
+                  refValue: value,
+                  originTable: tableName,
+                  originColumn: column,
+                  originValue: value,
+                });
+              }}
               editable={data.hasPrimaryKey}
               onCommitCell={async (rowIndex, column, newValue) => {
                 const queryKey = [
@@ -373,6 +442,24 @@ export function TableView() {
             // row appears wherever the user lands.
             qc.invalidateQueries({
               queryKey: ["table", connectionId, tableName],
+            });
+          }}
+        />
+      )}
+
+      {fkTarget && (
+        <FkPanel
+          // Remount on a new FK click so the click-through chain resets.
+          key={`${fkTarget.refTable}:${fkTarget.refColumn}:${String(fkTarget.refValue)}`}
+          connectionId={connectionId}
+          target={fkTarget}
+          onClose={() => setFkTarget(null)}
+          onShowReferencing={(table, column, value) => {
+            setFkTarget(null);
+            navigate({
+              to: "/tables/$tableName",
+              params: { tableName: table },
+              search: { fkcol: column, fkval: String(value) },
             });
           }}
         />

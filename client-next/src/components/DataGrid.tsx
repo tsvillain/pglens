@@ -49,6 +49,12 @@ interface DataGridProps {
    */
   editable?: boolean;
   onCommitCell?: CommitCell;
+  /**
+   * Click handler for a foreign-key cell. Fired on a single click of a non-
+   * null FK value — the parent opens the referenced-row side panel. Omit to
+   * render FK cells as plain values (graceful degradation).
+   */
+  onOpenFk?: (column: string, value: unknown) => void;
 }
 
 /**
@@ -94,11 +100,30 @@ function isJsonCell(value: unknown, dataType?: string): boolean {
 
 function renderCell(
   value: unknown,
-  dataType: string | undefined,
+  meta: ColumnMeta | undefined,
   onOpenJson: (value: unknown) => void,
+  onOpenFk?: (value: unknown) => void,
 ): React.ReactNode {
+  const dataType = meta?.dataType;
   if (value === null || value === undefined) {
     return <span className="italic text-muted-foreground/60">NULL</span>;
+  }
+  // Foreign-key value → click to follow it to the referenced row. Takes
+  // precedence over plain text so the whole value reads as a link, but yields
+  // to JSON (an FK column holding json is not a thing in practice).
+  if (meta?.isForeignKey && meta.foreignKeyRef && onOpenFk) {
+    return (
+      <button
+        onClick={() => onOpenFk(value)}
+        className="flex items-center gap-1 text-violet-600 hover:underline dark:text-violet-400"
+        title={`Follow → ${meta.foreignKeyRef.table}.${meta.foreignKeyRef.column}`}
+      >
+        <LinkIcon className="h-3 w-3 shrink-0" />
+        <span className="truncate">
+          {typeof value === "object" ? JSON.stringify(value) : String(value)}
+        </span>
+      </button>
+    );
   }
   if (isJsonCell(value, dataType)) {
     const data = coerceJson(value);
@@ -133,6 +158,7 @@ export function DataGrid({
   onSortChange,
   editable = false,
   onCommitCell,
+  onOpenFk,
 }: DataGridProps) {
   const columnNames = useMemo(() => Object.keys(columns), [columns]);
   const [jsonCell, setJsonCell] = useState<JsonCell | null>(null);
@@ -156,11 +182,14 @@ export function DataGrid({
         accessorKey: name,
         header: name,
         cell: (info) =>
-          renderCell(info.getValue(), columns[name]?.dataType, (value) =>
-            setJsonCell({ column: name, value }),
+          renderCell(
+            info.getValue(),
+            columns[name],
+            (value) => setJsonCell({ column: name, value }),
+            onOpenFk ? (value) => onOpenFk(name, value) : undefined,
           ),
       })),
-    [columnNames, columns],
+    [columnNames, columns, onOpenFk],
   );
 
   const table = useReactTable({

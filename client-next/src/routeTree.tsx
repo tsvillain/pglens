@@ -35,11 +35,25 @@ const tableRoute = createRoute({
   path: '/tables/$tableName',
   component: TableView,
   // Deep-linkable saved view: `?view=<uuid>` selects a saved view on load.
+  // FK click-through: `?fkcol=<col>&fkval=<value>` opens the table with a
+  // single equality filter pre-applied (the "show all rows that reference
+  // this row" jump). Both fk params must be present to take effect.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { view?: string } => {
+  ): { view?: string; fkcol?: string; fkval?: string } => {
+    const out: { view?: string; fkcol?: string; fkval?: string } = {}
     const v = search.view
-    return typeof v === 'string' && v.length > 0 ? { view: v } : {}
+    if (typeof v === 'string' && v.length > 0) out.view = v
+    const fkcol = search.fkcol
+    const fkval = search.fkval
+    if (
+      typeof fkcol === 'string' && fkcol.length > 0 &&
+      typeof fkval === 'string'
+    ) {
+      out.fkcol = fkcol
+      out.fkval = fkval
+    }
+    return out
   },
 })
 
