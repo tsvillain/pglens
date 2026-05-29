@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
@@ -14,9 +14,10 @@ import { ViewBar } from "@/components/ViewBar";
 import { InsertRowDialog } from "@/components/InsertRowDialog";
 import { FkPanel, type FkTarget } from "@/components/FkPanel";
 import {
-  getTableData, listViews, updateRow,
+  getAggregates, getTableData, listViews, updateRow,
   type ColumnMeta, type FilterGroup, type SavedView, type TableData,
 } from "@/lib/api";
+import { type AggFn, previewAggregate } from "@/lib/aggSql";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/store/connection";
 
@@ -85,6 +86,9 @@ export function TableView() {
   const [limit, setLimit] = useState<number>(100);
   const [sort, setSort] = useState<SortState>([]);
   const [filter, setFilter] = useState<FilterGroup>(EMPTY_FILTER);
+  // Active aggregate function per column (at most one each). Drives the
+  // per-column footer in the grid.
+  const [aggregations, setAggregations] = useState<Record<string, AggFn>>({});
   const [insertOpen, setInsertOpen] = useState(false);
   // The FK cell the user clicked → drives the referenced-row side panel.
   const [fkTarget, setFkTarget] = useState<FkTarget | null>(null);
@@ -100,6 +104,7 @@ export function TableView() {
   useEffect(() => {
     setFilter(EMPTY_FILTER);
     setSort([]);
+    setAggregations({});
     setPage(1);
   }, [tableName]);
 
@@ -174,6 +179,38 @@ export function TableView() {
       return undefined;
     },
   });
+
+  // Aggregations strip: one running aggregate per chosen column, recomputed
+  // server-side against the same filter as the data read.
+  const aggList = useMemo(
+    () => Object.entries(aggregations).map(([column, fn]) => ({ column, fn })),
+    [aggregations],
+  );
+
+  const aggQuery = useQuery({
+    queryKey: ["aggregate", connectionId, tableName, appliedFilter, aggList],
+    queryFn: ({ signal }) =>
+      getAggregates(
+        connectionId!,
+        tableName,
+        { filter: appliedFilter, aggs: aggList },
+        signal,
+      ),
+    enabled: !!connectionId && aggList.length > 0,
+    // Keep prior values on screen while recomputing so the footer doesn't flash.
+    placeholderData: (prev) => prev,
+  });
+
+  const aggValues = useMemo(() => {
+    const map: Record<string, unknown> = {};
+    for (const r of aggQuery.data?.results ?? []) map[r.column] = r.value;
+    return map;
+  }, [aggQuery.data]);
+
+  const aggSqlPreview = useMemo(
+    () => previewAggregate(tableName, aggList, appliedFilter),
+    [tableName, aggList, appliedFilter],
+  );
 
   // FK click-through landing: `?fkcol&fkval` arrives from the panel's "show
   // all rows that reference this row" jump. Apply it as a single equality
@@ -363,6 +400,19 @@ export function TableView() {
                   originValue: value,
                 });
               }}
+              aggregations={aggregations}
+              aggValues={aggValues}
+              aggLoading={aggQuery.isFetching}
+              aggSqlPreview={aggSqlPreview}
+              onAggregationChange={(column, fn) =>
+                setAggregations((prev) => {
+                  if (fn === null) {
+                    const { [column]: _drop, ...rest } = prev;
+                    return rest;
+                  }
+                  return { ...prev, [column]: fn };
+                })
+              }
               editable={data.hasPrimaryKey}
               onCommitCell={async (rowIndex, column, newValue) => {
                 const queryKey = [

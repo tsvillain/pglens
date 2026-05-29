@@ -17,6 +17,7 @@ const {
 const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
 const { buildWhere } = require('../db/filter');
 const { buildOrderBy } = require('../db/sort');
+const { computeAggregates } = require('../db/aggregate');
 const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
 const views = require('../db/views');
@@ -420,6 +421,73 @@ router.get('/tables/:tableName',
       });
     } catch (err) {
       logger.error({ err: err.message, table: req.params.tableName }, 'table read failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Aggregations strip -----------------------------------------------------
+//
+// GET /api/tables/:tableName/aggregate?filter=<json>&aggs=<json>
+//   Per-column aggregations (count/sum/avg/min/max/stddev/count distinct/
+//   count true|false) computed against the current filter. `aggs` is a JSON
+//   array of { column, fn }; returns { results: [{ column, fn, value }] } in
+//   request order. Functions are gated by column type server-side.
+
+const AggregateListQuery = z.object({
+  filter: z.string().max(64_000).optional(),
+  aggs: z.string().max(64_000).optional(),
+});
+
+router.get('/tables/:tableName/aggregate',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    query: AggregateListQuery,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+
+    try {
+      const { columns: columnMetadata } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      let filterSpec = null, aggSpec = null;
+      try {
+        if (req.query.filter) filterSpec = JSON.parse(req.query.filter);
+        if (req.query.aggs) aggSpec = JSON.parse(req.query.aggs);
+      } catch {
+        return sendError(res, 400, codes.BAD_REQUEST, 'Invalid filter or aggs JSON');
+      }
+
+      let whereClause = '', whereParams = [];
+      try {
+        ({ sql: whereClause, params: whereParams } = buildWhere(filterSpec, columnMetadata));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      let result;
+      try {
+        result = await computeAggregates(req.connectionId, qualifiedTable, {
+          aggs: aggSpec,
+          columnMetadata,
+          whereSql: whereClause,
+          params: whereParams,
+        });
+      } catch (err) {
+        // computeAggregates flags user errors (bad column/fn) with statusCode 400.
+        if (err.statusCode === 400) {
+          return sendError(res, 400, codes.BAD_REQUEST, err.message);
+        }
+        throw err;
+      }
+
+      res.json(result);
+    } catch (err) {
+      logger.error({ err: err.message, table: tableName }, 'aggregate failed');
       return sendError(res, 500, codes.DB_ERROR, err.message);
     }
   });

@@ -11,13 +11,17 @@ import {
   ArrowDown,
   ArrowUp,
   Braces,
+  ChevronDown,
   ChevronsUpDown,
+  ChevronUp,
   Key,
   Link as LinkIcon,
+  Sigma,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { ColumnMeta, SortEntry } from "@/lib/api";
+import { type AggFn, AGG_LABELS, aggsForType, formatAggValue } from "@/lib/aggSql";
 import { Dialog } from "@/components/ui/dialog";
 import { JsonViewer, coerceJson, isExpandable } from "@/components/JsonViewer";
 import { CellEditor } from "@/components/CellEditor";
@@ -55,6 +59,19 @@ interface DataGridProps {
    * render FK cells as plain values (graceful degradation).
    */
   onOpenFk?: (column: string, value: unknown) => void;
+  /**
+   * Active aggregate function per column (one at a time). Providing
+   * `onAggregationChange` enables the per-column aggregations footer; omit it
+   * to hide the strip entirely (graceful degradation).
+   */
+  aggregations?: Record<string, AggFn>;
+  /** Computed aggregate value per column, keyed by column name. */
+  aggValues?: Record<string, unknown>;
+  /** True while the aggregate query is in flight. */
+  aggLoading?: boolean;
+  onAggregationChange?: (column: string, fn: AggFn | null) => void;
+  /** Read-only SQL preview for the active aggregations + filter. */
+  aggSqlPreview?: string;
 }
 
 /**
@@ -159,9 +176,20 @@ export function DataGrid({
   editable = false,
   onCommitCell,
   onOpenFk,
+  aggregations,
+  aggValues,
+  aggLoading = false,
+  onAggregationChange,
+  aggSqlPreview,
 }: DataGridProps) {
   const columnNames = useMemo(() => Object.keys(columns), [columns]);
   const [jsonCell, setJsonCell] = useState<JsonCell | null>(null);
+  const [showAggSql, setShowAggSql] = useState(false);
+
+  const aggEnabled = !!onAggregationChange;
+  const activeAggCount = aggregations
+    ? Object.keys(aggregations).length
+    : 0;
 
   // editing: which cell is in editor mode right now. Identified by row index
   // (within the current page) + column name. Switching tables/pages discards.
@@ -275,9 +303,10 @@ export function DataGrid({
 
   return (
     <>
+      <div className="flex h-full min-h-0 flex-col">
       <div
         ref={parentRef}
-        className="h-full overflow-auto rounded-md border border-border bg-card"
+        className="min-h-0 flex-1 overflow-auto rounded-md border border-border bg-card"
       >
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-card">
@@ -436,7 +465,68 @@ export function DataGrid({
               </tr>
             )}
           </tbody>
+          {aggEnabled && (
+            <tfoot className="sticky bottom-0 z-10 bg-card">
+              <tr className="border-t border-border">
+                {columnNames.map((name) => (
+                  <td
+                    key={name}
+                    className="border-r border-border/40 px-2 py-1 align-top last:border-r-0"
+                  >
+                    <AggFooterCell
+                      meta={columns[name]}
+                      fn={aggregations?.[name] ?? null}
+                      value={aggValues?.[name]}
+                      loading={aggLoading}
+                      onChange={(fn) => onAggregationChange!(name, fn)}
+                    />
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
+          )}
         </table>
+      </div>
+      {aggEnabled && activeAggCount > 0 && (
+        <div className="mt-2 shrink-0 text-sm">
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1 font-medium text-foreground">
+              <Sigma className="h-3.5 w-3.5" />
+              {activeAggCount} aggregation{activeAggCount === 1 ? "" : "s"}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                for (const name of Object.keys(aggregations ?? {})) {
+                  onAggregationChange!(name, null);
+                }
+              }}
+              className="hover:text-foreground"
+            >
+              Clear
+            </button>
+            {aggSqlPreview && (
+              <button
+                type="button"
+                onClick={() => setShowAggSql((v) => !v)}
+                className="ml-auto inline-flex items-center gap-1 hover:text-foreground"
+              >
+                {showAggSql ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <ChevronUp className="h-3 w-3" />
+                )}
+                Show SQL
+              </button>
+            )}
+          </div>
+          {showAggSql && aggSqlPreview && (
+            <pre className="mt-2 overflow-x-auto rounded-md border border-border bg-card px-3 py-2 font-mono text-xs text-foreground">
+              {aggSqlPreview}
+            </pre>
+          )}
+        </div>
+      )}
       </div>
       <Dialog
         open={jsonCell !== null}
@@ -447,5 +537,59 @@ export function DataGrid({
         {jsonCell && <JsonViewer value={jsonCell.value} />}
       </Dialog>
     </>
+  );
+}
+
+/**
+ * One column's slot in the aggregations footer: a compact function picker plus
+ * the computed value. The function list is gated by the column's type, mirroring
+ * the server. Selecting the blank option clears the aggregate for that column.
+ */
+function AggFooterCell({
+  meta,
+  fn,
+  value,
+  loading,
+  onChange,
+}: {
+  meta: ColumnMeta | undefined;
+  fn: AggFn | null;
+  value: unknown;
+  loading: boolean;
+  onChange: (fn: AggFn | null) => void;
+}) {
+  const fns = useMemo(() => aggsForType(meta?.dataType), [meta?.dataType]);
+
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <select
+        value={fn ?? ""}
+        onChange={(e) =>
+          onChange(e.target.value ? (e.target.value as AggFn) : null)
+        }
+        aria-label="Aggregate function"
+        className={cn(
+          "h-6 w-full max-w-[160px] rounded border border-transparent bg-transparent px-1 text-[11px] text-muted-foreground outline-none",
+          "hover:border-border focus:border-border",
+          fn && "text-foreground",
+        )}
+      >
+        <option value="">∑ —</option>
+        {fns.map((f) => (
+          <option key={f} value={f}>
+            {AGG_LABELS[f]}
+          </option>
+        ))}
+      </select>
+      {fn && (
+        <span className="flex items-center gap-1 truncate px-1 font-mono text-xs font-medium text-foreground">
+          {loading ? (
+            <Spinner className="h-3 w-3" aria-label="Computing" />
+          ) : (
+            formatAggValue(value)
+          )}
+        </span>
+      )}
+    </div>
   );
 }

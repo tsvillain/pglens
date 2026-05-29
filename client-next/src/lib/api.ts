@@ -591,3 +591,41 @@ export function getTableData(
     { connectionId, signal },
   )
 }
+
+// ---- Per-column aggregations ------------------------------------------------
+
+// `fn` is one of the AggFn values in lib/aggSql; kept as a string here to avoid
+// a circular import (aggSql depends on this module for FilterGroup).
+export interface AggItem {
+  column: string
+  fn: string
+}
+
+const AggregateResponse = z.object({
+  results: z.array(
+    z.object({
+      column: z.string(),
+      fn: z.string(),
+      value: z.unknown(),
+    }),
+  ),
+})
+export type AggregateResult = z.infer<typeof AggregateResponse>
+
+export function getAggregates(
+  connectionId: string,
+  tableName: string,
+  params: { filter?: FilterGroup | null; aggs: AggItem[] },
+  signal?: AbortSignal,
+) {
+  const qs = new URLSearchParams()
+  if (params.filter && params.filter.children.length > 0) {
+    qs.set('filter', JSON.stringify(params.filter))
+  }
+  qs.set('aggs', JSON.stringify(params.aggs))
+  return api(
+    `/api/tables/${encodeURIComponent(tableName)}/aggregate?${qs.toString()}`,
+    AggregateResponse,
+    { connectionId, signal },
+  )
+}
