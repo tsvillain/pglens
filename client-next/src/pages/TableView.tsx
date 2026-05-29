@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 import { Loading, Spinner } from "@/components/ui/spinner";
 
@@ -11,6 +11,7 @@ import { DataGrid, type SortState } from "@/components/DataGrid";
 import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
 import { SortBar } from "@/components/SortBar";
 import { ViewBar } from "@/components/ViewBar";
+import { InsertRowDialog } from "@/components/InsertRowDialog";
 import {
   getTableData, listViews, updateRow,
   type FilterGroup, type SavedView, type TableData,
@@ -68,6 +69,7 @@ export function TableView() {
   const [limit, setLimit] = useState<number>(100);
   const [sort, setSort] = useState<SortState>([]);
   const [filter, setFilter] = useState<FilterGroup>(EMPTY_FILTER);
+  const [insertOpen, setInsertOpen] = useState(false);
 
   // Selected saved view id. `null` means the synthetic "All rows" default.
   // The URL is the source of truth so the picker is deep-linkable.
@@ -197,6 +199,11 @@ export function TableView() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {data?.columns && (
+            <Button size="sm" onClick={() => setInsertOpen(true)}>
+              <Plus className="h-4 w-4" /> Insert row
+            </Button>
+          )}
           <Select
             value={String(limit)}
             onChange={(e) => {
@@ -353,6 +360,23 @@ export function TableView() {
           </Loading>
         )}
       </div>
+
+      {data?.columns && (
+        <InsertRowDialog
+          open={insertOpen}
+          onClose={() => setInsertOpen(false)}
+          connectionId={connectionId}
+          tableName={tableName}
+          columns={data.columns}
+          onInserted={() => {
+            // Refetch every page/sort/filter variant of this table so the new
+            // row appears wherever the user lands.
+            qc.invalidateQueries({
+              queryKey: ["table", connectionId, tableName],
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

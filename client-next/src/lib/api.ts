@@ -315,6 +315,9 @@ const ColumnMetaSchema = z.object({
   udtName: z.string().optional(),
   isNullable: z.boolean().optional(),
   hasDefault: z.boolean().optional(),
+  // Raw default expression, surfaced so the insert form can ghost it. Older
+  // servers without the field still parse via `.nullish()`.
+  defaultValue: z.string().nullish(),
   isPrimaryKey: z.boolean(),
   isForeignKey: z.boolean(),
   foreignKeyRef: z
@@ -530,6 +533,40 @@ export async function updateRow(
   const json = await res.json().catch(() => null)
   if (!res.ok) throw parseErrorBody(json, res.status)
   return UpdateRowResponse.parse(json).row
+}
+
+// ---- Row insert -------------------------------------------------------------
+
+const InsertRowResponse = z.object({
+  row: z.record(z.string(), z.unknown()),
+})
+
+export interface InsertRowPayload {
+  // Only the columns the user filled. Omitted columns take their DEFAULT;
+  // an explicit `null` maps to SQL NULL.
+  values: Record<string, unknown>
+}
+
+export async function insertRow(
+  connectionId: string,
+  tableName: string,
+  payload: InsertRowPayload,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/rows`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+      },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    },
+  )
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return InsertRowResponse.parse(json).row
 }
 
 export function getTableData(

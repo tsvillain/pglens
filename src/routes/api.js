@@ -18,6 +18,7 @@ const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
 const { buildWhere } = require('../db/filter');
 const { buildOrderBy } = require('../db/sort');
 const { buildUpdateRow } = require('../db/update');
+const { buildInsertRow } = require('../db/insert');
 const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
@@ -246,6 +247,9 @@ async function getColumnMetadata(pool, tableName, schema) {
       udtName: row.udt_name,
       isNullable: row.is_nullable === 'YES',
       hasDefault: row.column_default !== null,
+      // Raw default expression (e.g. `nextval('seq')`, `now()`, `'active'::text`).
+      // The insert form ghosts this so the user knows what they're skipping.
+      defaultValue: row.column_default,
       isPrimaryKey: pkCols.has(row.column_name),
       isForeignKey: !!fkRels[row.column_name],
       foreignKeyRef: fkRels[row.column_name] || null,
@@ -470,6 +474,50 @@ router.patch('/tables/:tableName/rows',
       res.json({ row: result.rows[0] });
     } catch (err) {
       logger.warn({ err: err.message, table: tableName }, 'row update failed');
+      return sendError(res, 400, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Row insert -------------------------------------------------------------
+//
+// POST /api/tables/:tableName/rows
+//   Body: { values: { col: value, ... } }
+//   Returns: { row } — the freshly-inserted row, post-trigger/default.
+//
+// Columns omitted from `values` take their DEFAULT (or NULL); an empty object
+// inserts an all-defaults row. Unknown columns 400; NOT NULL / CHECK / unique
+// violations surface from Postgres through the error envelope.
+
+const RowInsertBodySchema = z.object({
+  values: z.record(z.string().min(1).max(255), z.unknown()),
+});
+
+router.post('/tables/:tableName/rows',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    body: RowInsertBodySchema,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+
+    try {
+      const { columns } = await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      let built;
+      try {
+        built = buildInsertRow(req.body, columns, qualifiedTable);
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      const result = await pool.query(built.sql, built.params);
+      res.status(201).json({ row: result.rows[0] });
+    } catch (err) {
+      logger.warn({ err: err.message, table: tableName }, 'row insert failed');
       return sendError(res, 400, codes.DB_ERROR, err.message);
     }
   });
