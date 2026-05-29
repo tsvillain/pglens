@@ -12,6 +12,7 @@ import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
 import { SortBar } from "@/components/SortBar";
 import { ViewBar } from "@/components/ViewBar";
 import { InsertRowDialog } from "@/components/InsertRowDialog";
+import { ExportMenu } from "@/components/ExportMenu";
 import { FkPanel, type FkTarget } from "@/components/FkPanel";
 import {
   getAggregates, getTableData, listViews, updateRow,
@@ -294,9 +295,18 @@ export function TableView() {
         </div>
         <div className="flex items-center gap-2">
           {data?.columns && (
-            <Button size="sm" onClick={() => setInsertOpen(true)}>
-              <Plus className="h-4 w-4" /> Insert row
-            </Button>
+            <>
+              <Button size="sm" onClick={() => setInsertOpen(true)}>
+                <Plus className="h-4 w-4" /> Insert row
+              </Button>
+              <ExportMenu
+                connectionId={connectionId}
+                tableName={tableName}
+                columns={data.columns}
+                filter={appliedFilter}
+                sort={sort}
+              />
+            </>
           )}
           <Select
             value={String(limit)}

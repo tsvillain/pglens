@@ -20,6 +20,7 @@ const { buildOrderBy } = require('../db/sort');
 const { computeAggregates } = require('../db/aggregate');
 const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
+const { EXPORT_FORMATS, FORMAT_META, createSerializer } = require('../db/export');
 const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
@@ -489,6 +490,123 @@ router.get('/tables/:tableName/aggregate',
     } catch (err) {
       logger.error({ err: err.message, table: tableName }, 'aggregate failed');
       return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Per-table data export --------------------------------------------------
+//
+// GET /api/tables/:tableName/export?format=csv|json|sql&filter=<json>&sort=<json>&columns=<json>
+//   Streams the table's rows in the chosen format, respecting the current
+//   filter, sort, and (optionally) a visible-column subset. Rows are pulled
+//   through a server-side cursor in batches and written straight to the
+//   response, so memory stays flat regardless of table size.
+
+const TableExportQuery = z.object({
+  format: z.enum(EXPORT_FORMATS).default('csv'),
+  filter: z.string().max(64_000).optional(),
+  sort: z.string().max(8_000).optional(),
+  // JSON array of column names to include (defaults to all, in ordinal order).
+  columns: z.string().max(64_000).optional(),
+  // Hard cap on rows emitted. Omitted ⇒ every matching row.
+  limit: z.coerce.number().int().positive().max(10_000_000).optional(),
+});
+
+const EXPORT_BATCH_SIZE = 500;
+
+router.get('/tables/:tableName/export',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    query: TableExportQuery,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+    const { format, limit } = req.query;
+
+    try {
+      const { columns: columnMetadata, primaryKeyColumn } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      // Parse the optional JSON params. Bad JSON is a user error → 400.
+      let filterSpec = null, sortSpec = null, requestedColumns = null;
+      try {
+        if (req.query.filter) filterSpec = JSON.parse(req.query.filter);
+        if (req.query.sort) sortSpec = JSON.parse(req.query.sort);
+        if (req.query.columns) requestedColumns = JSON.parse(req.query.columns);
+      } catch {
+        return sendError(res, 400, codes.BAD_REQUEST, 'Invalid filter, sort, or columns JSON');
+      }
+
+      // Resolve the columns to emit. A requested subset is whitelisted against
+      // real columns (preserving request order); unknown names are rejected so
+      // a typo can't silently drop data. Default is every column in ordinal
+      // order.
+      let exportColumns;
+      if (Array.isArray(requestedColumns) && requestedColumns.length > 0) {
+        const unknown = requestedColumns.filter((c) => !columnMetadata[c]);
+        if (unknown.length > 0) {
+          return sendError(res, 400, codes.BAD_REQUEST,
+            `Unknown export column(s): ${unknown.join(', ')}`);
+        }
+        exportColumns = requestedColumns;
+      } else {
+        exportColumns = Object.keys(columnMetadata);
+      }
+
+      let whereClause = '', whereParams = [];
+      try {
+        ({ sql: whereClause, params: whereParams } = buildWhere(filterSpec, columnMetadata));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      let orderByClause = '';
+      try {
+        ({ sql: orderByClause } = buildOrderBy(sortSpec, columnMetadata, primaryKeyColumn));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      const params = [...whereParams];
+      let limitClause = '';
+      if (limit) {
+        limitClause = ` LIMIT $${params.length + 1}`;
+        params.push(limit);
+      }
+      const colList = exportColumns.map(quoteIdent).join(', ');
+      const query =
+        `SELECT ${colList} FROM ${qualifiedTable}${whereClause}${orderByClause}${limitClause}`;
+
+      const meta = FORMAT_META[format];
+      const safeName = `${tableName}.${meta.extension}`.replace(/[^A-Za-z0-9._-]/g, '_');
+      res.setHeader('Content-Type', meta.contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+
+      const serializer = createSerializer(format, { columns: exportColumns, tableName });
+
+      // Backpressure-aware write: pause cursor fetches while the socket drains.
+      const write = (chunk) =>
+        res.write(chunk) ? Promise.resolve() : new Promise((r) => res.once('drain', r));
+
+      await write(serializer.head());
+      await pool.cursor(query, params, EXPORT_BATCH_SIZE, async (rows) => {
+        let chunk = '';
+        for (const row of rows) chunk += serializer.row(row);
+        await write(chunk);
+      });
+      await write(serializer.foot());
+      res.end();
+    } catch (err) {
+      logger.error({ err: err.message, table: tableName }, 'table export failed');
+      // Once streaming has begun the status/headers are already flushed; the
+      // best we can do is terminate the (now-truncated) download.
+      if (!res.headersSent) {
+        return sendError(res, 500, codes.DB_ERROR, err.message);
+      }
+      res.end();
     }
   });
 

@@ -49,6 +49,14 @@ function createPoolWrapper(sqlClient) {
         reserved.release();
       }
     },
+    /**
+     * Stream a query in server-side cursor batches. `onBatch(rows)` is awaited
+     * before the next batch is fetched, so callers writing to an HTTP response
+     * can apply backpressure (await `drain`) and the whole result set never has
+     * to materialize in memory — this is what keeps large-table exports flat.
+     */
+    cursor: (queryText, params, batchSize, onBatch) =>
+      sqlClient.unsafe(queryText, params || []).cursor(batchSize, onBatch),
     end: () => sqlClient.end(),
   };
 }

@@ -300,6 +300,92 @@ function triggerDownload(blob: Blob, fileName: string) {
   URL.revokeObjectURL(url)
 }
 
+export type ExportFormat = 'csv' | 'json' | 'sql'
+
+const EXPORT_EXTENSION: Record<ExportFormat, string> = {
+  csv: 'csv',
+  json: 'json',
+  sql: 'sql',
+}
+
+export interface ExportProgress {
+  bytes: number
+}
+
+export interface ExportTableOptions {
+  filter?: FilterGroup | null
+  sort?: SortEntry[] | null
+  /** Subset of columns to include, in order. Omit/empty ⇒ all columns. */
+  columns?: string[] | null
+  limit?: number
+}
+
+/**
+ * Stream a single table's rows to disk in the chosen format, respecting the
+ * supplied filter, sort, and column subset. The body is read incrementally so
+ * the browser never has to hold the whole table at once for large exports.
+ */
+export async function exportTableData(
+  connectionId: string,
+  tableName: string,
+  format: ExportFormat,
+  options: ExportTableOptions = {},
+  onProgress?: (p: ExportProgress) => void,
+  signal?: AbortSignal,
+): Promise<ExportProgress> {
+  const qs = new URLSearchParams()
+  qs.set('format', format)
+  if (options.filter && options.filter.children.length > 0) {
+    qs.set('filter', JSON.stringify(options.filter))
+  }
+  if (options.sort && options.sort.length > 0) {
+    qs.set('sort', JSON.stringify(options.sort))
+  }
+  if (options.columns && options.columns.length > 0) {
+    qs.set('columns', JSON.stringify(options.columns))
+  }
+  if (options.limit) qs.set('limit', String(options.limit))
+
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/export?${qs.toString()}`,
+    {
+      headers: { 'x-connection-id': connectionId },
+      credentials: 'same-origin',
+      signal,
+    },
+  )
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+
+  const fileName = `${tableName}.${EXPORT_EXTENSION[format]}`
+  const contentType = res.headers.get('Content-Type') ?? 'application/octet-stream'
+
+  if (!res.body) {
+    // Fallback for environments without ReadableStream.
+    const blob = await res.blob()
+    triggerDownload(blob, fileName)
+    onProgress?.({ bytes: blob.size })
+    return { bytes: blob.size }
+  }
+
+  const reader = res.body.getReader()
+  const chunks: BlobPart[] = []
+  let bytes = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    bytes += value.byteLength
+    onProgress?.({ bytes })
+  }
+
+  triggerDownload(new Blob(chunks, { type: contentType }), fileName)
+  onProgress?.({ bytes })
+  return { bytes }
+}
+
 export function listSchemas(connectionId: string, signal?: AbortSignal) {
   return api('/api/schemas', SchemasResponse, { connectionId, signal })
 }
