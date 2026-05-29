@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Link, useMatchRoute, useNavigate, useRouterState,
@@ -47,6 +47,16 @@ export function Sidebar() {
     activeId && connections.data?.some((c) => c.id === activeId)
       ? activeId
       : connections.data?.[0]?.id ?? null
+
+  // The sidebar resolves a fallback connection (first available) for its own
+  // UI, but pages like TableView read `activeConnectionId` straight from the
+  // store. On a fresh deep-link load that value is null/stale, so persist the
+  // resolved id back to the store to keep every consumer in sync.
+  useEffect(() => {
+    if (resolvedActiveId && resolvedActiveId !== activeId) {
+      setActive(resolvedActiveId)
+    }
+  }, [resolvedActiveId, activeId, setActive])
 
   const tables = useQuery({
     queryKey: ['tables', resolvedActiveId],
