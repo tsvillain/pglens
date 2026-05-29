@@ -21,6 +21,7 @@ const { computeAggregates } = require('../db/aggregate');
 const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
 const { EXPORT_FORMATS, FORMAT_META, createSerializer } = require('../db/export');
+const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/import');
 const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
@@ -607,6 +608,145 @@ router.get('/tables/:tableName/export',
         return sendError(res, 500, codes.DB_ERROR, err.message);
       }
       res.end();
+    }
+  });
+
+// ---- Per-table CSV import ---------------------------------------------------
+//
+// POST /api/tables/:tableName/import
+//   Body: {
+//     columns: string[],          // target columns, in order
+//     rows: unknown[][],          // each row's cells, aligned to `columns`
+//     mode: 'insert'|'skip'|'update',
+//     conflictColumns?: string[], // required for 'update' (the ON CONFLICT key)
+//     emptyAsNull?: boolean,      // blank cell → NULL (default true)
+//     dryRun?: boolean,           // count only, then roll back (default false)
+//   }
+//   Returns: { dryRun, mode, attempted, inserted, updated, conflicts, batches }
+//
+// The client parses the CSV file, maps headers → columns, and projects each
+// row to the chosen target columns; the server validates the columns, builds
+// parameterized multi-row INSERTs (batched under Postgres' 65535-param cap),
+// and runs every batch inside ONE transaction so the import is all-or-nothing.
+// A dry run runs the same statements then rolls back, reporting the counts the
+// real run would produce — for plain `insert` mode the dry run probes with
+// ON CONFLICT DO NOTHING so it can report conflicts without aborting.
+
+// 65535 params / 1 column ⇒ ~65k rows max per batch; cap total rows per request
+// well above any reasonable interactive paste while still bounding the body.
+const MAX_IMPORT_ROWS = 500_000;
+
+const ImportBodySchema = z.object({
+  columns: z.array(z.string().min(1).max(255)).min(1).max(1600),
+  rows: z.array(z.array(z.unknown())).min(1).max(MAX_IMPORT_ROWS),
+  mode: z.enum(IMPORT_MODES),
+  conflictColumns: z.array(z.string().min(1).max(255)).optional(),
+  emptyAsNull: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+});
+
+// Thrown to unwind porsager's transaction (forcing a ROLLBACK) once a dry run
+// has gathered its counts. Carries the tallies back out to the route.
+const ROLLBACK = Symbol('pglens-dry-run-rollback');
+
+router.post('/tables/:tableName/import',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    body: ImportBodySchema,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+    const {
+      columns: targetColumns, rows, mode,
+      conflictColumns = [], emptyAsNull = true, dryRun = false,
+    } = req.body;
+
+    try {
+      const { columns: columnMetadata } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      // Validate the mapping up front so a bad column 400s before we open a
+      // transaction. (buildImportStatement re-checks, but this gives a cleaner
+      // single error rather than failing mid-batch.)
+      const unknown = targetColumns.filter((c) => !columnMetadata[c]);
+      if (unknown.length > 0) {
+        return sendError(res, 400, codes.BAD_REQUEST,
+          `Unknown column(s): ${unknown.join(', ')}`);
+      }
+      if (mode === 'update') {
+        if (conflictColumns.length === 0) {
+          return sendError(res, 400, codes.BAD_REQUEST,
+            'Update mode requires conflictColumns', {
+              hint: 'Map the table\'s primary-key or a unique column.',
+            });
+        }
+        const badConflict = conflictColumns.filter((c) => !targetColumns.includes(c));
+        if (badConflict.length > 0) {
+          return sendError(res, 400, codes.BAD_REQUEST,
+            `Conflict column(s) not in the mapping: ${badConflict.join(', ')}`);
+        }
+      }
+
+      // A plain-INSERT dry run can't report conflicts without aborting, so it
+      // probes with DO NOTHING. The real run uses the requested mode.
+      const planMode = dryRun && mode === 'insert' ? 'skip' : mode;
+      const batchSize = batchSizeFor(targetColumns.length);
+
+      const runImport = async (exec) => {
+        let attempted = 0, inserted = 0, updated = 0, batches = 0;
+        for (let i = 0; i < rows.length; i += batchSize) {
+          const batch = rows.slice(i, i + batchSize);
+          const { sql, params } = buildImportStatement({
+            qualifiedTable, targetColumns, columnMeta: columnMetadata,
+            rows: batch, mode: planMode, conflictColumns, emptyAsNull,
+          });
+          const result = await exec.query(sql, params);
+          attempted += batch.length;
+          batches += 1;
+          // RETURNING yields a row per affected row, flagged inserted vs
+          // updated by (xmax = 0). Rows DO NOTHING skipped are absent.
+          for (const r of result.rows) {
+            if (r.pglens_inserted) inserted += 1;
+            else updated += 1;
+          }
+        }
+        return { attempted, inserted, updated };
+      };
+
+      let counts;
+      if (dryRun) {
+        try {
+          await pool.transaction(async (tx) => {
+            counts = await runImport(tx);
+            throw ROLLBACK; // discard the probe writes
+          });
+        } catch (err) {
+          if (err !== ROLLBACK) throw err;
+        }
+      } else {
+        counts = await pool.transaction(runImport);
+      }
+
+      // `attempted - (inserted + updated)` is what ON CONFLICT dropped. For
+      // update mode nothing is dropped, so this is 0.
+      const conflicts = counts.attempted - counts.inserted - counts.updated;
+      res.json({
+        dryRun, mode,
+        attempted: counts.attempted,
+        inserted: counts.inserted,
+        updated: counts.updated,
+        conflicts,
+        batches: dryRun ? undefined : Math.ceil(rows.length / batchSize),
+      });
+    } catch (err) {
+      logger.warn({ err: err.message, table: tableName }, 'import failed');
+      return sendError(res, 400, codes.DB_ERROR, err.message, {
+        hint: dryRun ? undefined : 'No rows were imported — the transaction rolled back.',
+      });
     }
   });
 

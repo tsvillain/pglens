@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Upload } from "lucide-react";
 
 import { Loading, Spinner } from "@/components/ui/spinner";
 
@@ -12,6 +12,7 @@ import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
 import { SortBar } from "@/components/SortBar";
 import { ViewBar } from "@/components/ViewBar";
 import { InsertRowDialog } from "@/components/InsertRowDialog";
+import { ImportDialog } from "@/components/ImportDialog";
 import { ExportMenu } from "@/components/ExportMenu";
 import { FkPanel, type FkTarget } from "@/components/FkPanel";
 import {
@@ -91,6 +92,7 @@ export function TableView() {
   // per-column footer in the grid.
   const [aggregations, setAggregations] = useState<Record<string, AggFn>>({});
   const [insertOpen, setInsertOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   // The FK cell the user clicked → drives the referenced-row side panel.
   const [fkTarget, setFkTarget] = useState<FkTarget | null>(null);
 
@@ -299,6 +301,9 @@ export function TableView() {
               <Button size="sm" onClick={() => setInsertOpen(true)}>
                 <Plus className="h-4 w-4" /> Insert row
               </Button>
+              <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                <Upload className="h-4 w-4" /> Import
+              </Button>
               <ExportMenu
                 connectionId={connectionId}
                 tableName={tableName}
@@ -500,6 +505,21 @@ export function TableView() {
           onInserted={() => {
             // Refetch every page/sort/filter variant of this table so the new
             // row appears wherever the user lands.
+            qc.invalidateQueries({
+              queryKey: ["table", connectionId, tableName],
+            });
+          }}
+        />
+      )}
+
+      {data?.columns && (
+        <ImportDialog
+          open={importOpen}
+          onClose={() => setImportOpen(false)}
+          connectionId={connectionId}
+          tableName={tableName}
+          columns={data.columns}
+          onImported={() => {
             qc.invalidateQueries({
               queryKey: ["table", connectionId, tableName],
             });

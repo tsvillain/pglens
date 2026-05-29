@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, exportTableData, listConnections, runQuery } from '@/lib/api'
+import { ApiError, exportTableData, importTableData, listConnections, runQuery } from '@/lib/api'
 import type { FilterGroup } from '@/lib/api'
 
 const fetchMock = vi.fn()
@@ -175,6 +175,52 @@ describe('exportTableData', () => {
     )
     await expect(
       exportTableData('conn-1', 'users', 'csv', { columns: ['nope'] }),
+    ).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('importTableData', () => {
+  it('POSTs the mapping, rows, and mode and parses the result envelope', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        dryRun: true,
+        mode: 'skip',
+        attempted: 3,
+        inserted: 2,
+        updated: 0,
+        conflicts: 1,
+      }),
+    )
+    const result = await importTableData('conn-1', 'users', {
+      columns: ['id', 'name'],
+      rows: [['1', 'Ann'], ['2', 'Bob'], ['3', 'Cy']],
+      mode: 'skip',
+      dryRun: true,
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/tables/users/import')
+    expect((init as RequestInit).method).toBe('POST')
+    expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body.columns).toEqual(['id', 'name'])
+    expect(body.mode).toBe('skip')
+    expect(body.dryRun).toBe(true)
+    expect(result.conflicts).toBe(1)
+  })
+
+  it('throws ApiError when the import is rejected', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: 'DB_ERROR', message: 'duplicate key value violates unique constraint' } },
+        { status: 400 },
+      ),
+    )
+    await expect(
+      importTableData('conn-1', 'users', {
+        columns: ['id'],
+        rows: [['1']],
+        mode: 'insert',
+      }),
     ).rejects.toBeInstanceOf(ApiError)
   })
 })

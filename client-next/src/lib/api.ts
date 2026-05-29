@@ -655,6 +655,57 @@ export async function insertRow(
   return InsertRowResponse.parse(json).row
 }
 
+// ---- CSV import -------------------------------------------------------------
+
+export type ImportMode = 'insert' | 'skip' | 'update'
+
+export interface ImportPayload {
+  /** Target columns, in order. */
+  columns: string[]
+  /** Each row's cells, aligned to `columns`. */
+  rows: unknown[][]
+  mode: ImportMode
+  /** ON CONFLICT key columns — required when `mode` is 'update'. */
+  conflictColumns?: string[]
+  /** Blank cell → NULL. Default true server-side. */
+  emptyAsNull?: boolean
+  /** Count only, then roll back. */
+  dryRun?: boolean
+}
+
+const ImportResultResponse = z.object({
+  dryRun: z.boolean(),
+  mode: z.enum(['insert', 'skip', 'update']),
+  attempted: z.number(),
+  inserted: z.number(),
+  updated: z.number(),
+  conflicts: z.number(),
+  batches: z.number().optional(),
+})
+export type ImportResult = z.infer<typeof ImportResultResponse>
+
+export async function importTableData(
+  connectionId: string,
+  tableName: string,
+  payload: ImportPayload,
+): Promise<ImportResult> {
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/import`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+      },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    },
+  )
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return ImportResultResponse.parse(json)
+}
+
 export function getTableData(
   connectionId: string,
   tableName: string,
