@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-05-29
+
+Phase 1 — No-Code Editing Core. pglens moves from "viewer" to "client":
+filter, sort, save views, edit, insert, follow foreign keys, aggregate,
+and export/import — all without typing SQL. Every action has a working
+"Show SQL" disclosure, and no-code UI never sends raw SQL fragments over
+the wire; the server parses structured specs into parameterized queries.
+
+### Added
+
+- **Visual filter builder** above every table grid: column + type-aware
+  operator (`=`, `!=`, ranges, `LIKE`/`ILIKE`, `IN`, `IS NULL`, jsonb
+  `@>`, array `&&`) + value, with a "Show SQL" disclosure of the
+  generated `WHERE`. `GET /api/tables/:tableName` accepts a structured
+  filter spec parsed server-side into parameterized SQL. Cursor
+  pagination falls back to `OFFSET` when a filter is present.
+- **Visual multi-column sort builder**: drag-to-reorder `SortBar` chips
+  (HTML5 DnD, no new deps) plus shift/cmd/ctrl-click multi-sort on
+  grid headers with priority badges. `GET /api/tables/:tableName` gains
+  a structured `sort` array parsed via `buildOrderBy` (identifiers
+  validated against column metadata, direction whitelisted); the primary
+  key is appended as a tie-break. Legacy `sortColumn`/`sortDirection`
+  retained for the v2 client.
+- **Saved views** — named bundles of filter + sort scoped to a
+  `(connection, table)` pair, persisted to `~/.pglens/views.json` with
+  atomic writes and a unique-name guard. `GET/POST/PUT/DELETE
+  /api/views`; listing stays open so the sidebar works with no live
+  pool. `ViewBar` with picker, dirty indicator, save / save-as /
+  rename / delete; the selected view is URL state (`?view=<uuid>`) for
+  deep links, and the sidebar nests views under each table with a count
+  badge.
+- **Type-aware inline editing**: double-click a cell to edit with a
+  per-type widget (boolean toggle, date/datetime picker, JSON/array
+  dialog with validation, UUID text + generate, bigint-safe number,
+  text). `PATCH /api/tables/:tableName/rows` takes `{ where, set }` and
+  emits a parameterized `UPDATE` pinned to the primary key (jsonb
+  stringified + cast). Optimistic update with rollback on error,
+  per-cell spinner, and auto-dismissing error pill. PK columns are not
+  editable.
+- **Schema-generated row insert form** via `POST
+  /api/tables/:tableName/rows` and a parameterized `INSERT` builder
+  (`src/db/insert.js`). Each field is tri-state — DEFAULT (omit) / NULL
+  / value; an empty payload emits `DEFAULT VALUES`. NOT-NULL-without-
+  default columns are required; defaults are ghosted. NOT NULL / CHECK /
+  unique violations surface through the standard error envelope.
+  Includes "Show SQL" and "Insert & add another".
+- **FK click-through navigation**: click any foreign-key cell to slide
+  in a side panel with the full referenced row (fetched through the
+  existing filtered read endpoint — no backend change). Supports chained
+  FK navigation with breadcrumbs, "Show all rows in `<table>` where
+  `<col>` = `<val>`" (jumps to the origin table with the equality filter
+  pre-applied), and "Edit referenced row" inline. URL-carried FK values
+  are type-coerced against column metadata.
+- **Per-column aggregations strip** pinned to the bottom of every grid:
+  count / sum / avg / min / max / stddev / count distinct /
+  count true|false, type-gated and computed server-side against the
+  active filter via `GET /api/tables/:tableName/aggregate`
+  (`src/db/aggregate.js`, reuses `buildWhere`). Sticky `tfoot` fn picker
+  with a Show SQL preview.
+- **Per-table data export** to CSV (RFC 4180), JSON, or SQL `INSERT`
+  via `GET /api/tables/:tableName/export`, respecting the current
+  filter, sort, and a chosen column subset. Rows stream through a
+  server-side cursor with drain-aware backpressure, so memory stays flat
+  regardless of table size. `ExportMenu` dialog with format toggle,
+  per-column picker, and Show SQL.
+- **Per-table CSV import wizard**: upload, map CSV columns → table
+  columns (auto-guessed by header), choose insert mode (`INSERT`,
+  `ON CONFLICT DO NOTHING`, `ON CONFLICT … DO UPDATE`), dry-run preview
+  of rows/conflicts, execute in a transaction.
+
+### Changed
+
+- **Neutral off-black dark mode**: replaced the bluish-slate palette
+  with neutral grays (background ~`#161616`, surfaces lift to `#1c1c1c`,
+  de-tinted borders).
+- **Column metadata** returned by the table read now carries `udtName`,
+  `isNullable`, `hasDefault`, and the raw default expression, so the
+  frontend can pick the right edit/insert widget and ghost defaults.
+- **Global DB dump** (`/api/export`) now reuses the shared `sqlLiteral()`
+  serializer from `src/db/export.js` instead of a hand-coded copy,
+  removing the risk of drift between the global-backup and per-table
+  export paths. Output unchanged.
+
+### Fixed
+
+- **Connection store** now syncs the resolved connection id back after
+  resolution, fixing stale-id state.
+
+### Known limitations
+
+- FK and enum columns in the inline editor and insert form degrade to a
+  text input (with a `→ table.column` hint) until the FK lookup pipeline
+  lands.
+
 ## [3.0.2] - 2026-05-22
 
 ### Fixed

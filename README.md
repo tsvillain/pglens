@@ -1,12 +1,18 @@
 # pglens
 
-A no-code PostgreSQL workstation. View, explore, visualize, and query your
+A no-code PostgreSQL workstation. View, explore, visualize, edit, and query your
 PostgreSQL databases through a fast local web interface.
 
-> **v3.0.0** is a foundation rewrite. The interface is now a React 18 + TypeScript
+> **v3.1.0** turns pglens from a viewer into a client: filter, sort, save views,
+> inline-edit, insert rows, follow foreign keys, aggregate, and export/import — all
+> without typing SQL. Every no-code action has a "Show SQL" disclosure, and the UI
+> never sends raw SQL fragments; the server parses structured specs into
+> parameterized queries.
+>
+> **v3.0.0** was the foundation rewrite. The interface is a React 18 + TypeScript
 > app, and the server is hardened with per-install auth, OS-keychain secrets, and
 > localhost-only binding. See [Breaking Changes](#breaking-changes-in-v300) before
-> upgrading.
+> upgrading from v2.x.
 
 ## Features
 
@@ -18,7 +24,16 @@ PostgreSQL databases through a fast local web interface.
 - 🗃️ **Schema Selection**: Browse any schema in your database, not just `public`
 - 🕸️ **Schema Visualization**: Interactive auto-laid-out graph (dagre) of table relationships, with filtering, hover spotlight, and minimap
 - 📐 **Schema Export**: Export the diagram as SVG or Mermaid ER (copy or `.mmd` download)
-- 📥 **Import/Export**: Export your database schema as SQL and import it into another connection
+- 🔎 **Visual Filter Builder**: Type-aware operators (`=`, ranges, `LIKE`/`ILIKE`, `IN`, `IS NULL`, jsonb `@>`, array `&&`) above every grid, with Show SQL
+- ↕️ **Visual Multi-Column Sort**: Drag-to-reorder sort chips plus shift/cmd-click header multi-sort with priority badges
+- 💾 **Saved Views**: Named filter + sort bundles per `(connection, table)`, deep-linkable via URL, nested under each table in the sidebar
+- ✏️ **Inline Editing**: Double-click a cell to edit with a per-type widget (boolean, date/datetime, JSON/array, UUID, bigint-safe number); optimistic update with rollback
+- ➕ **Row Insert Form**: Schema-generated form with tri-state DEFAULT / NULL / value fields and "Insert & add another"
+- 🔗 **FK Click-Through**: Click a foreign-key cell to slide in the referenced row, follow chained FKs with breadcrumbs, or jump to all matching rows
+- 🧮 **Per-Column Aggregations**: count / sum / avg / min / max / stddev / count distinct, type-gated and computed server-side against the active filter
+- 📤 **Per-Table Export**: Stream CSV (RFC 4180) / JSON / SQL `INSERT`, respecting the active filter, sort, and chosen columns
+- 📥 **CSV Import Wizard**: Map columns, choose insert mode (`INSERT`, `ON CONFLICT DO NOTHING`/`DO UPDATE`), dry-run preview, transactional execute
+- 📦 **Import/Export Schema**: Export your database schema as SQL and import it into another connection
 - 💽 **Streaming Backup**: Export a database dump with live byte/table progress and cancel
 - ⌨️ **Query Runner**: Advanced-mode raw-SQL escape hatch with a Monaco editor (`Cmd/Ctrl+Enter` to run)
 - 🔎 **Spotlight Search**: Quick table search with `Cmd+K` / `Ctrl+K` for fast navigation
