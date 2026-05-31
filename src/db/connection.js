@@ -49,6 +49,32 @@ function createPoolWrapper(sqlClient) {
         reserved.release();
       }
     },
+    /**
+     * Stream a query in server-side cursor batches. `onBatch(rows)` is awaited
+     * before the next batch is fetched, so callers writing to an HTTP response
+     * can apply backpressure (await `drain`) and the whole result set never has
+     * to materialize in memory — this is what keeps large-table exports flat.
+     */
+    cursor: (queryText, params, batchSize, onBatch) =>
+      sqlClient.unsafe(queryText, params || []).cursor(batchSize, onBatch),
+    /**
+     * Run `handler(tx)` inside a single transaction. porsager's `.begin`
+     * COMMITs when the handler resolves and ROLLBACKs (re-throwing) when it
+     * rejects, so a multi-statement import is atomic — any failed batch undoes
+     * the whole import. The `tx` handed to the handler exposes the same
+     * `{ rows, rowCount }` shape as `query()`. A dry run rolls back simply by
+     * throwing once the counts are gathered.
+     */
+    transaction: (handler) =>
+      sqlClient.begin(async (sql) => {
+        const tx = {
+          query: async (queryText, params) => {
+            const result = await sql.unsafe(queryText, params || []);
+            return { rows: result, fields: result.columns || [], rowCount: result.count };
+          },
+        };
+        return handler(tx);
+      }),
     end: () => sqlClient.end(),
   };
 }

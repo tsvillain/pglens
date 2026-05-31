@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, listConnections, runQuery } from '@/lib/api'
+import { ApiError, exportTableData, importTableData, listConnections, runQuery } from '@/lib/api'
+import type { FilterGroup } from '@/lib/api'
 
 const fetchMock = vi.fn()
 vi.stubGlobal('fetch', fetchMock)
@@ -105,5 +106,121 @@ describe('runQuery', () => {
       ),
     )
     await expect(runQuery('conn-1', 'FOO')).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('exportTableData', () => {
+  // Drive exportTableData down the `!res.body` fallback path so we don't need
+  // to fake a ReadableStream; stub the DOM download primitives jsdom lacks.
+  function downloadResponse(body: unknown) {
+    return {
+      ok: true,
+      status: 200,
+      body: null,
+      headers: { get: () => 'text/csv; charset=utf-8' },
+      blob: async () => new Blob([JSON.stringify(body)], { type: 'text/csv' }),
+    } as unknown as Response
+  }
+
+  const origCreate = URL.createObjectURL
+  const origRevoke = URL.revokeObjectURL
+  afterEach(() => {
+    URL.createObjectURL = origCreate
+    URL.revokeObjectURL = origRevoke
+  })
+
+  function stubDownload() {
+    URL.createObjectURL = vi.fn(() => 'blob:stub')
+    URL.revokeObjectURL = vi.fn()
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  }
+
+  it('encodes format, filter, sort, and column subset into the query string', async () => {
+    stubDownload()
+    fetchMock.mockResolvedValueOnce(downloadResponse([]))
+    const filter: FilterGroup = {
+      type: 'group',
+      combinator: 'and',
+      children: [{ type: 'condition', column: 'age', op: 'gt', value: 18 }],
+    }
+    await exportTableData('conn-1', 'users', 'csv', {
+      filter,
+      sort: [{ column: 'name', direction: 'asc' }],
+      columns: ['id', 'name'],
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
+    const qs = new URL(url as string, 'http://x').searchParams
+    expect(qs.get('format')).toBe('csv')
+    expect(JSON.parse(qs.get('filter')!)).toEqual(filter)
+    expect(JSON.parse(qs.get('sort')!)).toEqual([{ column: 'name', direction: 'asc' }])
+    expect(JSON.parse(qs.get('columns')!)).toEqual(['id', 'name'])
+  })
+
+  it('omits empty filter and reports bytes streamed', async () => {
+    stubDownload()
+    fetchMock.mockResolvedValueOnce(downloadResponse([{ id: 1 }]))
+    const result = await exportTableData('conn-1', 'users', 'json', {
+      filter: { type: 'group', combinator: 'and', children: [] },
+    })
+    const [url] = fetchMock.mock.calls[0]
+    const qs = new URL(url as string, 'http://x').searchParams
+    expect(qs.has('filter')).toBe(false)
+    expect(result.bytes).toBeGreaterThan(0)
+  })
+
+  it('throws ApiError on a failed export', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: { code: 'BAD_REQUEST', message: 'Unknown export column(s): nope' } }, { status: 400 }),
+    )
+    await expect(
+      exportTableData('conn-1', 'users', 'csv', { columns: ['nope'] }),
+    ).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('importTableData', () => {
+  it('POSTs the mapping, rows, and mode and parses the result envelope', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        dryRun: true,
+        mode: 'skip',
+        attempted: 3,
+        inserted: 2,
+        updated: 0,
+        conflicts: 1,
+      }),
+    )
+    const result = await importTableData('conn-1', 'users', {
+      columns: ['id', 'name'],
+      rows: [['1', 'Ann'], ['2', 'Bob'], ['3', 'Cy']],
+      mode: 'skip',
+      dryRun: true,
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/tables/users/import')
+    expect((init as RequestInit).method).toBe('POST')
+    expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
+    const body = JSON.parse((init as RequestInit).body as string)
+    expect(body.columns).toEqual(['id', 'name'])
+    expect(body.mode).toBe('skip')
+    expect(body.dryRun).toBe(true)
+    expect(result.conflicts).toBe(1)
+  })
+
+  it('throws ApiError when the import is rejected', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: 'DB_ERROR', message: 'duplicate key value violates unique constraint' } },
+        { status: 400 },
+      ),
+    )
+    await expect(
+      importTableData('conn-1', 'users', {
+        columns: ['id'],
+        rows: [['1']],
+        mode: 'insert',
+      }),
+    ).rejects.toBeInstanceOf(ApiError)
   })
 })

@@ -300,6 +300,92 @@ function triggerDownload(blob: Blob, fileName: string) {
   URL.revokeObjectURL(url)
 }
 
+export type ExportFormat = 'csv' | 'json' | 'sql'
+
+const EXPORT_EXTENSION: Record<ExportFormat, string> = {
+  csv: 'csv',
+  json: 'json',
+  sql: 'sql',
+}
+
+export interface ExportProgress {
+  bytes: number
+}
+
+export interface ExportTableOptions {
+  filter?: FilterGroup | null
+  sort?: SortEntry[] | null
+  /** Subset of columns to include, in order. Omit/empty ⇒ all columns. */
+  columns?: string[] | null
+  limit?: number
+}
+
+/**
+ * Stream a single table's rows to disk in the chosen format, respecting the
+ * supplied filter, sort, and column subset. The body is read incrementally so
+ * the browser never has to hold the whole table at once for large exports.
+ */
+export async function exportTableData(
+  connectionId: string,
+  tableName: string,
+  format: ExportFormat,
+  options: ExportTableOptions = {},
+  onProgress?: (p: ExportProgress) => void,
+  signal?: AbortSignal,
+): Promise<ExportProgress> {
+  const qs = new URLSearchParams()
+  qs.set('format', format)
+  if (options.filter && options.filter.children.length > 0) {
+    qs.set('filter', JSON.stringify(options.filter))
+  }
+  if (options.sort && options.sort.length > 0) {
+    qs.set('sort', JSON.stringify(options.sort))
+  }
+  if (options.columns && options.columns.length > 0) {
+    qs.set('columns', JSON.stringify(options.columns))
+  }
+  if (options.limit) qs.set('limit', String(options.limit))
+
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/export?${qs.toString()}`,
+    {
+      headers: { 'x-connection-id': connectionId },
+      credentials: 'same-origin',
+      signal,
+    },
+  )
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+
+  const fileName = `${tableName}.${EXPORT_EXTENSION[format]}`
+  const contentType = res.headers.get('Content-Type') ?? 'application/octet-stream'
+
+  if (!res.body) {
+    // Fallback for environments without ReadableStream.
+    const blob = await res.blob()
+    triggerDownload(blob, fileName)
+    onProgress?.({ bytes: blob.size })
+    return { bytes: blob.size }
+  }
+
+  const reader = res.body.getReader()
+  const chunks: BlobPart[] = []
+  let bytes = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    bytes += value.byteLength
+    onProgress?.({ bytes })
+  }
+
+  triggerDownload(new Blob(chunks, { type: contentType }), fileName)
+  onProgress?.({ bytes })
+  return { bytes }
+}
+
 export function listSchemas(connectionId: string, signal?: AbortSignal) {
   return api('/api/schemas', SchemasResponse, { connectionId, signal })
 }
@@ -310,6 +396,14 @@ export function listTables(connectionId: string, signal?: AbortSignal) {
 
 const ColumnMetaSchema = z.object({
   dataType: z.string(),
+  // Real Postgres type name (e.g. `int4`, `_text`, enum name). Older
+  // servers without this field still parse via `.optional()`.
+  udtName: z.string().optional(),
+  isNullable: z.boolean().optional(),
+  hasDefault: z.boolean().optional(),
+  // Raw default expression, surfaced so the insert form can ghost it. Older
+  // servers without the field still parse via `.nullish()`.
+  defaultValue: z.string().nullish(),
   isPrimaryKey: z.boolean(),
   isForeignKey: z.boolean(),
   foreignKeyRef: z
@@ -331,11 +425,35 @@ const TableDataResponse = z.object({
 })
 export type TableData = z.infer<typeof TableDataResponse>
 
+export type FilterOp =
+  | 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
+  | 'like' | 'ilike' | 'in' | 'nin'
+  | 'is_null' | 'is_not_null'
+  | 'jsonb_contains' | 'array_overlaps'
+
+export interface FilterCondition {
+  type: 'condition'
+  column: string
+  op: FilterOp
+  value?: unknown
+}
+
+export interface FilterGroup {
+  type: 'group'
+  combinator: 'and' | 'or'
+  children: Array<FilterCondition | FilterGroup>
+}
+
+export interface SortEntry {
+  column: string
+  direction: 'asc' | 'desc'
+}
+
 export interface TableQueryParams {
   page?: number
   limit?: number
-  sortColumn?: string | null
-  sortDirection?: 'asc' | 'desc'
+  sort?: SortEntry[] | null
+  filter?: FilterGroup | null
 }
 
 const SchemaColumnSchema = z.object({
@@ -366,6 +484,228 @@ export function getDatabaseSchema(connectionId: string, signal?: AbortSignal) {
   return api('/api/schema', SchemaResponse, { connectionId, signal })
 }
 
+// ---- Saved views ------------------------------------------------------------
+
+const FilterConditionApi = z.object({
+  type: z.literal('condition'),
+  column: z.string(),
+  op: z.string(),
+  value: z.unknown().optional(),
+})
+type FilterGroupApi = {
+  type: 'group'
+  combinator: 'and' | 'or'
+  children: Array<z.infer<typeof FilterConditionApi> | FilterGroupApi>
+}
+const FilterGroupApiSchema: z.ZodType<FilterGroupApi> = z.lazy(() =>
+  z.object({
+    type: z.literal('group'),
+    combinator: z.enum(['and', 'or']),
+    children: z.array(z.union([FilterConditionApi, FilterGroupApiSchema])),
+  }),
+)
+
+const SortEntryApi = z.object({
+  column: z.string(),
+  direction: z.enum(['asc', 'desc', 'ASC', 'DESC']),
+})
+
+const SavedViewSchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  tableName: z.string(),
+  name: z.string(),
+  filter: FilterGroupApiSchema.nullable().optional(),
+  sort: z.array(SortEntryApi).optional(),
+  visibleColumns: z.array(z.string()).nullable().optional(),
+  columnWidths: z.record(z.string(), z.number()).nullable().optional(),
+  timezone: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+export type SavedView = z.infer<typeof SavedViewSchema>
+
+const ListViewsResponse = z.object({ views: z.array(SavedViewSchema) })
+const ViewEnvelope = z.object({ view: SavedViewSchema })
+
+export interface SaveViewPayload {
+  connectionId: string
+  tableName: string
+  name: string
+  filter?: FilterGroup | null
+  sort?: SortEntry[]
+  visibleColumns?: string[] | null
+  columnWidths?: Record<string, number> | null
+  timezone?: string | null
+}
+
+export function listViews(
+  params: { connectionId?: string; tableName?: string } = {},
+  signal?: AbortSignal,
+) {
+  const qs = new URLSearchParams()
+  if (params.connectionId) qs.set('connectionId', params.connectionId)
+  if (params.tableName) qs.set('tableName', params.tableName)
+  const q = qs.toString()
+  return api(`/api/views${q ? '?' + q : ''}`, ListViewsResponse, { signal })
+}
+
+export async function createView(payload: SaveViewPayload): Promise<SavedView> {
+  const res = await fetch('/api/views', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return ViewEnvelope.parse(json).view
+}
+
+export async function updateView(
+  id: string,
+  patch: Partial<SaveViewPayload>,
+): Promise<SavedView> {
+  const res = await fetch(`/api/views/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return ViewEnvelope.parse(json).view
+}
+
+export async function deleteView(id: string): Promise<void> {
+  const res = await fetch(`/api/views/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+  })
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+}
+
+// ---- Inline row edit --------------------------------------------------------
+
+const UpdateRowResponse = z.object({
+  row: z.record(z.string(), z.unknown()),
+})
+
+export interface UpdateRowPayload {
+  where: Record<string, unknown>
+  set: Record<string, unknown>
+}
+
+export async function updateRow(
+  connectionId: string,
+  tableName: string,
+  payload: UpdateRowPayload,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/rows`,
+    {
+      method: 'PATCH',
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+      },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    },
+  )
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return UpdateRowResponse.parse(json).row
+}
+
+// ---- Row insert -------------------------------------------------------------
+
+const InsertRowResponse = z.object({
+  row: z.record(z.string(), z.unknown()),
+})
+
+export interface InsertRowPayload {
+  // Only the columns the user filled. Omitted columns take their DEFAULT;
+  // an explicit `null` maps to SQL NULL.
+  values: Record<string, unknown>
+}
+
+export async function insertRow(
+  connectionId: string,
+  tableName: string,
+  payload: InsertRowPayload,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/rows`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+      },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    },
+  )
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return InsertRowResponse.parse(json).row
+}
+
+// ---- CSV import -------------------------------------------------------------
+
+export type ImportMode = 'insert' | 'skip' | 'update'
+
+export interface ImportPayload {
+  /** Target columns, in order. */
+  columns: string[]
+  /** Each row's cells, aligned to `columns`. */
+  rows: unknown[][]
+  mode: ImportMode
+  /** ON CONFLICT key columns — required when `mode` is 'update'. */
+  conflictColumns?: string[]
+  /** Blank cell → NULL. Default true server-side. */
+  emptyAsNull?: boolean
+  /** Count only, then roll back. */
+  dryRun?: boolean
+}
+
+const ImportResultResponse = z.object({
+  dryRun: z.boolean(),
+  mode: z.enum(['insert', 'skip', 'update']),
+  attempted: z.number(),
+  inserted: z.number(),
+  updated: z.number(),
+  conflicts: z.number(),
+  batches: z.number().optional(),
+})
+export type ImportResult = z.infer<typeof ImportResultResponse>
+
+export async function importTableData(
+  connectionId: string,
+  tableName: string,
+  payload: ImportPayload,
+): Promise<ImportResult> {
+  const res = await fetch(
+    `/api/tables/${encodeURIComponent(tableName)}/import`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+      },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    },
+  )
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return ImportResultResponse.parse(json)
+}
+
 export function getTableData(
   connectionId: string,
   tableName: string,
@@ -375,14 +715,54 @@ export function getTableData(
   const qs = new URLSearchParams()
   if (params.page) qs.set('page', String(params.page))
   if (params.limit) qs.set('limit', String(params.limit))
-  if (params.sortColumn) {
-    qs.set('sortColumn', params.sortColumn)
-    qs.set('sortDirection', params.sortDirection ?? 'asc')
+  if (params.sort && params.sort.length > 0) {
+    qs.set('sort', JSON.stringify(params.sort))
+  }
+  if (params.filter && params.filter.children.length > 0) {
+    qs.set('filter', JSON.stringify(params.filter))
   }
   const query = qs.toString()
   return api(
     `/api/tables/${encodeURIComponent(tableName)}${query ? '?' + query : ''}`,
     TableDataResponse,
+    { connectionId, signal },
+  )
+}
+
+// ---- Per-column aggregations ------------------------------------------------
+
+// `fn` is one of the AggFn values in lib/aggSql; kept as a string here to avoid
+// a circular import (aggSql depends on this module for FilterGroup).
+export interface AggItem {
+  column: string
+  fn: string
+}
+
+const AggregateResponse = z.object({
+  results: z.array(
+    z.object({
+      column: z.string(),
+      fn: z.string(),
+      value: z.unknown(),
+    }),
+  ),
+})
+export type AggregateResult = z.infer<typeof AggregateResponse>
+
+export function getAggregates(
+  connectionId: string,
+  tableName: string,
+  params: { filter?: FilterGroup | null; aggs: AggItem[] },
+  signal?: AbortSignal,
+) {
+  const qs = new URLSearchParams()
+  if (params.filter && params.filter.children.length > 0) {
+    qs.set('filter', JSON.stringify(params.filter))
+  }
+  qs.set('aggs', JSON.stringify(params.aggs))
+  return api(
+    `/api/tables/${encodeURIComponent(tableName)}/aggregate?${qs.toString()}`,
+    AggregateResponse,
     { connectionId, signal },
   )
 }
