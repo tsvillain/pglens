@@ -9,11 +9,11 @@ import {
   type ReactNode,
 } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Check, Database, Play, RotateCcw, Sparkles, Undo2 } from 'lucide-react'
+import { Check, Database, Gauge, Play, RotateCcw, Sparkles, Undo2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Loading, Spinner } from '@/components/ui/spinner'
-import { DataGrid } from '@/components/DataGrid'
+import { QueryResults } from '@/components/QueryResults'
 import {
   ApiError,
   commitTx,
@@ -21,8 +21,6 @@ import {
   rollbackTx,
   runQuery,
   runTxQuery,
-  type ColumnMeta,
-  type QueryResult,
 } from '@/lib/api'
 import { registerSqlSupport, setActiveSchema } from '@/lib/sqlLanguage'
 import { applyParams, extractParamNames } from '@/lib/sqlParams'
@@ -33,31 +31,6 @@ import { type TxMode, useTransactionStore } from '@/store/transaction'
 const MonacoEditor = lazy(() =>
   import('@monaco-editor/react').then((m) => ({ default: m.default })),
 )
-
-/**
- * Derive grid column metadata from a raw query result. The server can't supply
- * PK/FK info for arbitrary SQL, so everything is plain and unsorted.
- */
-function buildColumnsFromResult(result: QueryResult): Record<string, ColumnMeta> {
-  const cols: Record<string, ColumnMeta> = {}
-  const names =
-    result.fields.length > 0
-      ? result.fields.map((f) => f.name)
-      : result.rows[0]
-        ? Object.keys(result.rows[0])
-        : []
-  for (const name of names) {
-    const f = result.fields.find((x) => x.name === name)
-    cols[name] = {
-      dataType: f?.dataTypeID ? `oid:${f.dataTypeID}` : '',
-      isPrimaryKey: false,
-      isForeignKey: false,
-      foreignKeyRef: null,
-      isUnique: false,
-    }
-  }
-  return cols
-}
 
 export interface SqlConsoleProps {
   connectionId: string
@@ -110,6 +83,10 @@ export function SqlConsole({
   const paramNames = useMemo(() => extractParamNames(value), [value])
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
 
+  // When on, Run times the statement with EXPLAIN ANALYZE and shows the
+  // parse/plan/execute breakdown instead of the rows (roadmap §5.4).
+  const [explain, setExplain] = useState(false)
+
   // Per-tab transaction state (roadmap §5.3). `txMode` is the Auto-commit ⇄
   // Transaction toggle; `txOpen` tracks whether a transaction is currently open
   // (drives Commit/Rollback enablement and the tab's "T" badge).
@@ -127,6 +104,8 @@ export function SqlConsole({
   paramValuesRef.current = paramValues
   const txModeRef = useRef(txMode)
   txModeRef.current = txMode
+  const explainRef = useRef(explain)
+  explainRef.current = explain
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -139,14 +118,15 @@ export function SqlConsole({
               return [applied.sql, applied.params] as const
             })()
           : ([sql, undefined] as const)
+      const opts = { explain: explainRef.current }
       if (txModeRef.current === 'transaction') {
         // BEGIN runs implicitly on the first statement — mark the tab as holding
         // a transaction up front so the badge/buttons reflect it even if the
         // statement itself errors (the transaction stays open server-side).
         setTxOpen(tabId, connectionId)
-        return runTxQuery(connectionId, tabId, text, params)
+        return runTxQuery(connectionId, tabId, text, params, opts)
       }
-      return runQuery(connectionId, text, params)
+      return runQuery(connectionId, text, params, opts)
     },
     onError: (err) => {
       // Reserve/BEGIN never happened if the connection is gone — clear the
@@ -186,10 +166,17 @@ export function SqlConsole({
     setParamValues((prev) => ({ ...prev, [name]: val }))
   }, [])
 
-  const columns = useMemo(
-    () => (mutation.data ? buildColumnsFromResult(mutation.data) : {}),
-    [mutation.data],
-  )
+  // Short run summary for the toolbar; QueryResults shows the per-result detail.
+  const summary = mutation.data
+    ? mutation.data.timing
+      ? `EXPLAIN ANALYZE · ${mutation.data.durationMs} ms`
+      : `${mutation.data.results.length} result${mutation.data.results.length === 1 ? '' : 's'} · ${mutation.data.durationMs} ms`
+    : null
+  // Name exported result files after the table when this is a table tab's
+  // Advanced mode, otherwise a generic name.
+  const exportBase = tabId.startsWith('table:')
+    ? tabId.slice('table:'.length)
+    : 'query-result'
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -207,9 +194,8 @@ export function SqlConsole({
             {txControlError
               ? txControlError.message
               : (toolbarLeft ??
-                (mutation.data
-                  ? `${mutation.data.rowCount ?? mutation.data.rows.length} rows · ${mutation.data.durationMs} ms`
-                  : 'Raw SQL · Cmd/Ctrl + Enter to run · Cmd/Ctrl + S to format'))}
+                summary ??
+                'Raw SQL · Cmd/Ctrl + Enter to run · Cmd/Ctrl + S to format')}
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -251,6 +237,15 @@ export function SqlConsole({
               <RotateCcw className="h-3.5 w-3.5" /> Reset from no-code
             </Button>
           )}
+          <Button
+            size="sm"
+            variant={explain ? 'default' : 'outline'}
+            aria-pressed={explain}
+            onClick={() => setExplain((v) => !v)}
+            title="Time the statement with EXPLAIN ANALYZE (parse / plan / execute)"
+          >
+            <Gauge className="h-3.5 w-3.5" /> Explain
+          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -336,21 +331,13 @@ export function SqlConsole({
               {(mutation.error as Error).message}
             </div>
           )}
-          {!mutation.error &&
-            mutation.data &&
-            (mutation.data.rows.length > 0 ? (
-              <DataGrid
-                rows={mutation.data.rows}
-                columns={columns}
-                sort={[]}
-                onSortChange={() => {}}
-              />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                OK · {mutation.data.rowCount ?? 0} rows affected ·{' '}
-                {mutation.data.durationMs} ms
-              </p>
-            ))}
+          {!mutation.error && mutation.data && (
+            <QueryResults
+              key={mutation.submittedAt}
+              result={mutation.data}
+              baseName={exportBase}
+            />
+          )}
           {!mutation.data && !mutation.error && (
             <p className="text-sm text-muted-foreground">
               Press Run (Cmd/Ctrl + Enter) to execute.

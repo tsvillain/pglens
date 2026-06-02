@@ -53,20 +53,62 @@ function createPoolWrapper(sqlClient) {
   return {
     query: async (queryText, params) => {
       const result = await sqlClient.unsafe(queryText, params || []);
-      return { rows: result, fields: result.columns || [], rowCount: result.count };
+      return { rows: result, fields: result.columns || [], rowCount: result.count, command: result.command };
     },
     /**
-     * Run `queryText` with `search_path` pinned to `schema` on a single
-     * reserved connection. `SET search_path` and the query must share one
-     * backend connection — issuing them as separate pool queries can land on
-     * different pooled connections, so the search_path would not apply.
+     * Run a list of statements from one SQL script (roadmap §5.4) sequentially
+     * on a single reserved backend, returning one result per statement. Sharing
+     * one backend means session state (temp tables, SET, etc.) carries across
+     * statements within the run, mirroring how a psql script behaves. Bound
+     * params apply to the first statement only — the route forbids params when
+     * there is more than one statement, since positional params can't span them.
+     * A statement error aborts the run and propagates (earlier statements in
+     * Auto-commit mode have already committed, as in psql).
      */
-    queryWithSchema: async (schema, queryText, params) => {
+    runStatements: async (schema, statements, params) => {
       const reserved = await sqlClient.reserve();
       try {
         await reserved.unsafe(`SET search_path TO ${quoteIdent(schema)}`);
-        const result = await reserved.unsafe(queryText, params || []);
-        return { rows: result, fields: result.columns || [], rowCount: result.count };
+        const results = [];
+        for (let i = 0; i < statements.length; i++) {
+          const started = Date.now();
+          const r = await reserved.unsafe(statements[i], i === 0 ? (params || []) : []);
+          results.push({
+            rows: r,
+            fields: r.columns || [],
+            rowCount: r.count ?? r.length ?? 0,
+            command: r.command || null,
+            durationMs: Date.now() - started,
+          });
+        }
+        return results;
+      } finally {
+        reserved.release();
+      }
+    },
+    /**
+     * Time a single statement with `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`
+     * (roadmap §5.4 timing breakdown). EXPLAIN ANALYZE *executes* the statement,
+     * so the whole probe runs inside a transaction we always roll back — for a
+     * write (INSERT/UPDATE/DELETE) this means the timing is measured without
+     * persisting any change. Returns the raw `EXPLAIN` rows for the caller to
+     * parse. (Transaction mode times the statement inside the user's own open
+     * transaction instead — see tx.js.)
+     */
+    explainAnalyze: async (schema, queryText, params) => {
+      const reserved = await sqlClient.reserve();
+      try {
+        await reserved.unsafe(`SET search_path TO ${quoteIdent(schema)}`);
+        await reserved.unsafe('BEGIN');
+        try {
+          const result = await reserved.unsafe(
+            `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${queryText}`,
+            params || [],
+          );
+          return { rows: result };
+        } finally {
+          try { await reserved.unsafe('ROLLBACK'); } catch { /* connection already gone */ }
+        }
       } finally {
         reserved.release();
       }
@@ -248,7 +290,7 @@ async function reserveConnection(connectionId) {
   return {
     query: async (queryText, params) => {
       const result = await reserved.unsafe(queryText, params || []);
-      return { rows: result, fields: result.columns || [], rowCount: result.count };
+      return { rows: result, fields: result.columns || [], rowCount: result.count, command: result.command };
     },
     release: () => reserved.release(),
   };

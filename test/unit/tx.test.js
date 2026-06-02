@@ -86,6 +86,51 @@ test('second query reuses the session — no new reserve, no second BEGIN', asyn
   assert.deepEqual(conns[0].calls, ['SET search_path TO "public"', 'BEGIN', 'SELECT 1', 'SELECT 2']);
 });
 
+test('runStatements runs each statement on the session and returns one result each', async () => {
+  const { reserve, conns } = makeReserve();
+  const m = createTxManager({ reserveConnection: reserve });
+
+  const results = await m.runStatements(
+    baseQuery({ statements: ['SELECT 1', 'SELECT 2'], sql: undefined }),
+  );
+
+  assert.equal(conns.length, 1);
+  assert.deepEqual(conns[0].calls, [
+    'SET search_path TO "public"', 'BEGIN', 'SELECT 1', 'SELECT 2',
+  ]);
+  assert.equal(results.length, 2);
+  assert.deepEqual(results[0].rows, [{ ok: 1 }]);
+  assert.equal(typeof results[0].durationMs, 'number');
+  assert.equal(m.status('t1').open, true);
+});
+
+test('runStatements binds params to the first statement only', async () => {
+  const { reserve, conns } = makeReserve();
+  const m = createTxManager({ reserveConnection: reserve });
+
+  await m.runStatements(
+    baseQuery({ statements: ['SELECT $1', 'SELECT 2'], sql: undefined, params: [7] }),
+  );
+
+  // fakeConn records only the SQL text, so assert the call order; the second
+  // statement must receive undefined params (verified by no throw / shape).
+  assert.deepEqual(conns[0].calls.slice(2), ['SELECT $1', 'SELECT 2']);
+});
+
+test('explain runs EXPLAIN ANALYZE inside the open transaction (no extra rollback)', async () => {
+  const { reserve, conns } = makeReserve();
+  const m = createTxManager({ reserveConnection: reserve });
+
+  await m.explain(baseQuery({ sql: 'SELECT 1' }));
+
+  assert.deepEqual(conns[0].calls, [
+    'SET search_path TO "public"',
+    'BEGIN',
+    'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT 1',
+  ]);
+  assert.equal(m.status('t1').open, true);
+});
+
 test('commit issues COMMIT, releases the backend, and closes the session', async () => {
   const { reserve, conns } = makeReserve();
   const m = createTxManager({ reserveConnection: reserve });

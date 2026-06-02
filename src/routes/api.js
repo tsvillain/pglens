@@ -22,6 +22,8 @@ const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
 const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('../db/export');
 const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/import');
+const { splitStatements } = require('../db/statements');
+const { extractExplainTiming } = require('../db/explain');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
@@ -62,6 +64,9 @@ const TableListQuery = z.object({
 const QueryBodySchema = z.object({
   sql: z.string().min(1),
   params: z.array(z.unknown()).optional(),
+  // When set, the (single) statement is timed with EXPLAIN ANALYZE instead of
+  // run normally — drives the §5.4 timing breakdown.
+  explain: z.boolean().optional(),
 });
 
 const FormatBodySchema = z.object({
@@ -1068,28 +1073,73 @@ router.delete('/views/:id', validate({ params: ViewIdParam }), (req, res) => {
 
 // ---- Raw-SQL escape hatch ---------------------------------------------------
 
+// Shape one statement's result for the wire. porsager exposes a column's type
+// OID as `.type`; we surface it as `dataTypeID` so the client can resolve a
+// type name (and pick the right cell renderer) for arbitrary SQL.
+function toResultDto(result) {
+  return {
+    rows: result.rows,
+    fields: (result.fields || []).map((f) => ({ name: f.name, dataTypeID: f.type })),
+    rowCount: result.rowCount ?? result.rows?.length ?? 0,
+    command: result.command ?? null,
+    durationMs: result.durationMs,
+  };
+}
+
+// Split the script and reject the param/explain combinations that can't run.
+// Returns the statement list, or sends a 400 and returns null.
+function prepareStatements(res, sql, params, explain) {
+  const statements = splitStatements(sql);
+  if (statements.length === 0) {
+    sendError(res, 400, codes.BAD_REQUEST, 'No SQL statement to run.');
+    return null;
+  }
+  if (explain && statements.length > 1) {
+    sendError(res, 400, codes.BAD_REQUEST, 'Explain analyze runs one statement at a time.');
+    return null;
+  }
+  if (!explain && statements.length > 1 && params && params.length > 0) {
+    sendError(res, 400, codes.BAD_REQUEST, 'Parameters are only supported with a single statement.');
+    return null;
+  }
+  return statements;
+}
+
 router.post('/query',
   requireConnection,
   validate({ body: QueryBodySchema }),
   async (req, res) => {
-    const { sql, params } = req.body;
+    const { sql, params, explain } = req.body;
     const pool = req.pool;
     const schema = req.schema;
     const started = Date.now();
     try {
-      // search_path + the user's SQL must run on one reserved connection,
-      // otherwise the SET can land on a different pooled backend.
-      const result = await pool.queryWithSchema(schema, sql, params);
+      const statements = prepareStatements(res, sql, params, explain);
+      if (!statements) return;
+
+      if (explain) {
+        // EXPLAIN ANALYZE runs inside a rolled-back transaction (see
+        // pool.explainAnalyze) so timing a write never mutates data.
+        const { rows } = await pool.explainAnalyze(schema, statements[0], params);
+        const timing = extractExplainTiming(rows);
+        return res.json({ results: [], timing, durationMs: Date.now() - started });
+      }
+
+      // search_path + the user's SQL share one reserved backend (otherwise the
+      // SET could land on a different pooled connection), and every statement of
+      // a multi-statement script runs on that same backend.
+      const results = await pool.runStatements(schema, statements, params);
       // Raw SQL may include DDL — drop cached metadata for this connection.
       invalidateMetadata(req.connectionId);
-      const fields = (result.fields || []).map(f => ({ name: f.name, dataTypeID: f.dataTypeID }));
       res.json({
-        rows: result.rows,
-        fields,
-        rowCount: result.rowCount ?? result.rows?.length ?? 0,
+        results: results.map(toResultDto),
         durationMs: Date.now() - started,
       });
     } catch (err) {
+      // A multi-statement script can fail partway after an earlier DDL statement
+      // has already committed (Auto-commit), so drop cached metadata even on
+      // error — re-introspecting is cheap and avoids a stale schema.
+      invalidateMetadata(req.connectionId);
       logger.warn({ err: err.message }, 'query failed');
       return sendError(res, 400, codes.DB_ERROR, err.message, { hint: `${Date.now() - started}ms` });
     }
@@ -1109,6 +1159,7 @@ const TxQueryBodySchema = z.object({
   tabId: TabIdSchema,
   sql: z.string().min(1),
   params: z.array(z.unknown()).optional(),
+  explain: z.boolean().optional(),
 });
 
 const TxControlBodySchema = z.object({ tabId: TabIdSchema });
@@ -1129,21 +1180,40 @@ router.post('/tx/query',
   requireConnection,
   validate({ body: TxQueryBodySchema }),
   async (req, res) => {
-    const { tabId, sql, params } = req.body;
+    const { tabId, sql, params, explain } = req.body;
     const started = Date.now();
     try {
-      const result = await txManager.runQuery({
+      const statements = prepareStatements(res, sql, params, explain);
+      if (!statements) return;
+
+      if (explain) {
+        // Timed inside the tab's own open transaction (the user commits/rolls
+        // back), so unlike Auto-commit it is not self-rolled-back.
+        const rows = await txManager.explain({
+          connectionId: req.connectionId,
+          tabId,
+          schema: req.schema,
+          sql: statements[0],
+          params,
+        });
+        const timing = extractExplainTiming(rows);
+        return res.json({
+          results: [],
+          timing,
+          durationMs: Date.now() - started,
+          txOpen: txManager.status(tabId).open,
+        });
+      }
+
+      const results = await txManager.runStatements({
         connectionId: req.connectionId,
         tabId,
         schema: req.schema,
-        sql,
+        statements,
         params,
       });
-      const fields = (result.fields || []).map((f) => ({ name: f.name, dataTypeID: f.dataTypeID }));
       res.json({
-        rows: result.rows,
-        fields,
-        rowCount: result.rowCount ?? result.rows?.length ?? 0,
+        results: results.map(toResultDto),
         durationMs: Date.now() - started,
         // BEGIN has run by the time the user's statement executes, so the tab
         // holds a transaction even when that statement errored (handled below).

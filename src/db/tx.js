@@ -135,6 +135,24 @@ function createTxManager({ reserveConnection: reserve, idleTimeoutMs = IDLE_TIME
     return session;
   }
 
+  // Run `fn` as the session's exclusive in-flight statement. Rejects a
+  // concurrent query, pauses the idle timer for the duration, and re-arms it
+  // afterward. On error the session is left open so the user can roll back the
+  // aborted transaction.
+  async function withBusy(session, fn) {
+    if (session.busy) {
+      throw conflict('A query is already running in this transaction.');
+    }
+    session.busy = true;
+    clearIdle(session);
+    try {
+      return await fn();
+    } finally {
+      session.busy = false;
+      if (sessions.get(session.tabId) === session) armIdle(session);
+    }
+  }
+
   /**
    * Run a statement inside the tab's transaction, opening it (implicit BEGIN) on
    * first use. On a statement error the session is left open so the user can
@@ -142,17 +160,51 @@ function createTxManager({ reserveConnection: reserve, idleTimeoutMs = IDLE_TIME
    */
   async function runQuery({ connectionId, tabId, schema, sql, params }) {
     const session = await getSession(connectionId, tabId, schema);
-    if (session.busy) {
-      throw conflict('A query is already running in this transaction.');
-    }
-    session.busy = true;
-    clearIdle(session);
-    try {
-      return await session.reserved.query(sql, params);
-    } finally {
-      session.busy = false;
-      if (sessions.get(tabId) === session) armIdle(session);
-    }
+    return withBusy(session, () => session.reserved.query(sql, params));
+  }
+
+  /**
+   * Multi-statement variant of `runQuery` (roadmap §5.4): run each statement of
+   * a script on the tab's backend, in order, within the open transaction, and
+   * return one `{ rows, fields, rowCount, command, durationMs }` per statement.
+   * A failing statement aborts the run (the transaction enters the failed state;
+   * the user rolls it back).
+   */
+  async function runStatements({ connectionId, tabId, schema, statements, params }) {
+    const session = await getSession(connectionId, tabId, schema);
+    return withBusy(session, async () => {
+      const results = [];
+      for (let i = 0; i < statements.length; i++) {
+        const started = Date.now();
+        const r = await session.reserved.query(statements[i], i === 0 ? params : undefined);
+        results.push({
+          rows: r.rows,
+          fields: r.fields,
+          rowCount: r.rowCount,
+          command: r.command ?? null,
+          durationMs: Date.now() - started,
+        });
+      }
+      return results;
+    });
+  }
+
+  /**
+   * Time one statement with `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` inside the
+   * tab's open transaction (roadmap §5.4). Unlike Auto-commit mode it is NOT
+   * wrapped in its own rollback — the statement executes within the user's
+   * transaction, which they commit or roll back themselves. Returns the raw
+   * EXPLAIN rows for the caller to parse.
+   */
+  async function explain({ connectionId, tabId, schema, sql, params }) {
+    const session = await getSession(connectionId, tabId, schema);
+    return withBusy(session, async () => {
+      const r = await session.reserved.query(
+        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`,
+        params,
+      );
+      return r.rows;
+    });
   }
 
   // COMMIT / ROLLBACK. Propagates a failing COMMIT (e.g. deferred constraint) so
@@ -197,7 +249,7 @@ function createTxManager({ reserveConnection: reserve, idleTimeoutMs = IDLE_TIME
     await Promise.all(victims.map((s) => teardownQuiet(s, 'ROLLBACK')));
   }
 
-  return { runQuery, commit, rollback, status, disposeForConnection };
+  return { runQuery, runStatements, explain, commit, rollback, status, disposeForConnection };
 }
 
 // Singleton wired to the real connection pool. Registers a pool-close hook so

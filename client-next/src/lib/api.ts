@@ -161,20 +161,47 @@ export function connect(payload: ConnectPayload) {
   return postJson('/api/connect', payload, ConnectResponse)
 }
 
-const QueryResponse = z.object({
+// One statement's result set (roadmap §5.4 — a multi-statement script yields
+// one of these per statement, each its own result tab).
+const StatementResultSchema = z.object({
   rows: z.array(z.record(z.string(), z.unknown())),
   fields: z.array(
     z.object({ name: z.string(), dataTypeID: z.number().optional() }),
   ),
   rowCount: z.number().nullable(),
+  // The completed command tag (SELECT / INSERT / UPDATE / …), used to label the
+  // result tab. Null for servers/statements that don't report one.
+  command: z.string().nullable().optional(),
   durationMs: z.number(),
 })
+export type StatementResult = z.infer<typeof StatementResultSchema>
+
+// EXPLAIN ANALYZE timing breakdown (roadmap §5.4). `plan` is the raw FORMAT JSON
+// plan, kept for the (future §6.3) visualizer.
+const ExplainTimingSchema = z.object({
+  planningMs: z.number().nullable(),
+  executionMs: z.number().nullable(),
+  plan: z.unknown().nullable(),
+})
+export type ExplainTiming = z.infer<typeof ExplainTimingSchema>
+
+const QueryResponse = z.object({
+  results: z.array(StatementResultSchema),
+  durationMs: z.number(),
+  timing: ExplainTimingSchema.optional(),
+})
 export type QueryResult = z.infer<typeof QueryResponse>
+
+export interface RunQueryOptions {
+  /** Time the (single) statement with EXPLAIN ANALYZE instead of running it. */
+  explain?: boolean
+}
 
 export async function runQuery(
   connectionId: string,
   sql: string,
   params?: unknown[],
+  options: RunQueryOptions = {},
 ): Promise<QueryResult> {
   const res = await fetch('/api/query', {
     method: 'POST',
@@ -182,7 +209,7 @@ export async function runQuery(
       'content-type': 'application/json',
       'x-connection-id': connectionId,
     },
-    body: JSON.stringify({ sql, params }),
+    body: JSON.stringify({ sql, params, explain: options.explain || undefined }),
     credentials: 'same-origin',
   })
   const json = await res.json().catch(() => null)
@@ -196,21 +223,22 @@ const TxQueryResponse = QueryResponse.extend({ txOpen: z.boolean() })
 export type TxQueryResult = z.infer<typeof TxQueryResponse>
 
 /**
- * Run a statement inside the tab's transaction. BEGIN runs implicitly on the
- * first call for a tab; the same dedicated backend serves every subsequent
- * statement until commit/rollback. `txOpen` reflects whether the tab still
- * holds a transaction afterward.
+ * Run a statement (or multi-statement script) inside the tab's transaction.
+ * BEGIN runs implicitly on the first call for a tab; the same dedicated backend
+ * serves every subsequent statement until commit/rollback. `txOpen` reflects
+ * whether the tab still holds a transaction afterward.
  */
 export async function runTxQuery(
   connectionId: string,
   tabId: string,
   sql: string,
   params?: unknown[],
+  options: RunQueryOptions = {},
 ): Promise<TxQueryResult> {
   const res = await fetch('/api/tx/query', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
-    body: JSON.stringify({ tabId, sql, params }),
+    body: JSON.stringify({ tabId, sql, params, explain: options.explain || undefined }),
     credentials: 'same-origin',
   })
   const json = await res.json().catch(() => null)
