@@ -1,10 +1,15 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { X, Home, Table as TableIcon, Terminal, GitBranch } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
+import { Dialog } from '@/components/ui/dialog'
+import { Spinner } from '@/components/ui/spinner'
+import { rollbackTx } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { tabId, tabLabel, tabRoute, useTabsStore, type Tab } from '@/store/tabs'
 import { useTabModeStore } from '@/store/tabMode'
+import { useTransactionStore } from '@/store/transaction'
 
 function routeToTab(pathname: string): Tab {
   if (pathname === '/' || pathname === '') return { kind: 'home' }
@@ -33,10 +38,53 @@ export function TabBar() {
   const sync = useTabsStore((s) => s.syncFromRoute)
   const close = useTabsStore((s) => s.close)
 
+  // Per-tab open-transaction state (roadmap §5.3): drives the "T" badge and the
+  // close-confirmation modal.
+  const txOpen = useTransactionStore((s) => s.open)
+  const txConnId = useTransactionStore((s) => s.connectionId)
+  const resetTx = useTransactionStore((s) => s.reset)
+
+  // Tab id awaiting a close confirmation because it holds an open transaction.
+  const [pendingClose, setPendingClose] = useState<string | null>(null)
+  const [rollingBack, setRollingBack] = useState(false)
+
   // Mirror URL → tabs so back/forward + deep links register as tabs.
   useEffect(() => {
     sync(routeToTab(pathname))
   }, [pathname, sync])
+
+  // Drop a tab's per-tab state and close it, navigating to whatever's left.
+  const finalizeClose = (id: string) => {
+    useTabModeStore.getState().reset(id)
+    resetTx(id)
+    const next = close(id)
+    navigate({ to: next ? tabRoute(next) : '/' })
+  }
+
+  // Closing a tab with an open transaction asks first (roadmap §5.3).
+  const requestClose = (id: string) => {
+    if (txOpen[id]) setPendingClose(id)
+    else finalizeClose(id)
+  }
+
+  const confirmRollbackClose = async () => {
+    const id = pendingClose
+    if (!id) return
+    setRollingBack(true)
+    try {
+      const cid = txConnId[id]
+      // Best-effort: roll back the held transaction so its backend is freed
+      // immediately. The server's idle timeout reclaims it regardless if this
+      // fails (e.g. the connection is already gone).
+      if (cid) await rollbackTx(cid, id)
+    } catch {
+      /* ignore — idle timeout is the backstop */
+    } finally {
+      setRollingBack(false)
+      setPendingClose(null)
+      finalizeClose(id)
+    }
+  }
 
   if (tabs.length === 0) return null
 
@@ -46,6 +94,7 @@ export function TabBar() {
         const id = tabId(t)
         const Icon = tabIcon(t)
         const isActive = id === activeId
+        const hasTx = !!txOpen[id]
         return (
           <div
             key={id}
@@ -62,14 +111,18 @@ export function TabBar() {
             >
               <Icon className="h-3.5 w-3.5" />
               <span className="max-w-[180px] truncate">{tabLabel(t)}</span>
+              {hasTx && (
+                <span
+                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-amber-500/20 text-[10px] font-bold text-amber-600 dark:text-amber-400"
+                  title="Open transaction"
+                  aria-label="Open transaction"
+                >
+                  T
+                </span>
+              )}
             </button>
             <button
-              onClick={() => {
-                // Drop any per-tab Advanced mode/SQL so a reopened tab starts clean.
-                useTabModeStore.getState().reset(id)
-                const next = close(id)
-                navigate({ to: next ? tabRoute(next) : '/' })
-              }}
+              onClick={() => requestClose(id)}
               className="rounded p-0.5 opacity-0 transition hover:bg-accent group-hover:opacity-100"
               aria-label={`Close ${tabLabel(t)}`}
             >
@@ -78,6 +131,39 @@ export function TabBar() {
           </div>
         )
       })}
+
+      <Dialog
+        open={pendingClose !== null}
+        onClose={() => !rollingBack && setPendingClose(null)}
+        title="Discard open transaction?"
+        footer={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingClose(null)}
+              disabled={rollingBack}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={confirmRollbackClose}
+              disabled={rollingBack}
+            >
+              {rollingBack && <Spinner aria-label="Rolling back" />}
+              Roll back & close
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-muted-foreground">
+          This tab has an uncommitted transaction. Closing it will{' '}
+          <span className="font-medium text-foreground">ROLLBACK</span> the
+          transaction and discard its changes.
+        </p>
+      </Dialog>
     </div>
   )
 }

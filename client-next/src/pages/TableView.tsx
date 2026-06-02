@@ -386,6 +386,7 @@ export function TableView() {
         <div className="min-h-0 flex-1">
           <SqlConsole
             connectionId={connectionId}
+            tabId={tid}
             value={advancedSql ?? generatedSql}
             onChange={(v) => setTabSql(tid, v)}
             onRegenerate={() => setTabSql(tid, generatedSql)}

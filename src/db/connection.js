@@ -27,6 +27,28 @@ const {
 //   meta = { protocol, username, host, port, database, params, password? (in mem only) }
 const connections = new Map();
 
+// Listeners run *before* a pool is ended (on disconnect, update, or shutdown).
+// Used by the transaction-session manager to roll back and release any reserved
+// backends so `pool.end()` doesn't hang waiting on a checked-out connection.
+// Kept here (rather than connection.js requiring tx.js) so the dependency only
+// points one way: tx.js → connection.js.
+const closeListeners = [];
+
+function onPoolClosing(fn) {
+  closeListeners.push(fn);
+}
+
+// `connectionId === null` means "every connection is closing" (full shutdown).
+async function notifyClosing(connectionId) {
+  for (const fn of closeListeners) {
+    try {
+      await fn(connectionId);
+    } catch (err) {
+      logger.warn({ err: err.message }, 'pool-closing listener failed');
+    }
+  }
+}
+
 function createPoolWrapper(sqlClient) {
   return {
     query: async (queryText, params) => {
@@ -188,6 +210,8 @@ async function updateConnection(id, connectionString, sslMode, name, schema = 'p
   }
 
   const sql = await openPool(meta, password, sslMode);
+  // Tear down transaction sessions on the old backend before swapping pools.
+  await notifyClosing(id);
   await existing.pool.end();
 
   const finalName = name || meta.database || existing.name;
@@ -207,6 +231,27 @@ function checkConnection(connectionId) {
 function getPool(connectionId) {
   const conn = connections.get(connectionId);
   return conn ? createPoolWrapper(conn.pool) : null;
+}
+
+/**
+ * Check out a single dedicated backend from the connection's pool for the life
+ * of a transaction (roadmap §5.3). Unlike the pooled `query()`, every statement
+ * on the returned handle runs on the *same* Postgres backend, so BEGIN, the
+ * user's statements, and COMMIT/ROLLBACK all share one transaction. The caller
+ * MUST `release()` it (commit, rollback, idle timeout, or pool close) — a held
+ * backend is unavailable to the rest of the pool until released.
+ */
+async function reserveConnection(connectionId) {
+  const conn = connections.get(connectionId);
+  if (!conn) return null;
+  const reserved = await conn.pool.reserve();
+  return {
+    query: async (queryText, params) => {
+      const result = await reserved.unsafe(queryText, params || []);
+      return { rows: result, fields: result.columns || [], rowCount: result.count };
+    },
+    release: () => reserved.release(),
+  };
 }
 
 function getConnections() {
@@ -232,12 +277,15 @@ async function closePool(connectionId) {
   if (connectionId) {
     const conn = connections.get(connectionId);
     if (conn) {
+      // Roll back + release any reserved backends first, or pool.end() blocks.
+      await notifyClosing(connectionId);
       await conn.pool.end();
       connections.delete(connectionId);
       await deletePassword(connectionId);
       saveConnectionsToFile();
     }
   } else {
+    await notifyClosing(null);
     await Promise.all([...connections.values()].map(c => c.pool.end()));
     connections.clear();
   }
@@ -356,6 +404,8 @@ function getConnectionString(connectionId) {
 module.exports = {
   createPool,
   getPool,
+  reserveConnection,
+  onPoolClosing,
   closePool,
   checkConnection,
   getConnections,

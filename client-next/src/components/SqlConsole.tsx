@@ -9,20 +9,26 @@ import {
   type ReactNode,
 } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Play, RotateCcw, Sparkles } from 'lucide-react'
+import { Check, Database, Play, RotateCcw, Sparkles, Undo2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Loading, Spinner } from '@/components/ui/spinner'
 import { DataGrid } from '@/components/DataGrid'
 import {
+  ApiError,
+  commitTx,
   getDatabaseSchema,
+  rollbackTx,
   runQuery,
+  runTxQuery,
   type ColumnMeta,
   type QueryResult,
 } from '@/lib/api'
 import { registerSqlSupport, setActiveSchema } from '@/lib/sqlLanguage'
 import { applyParams, extractParamNames } from '@/lib/sqlParams'
+import { cn } from '@/lib/utils'
 import { useEffectiveTheme } from '@/store/theme'
+import { type TxMode, useTransactionStore } from '@/store/transaction'
 
 const MonacoEditor = lazy(() =>
   import('@monaco-editor/react').then((m) => ({ default: m.default })),
@@ -55,6 +61,8 @@ function buildColumnsFromResult(result: QueryResult): Record<string, ColumnMeta>
 
 export interface SqlConsoleProps {
   connectionId: string
+  /** Tab id — keys the per-tab transaction session (roadmap §5.3). */
+  tabId: string
   /** Controlled SQL text. */
   value: string
   onChange: (sql: string) => void
@@ -72,6 +80,7 @@ export interface SqlConsoleProps {
  */
 export function SqlConsole({
   connectionId,
+  tabId,
   value,
   onChange,
   toolbarLeft,
@@ -101,24 +110,72 @@ export function SqlConsole({
   const paramNames = useMemo(() => extractParamNames(value), [value])
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
 
+  // Per-tab transaction state (roadmap §5.3). `txMode` is the Auto-commit ⇄
+  // Transaction toggle; `txOpen` tracks whether a transaction is currently open
+  // (drives Commit/Rollback enablement and the tab's "T" badge).
+  const txMode = useTransactionStore((s) => s.mode[tabId] ?? 'autocommit')
+  const txOpen = useTransactionStore((s) => s.open[tabId] ?? false)
+  const setTxMode = useTransactionStore((s) => s.setMode)
+  const setTxOpen = useTransactionStore((s) => s.setOpen)
+  const setTxClosed = useTransactionStore((s) => s.setClosed)
+
   // Mirror live values into refs so the mount-time Monaco keybindings always
-  // read the current SQL/params, not the snapshot captured at mount.
+  // read the current SQL/params/mode, not the snapshot captured at mount.
   const valueRef = useRef(value)
   valueRef.current = value
   const paramValuesRef = useRef(paramValues)
   paramValuesRef.current = paramValues
+  const txModeRef = useRef(txMode)
+  txModeRef.current = txMode
 
   const mutation = useMutation({
     mutationFn: () => {
       const sql = valueRef.current
       const names = extractParamNames(sql)
-      if (names.length > 0) {
-        const { sql: text, params } = applyParams(sql, paramValuesRef.current)
-        return runQuery(connectionId, text, params)
+      const [text, params] =
+        names.length > 0
+          ? (() => {
+              const applied = applyParams(sql, paramValuesRef.current)
+              return [applied.sql, applied.params] as const
+            })()
+          : ([sql, undefined] as const)
+      if (txModeRef.current === 'transaction') {
+        // BEGIN runs implicitly on the first statement — mark the tab as holding
+        // a transaction up front so the badge/buttons reflect it even if the
+        // statement itself errors (the transaction stays open server-side).
+        setTxOpen(tabId, connectionId)
+        return runTxQuery(connectionId, tabId, text, params)
       }
-      return runQuery(connectionId, sql)
+      return runQuery(connectionId, text, params)
+    },
+    onError: (err) => {
+      // Reserve/BEGIN never happened if the connection is gone — clear the
+      // optimistic open flag. Other errors leave the transaction open to roll back.
+      if (txModeRef.current === 'transaction' && (err as ApiError).code === 'NO_CONNECTION') {
+        setTxClosed(tabId)
+      }
     },
   })
+
+  const commitMutation = useMutation({
+    mutationFn: () => commitTx(connectionId, tabId),
+    onSuccess: () => setTxClosed(tabId),
+  })
+  const rollbackMutation = useMutation({
+    mutationFn: () => rollbackTx(connectionId, tabId),
+    onSuccess: () => setTxClosed(tabId),
+  })
+  const txControlPending = commitMutation.isPending || rollbackMutation.isPending
+  const txControlError =
+    (commitMutation.error as Error | null) ?? (rollbackMutation.error as Error | null)
+
+  // Flip the Auto-commit ⇄ Transaction toggle. Switching back to Auto-commit is
+  // blocked while a transaction is open — the user must Commit or Rollback first
+  // so a held backend is never silently stranded.
+  const switchTxMode = (next: TxMode) => {
+    if (next === 'autocommit' && txOpen) return
+    setTxMode(tabId, next)
+  }
   // Stable handle for the Monaco keybinding captured at mount.
   const runRef = useRef(() => mutation.mutate())
   runRef.current = () => mutation.mutate()
@@ -136,14 +193,59 @@ export function SqlConsole({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <div className="min-w-0 text-xs text-muted-foreground">
-          {toolbarLeft ??
-            (mutation.data
-              ? `${mutation.data.rowCount ?? mutation.data.rows.length} rows · ${mutation.data.durationMs} ms`
-              : 'Raw SQL · Cmd/Ctrl + Enter to run · Cmd/Ctrl + S to format')}
+      <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2">
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          {txOpen && (
+            <span
+              className="flex shrink-0 items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-400"
+              title="An uncommitted transaction is open on this tab"
+            >
+              <Database className="h-3 w-3" /> Transaction open
+            </span>
+          )}
+          <span className="truncate">
+            {txControlError
+              ? txControlError.message
+              : (toolbarLeft ??
+                (mutation.data
+                  ? `${mutation.data.rowCount ?? mutation.data.rows.length} rows · ${mutation.data.durationMs} ms`
+                  : 'Raw SQL · Cmd/Ctrl + Enter to run · Cmd/Ctrl + S to format'))}
+          </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
+          <TxToggle mode={txMode} txOpen={txOpen} onChange={switchTxMode} />
+          {txMode === 'transaction' && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => commitMutation.mutate()}
+                disabled={!txOpen || txControlPending || mutation.isPending}
+                title="COMMIT the open transaction"
+              >
+                {commitMutation.isPending ? (
+                  <Spinner aria-label="Committing" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+                Commit
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => rollbackMutation.mutate()}
+                disabled={!txOpen || txControlPending || mutation.isPending}
+                title="ROLLBACK the open transaction"
+              >
+                {rollbackMutation.isPending ? (
+                  <Spinner aria-label="Rolling back" />
+                ) : (
+                  <Undo2 className="h-3.5 w-3.5" />
+                )}
+                Rollback
+              </Button>
+            </>
+          )}
           {onRegenerate && (
             <Button size="sm" variant="outline" onClick={onRegenerate}>
               <RotateCcw className="h-3.5 w-3.5" /> Reset from no-code
@@ -256,6 +358,57 @@ export function SqlConsole({
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * `[ Auto-commit | Transaction ]` segmented switch (roadmap §5.3). Switching
+ * back to Auto-commit is disabled while a transaction is open so the user can't
+ * strand a held backend — they must Commit or Rollback first.
+ */
+function TxToggle({
+  mode,
+  txOpen,
+  onChange,
+}: {
+  mode: TxMode
+  txOpen: boolean
+  onChange: (mode: TxMode) => void
+}) {
+  const options: Array<{ value: TxMode; label: string }> = [
+    { value: 'autocommit', label: 'Auto-commit' },
+    { value: 'transaction', label: 'Transaction' },
+  ]
+  return (
+    <div
+      role="tablist"
+      aria-label="Transaction mode"
+      className="inline-flex rounded-md border border-border bg-muted/40 p-0.5 text-xs"
+    >
+      {options.map(({ value, label }) => {
+        const active = mode === value
+        const blocked = value === 'autocommit' && txOpen && mode !== 'autocommit'
+        return (
+          <button
+            key={value}
+            role="tab"
+            aria-selected={active}
+            disabled={blocked}
+            onClick={() => onChange(value)}
+            title={blocked ? 'Commit or roll back the open transaction first' : undefined}
+            className={cn(
+              'rounded px-2.5 py-1 transition',
+              active
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+              blocked && 'cursor-not-allowed opacity-40 hover:text-muted-foreground',
+            )}
+          >
+            {label}
+          </button>
+        )
+      })}
     </div>
   )
 }

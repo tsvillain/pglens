@@ -27,7 +27,12 @@ export function QueryRunner() {
         <p className="text-xs text-muted-foreground">Advanced mode (raw SQL)</p>
       </header>
       <div className="min-h-0 flex-1">
-        <SqlConsole connectionId={connectionId} value={sql} onChange={setSql} />
+        <SqlConsole
+          connectionId={connectionId}
+          tabId="query"
+          value={sql}
+          onChange={setSql}
+        />
       </div>
     </div>
   )

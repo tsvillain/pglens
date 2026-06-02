@@ -22,6 +22,7 @@ const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
 const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('../db/export');
 const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/import');
+const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
@@ -1092,6 +1093,101 @@ router.post('/query',
       logger.warn({ err: err.message }, 'query failed');
       return sendError(res, 400, codes.DB_ERROR, err.message, { hint: `${Date.now() - started}ms` });
     }
+  });
+
+// ---- Transaction mode (roadmap §5.3) ---------------------------------------
+//
+// An Advanced tab in Transaction mode holds one dedicated backend for the life
+// of the transaction. BEGIN runs implicitly on the first `/tx/query`; COMMIT /
+// ROLLBACK run on the same backend and release it. Sessions are keyed by tab id
+// (the auth token scopes the whole map to this install) and a session is bound
+// to the connection it opened against.
+
+const TabIdSchema = z.string().min(1).max(255).refine((s) => !s.includes('\0'), 'null byte');
+
+const TxQueryBodySchema = z.object({
+  tabId: TabIdSchema,
+  sql: z.string().min(1),
+  params: z.array(z.unknown()).optional(),
+});
+
+const TxControlBodySchema = z.object({ tabId: TabIdSchema });
+
+// Map a tx-manager error to the right envelope: 409 for state conflicts
+// (wrong connection / concurrent query), 503 when the connection is gone,
+// otherwise a Postgres error surfaced from the statement.
+function txErrorResponse(res, err) {
+  const status = err.statusCode || 400;
+  const code =
+    err.code === 'CONFLICT' ? codes.CONFLICT
+      : err.code === 'NO_CONNECTION' ? codes.NO_CONNECTION
+        : codes.DB_ERROR;
+  return sendError(res, status, code, err.message);
+}
+
+router.post('/tx/query',
+  requireConnection,
+  validate({ body: TxQueryBodySchema }),
+  async (req, res) => {
+    const { tabId, sql, params } = req.body;
+    const started = Date.now();
+    try {
+      const result = await txManager.runQuery({
+        connectionId: req.connectionId,
+        tabId,
+        schema: req.schema,
+        sql,
+        params,
+      });
+      const fields = (result.fields || []).map((f) => ({ name: f.name, dataTypeID: f.dataTypeID }));
+      res.json({
+        rows: result.rows,
+        fields,
+        rowCount: result.rowCount ?? result.rows?.length ?? 0,
+        durationMs: Date.now() - started,
+        // BEGIN has run by the time the user's statement executes, so the tab
+        // holds a transaction even when that statement errored (handled below).
+        txOpen: txManager.status(tabId).open,
+      });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId }, 'tx query failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.post('/tx/commit',
+  requireConnection,
+  validate({ body: TxControlBodySchema }),
+  async (req, res) => {
+    try {
+      const { hadTransaction } = await txManager.commit(req.connectionId, req.body.tabId);
+      // Committed DDL may now be visible to pooled reads — drop cached metadata.
+      if (hadTransaction) invalidateMetadata(req.connectionId);
+      res.json({ committed: true, hadTransaction });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId: req.body.tabId }, 'tx commit failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.post('/tx/rollback',
+  requireConnection,
+  validate({ body: TxControlBodySchema }),
+  async (req, res) => {
+    try {
+      const { hadTransaction } = await txManager.rollback(req.connectionId, req.body.tabId);
+      res.json({ rolledBack: true, hadTransaction });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId: req.body.tabId }, 'tx rollback failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.get('/tx/status',
+  requireConnection,
+  validate({ query: z.object({ tabId: TabIdSchema }) }),
+  (req, res) => {
+    res.json(txManager.status(req.query.tabId));
   });
 
 // Pretty-print SQL for the Advanced-mode editor (roadmap §5.2 "format on save").

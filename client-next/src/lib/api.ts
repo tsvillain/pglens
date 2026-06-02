@@ -190,6 +190,64 @@ export async function runQuery(
   return QueryResponse.parse(json)
 }
 
+// ---- Transaction mode (roadmap §5.3) ----------------------------------------
+
+const TxQueryResponse = QueryResponse.extend({ txOpen: z.boolean() })
+export type TxQueryResult = z.infer<typeof TxQueryResponse>
+
+/**
+ * Run a statement inside the tab's transaction. BEGIN runs implicitly on the
+ * first call for a tab; the same dedicated backend serves every subsequent
+ * statement until commit/rollback. `txOpen` reflects whether the tab still
+ * holds a transaction afterward.
+ */
+export async function runTxQuery(
+  connectionId: string,
+  tabId: string,
+  sql: string,
+  params?: unknown[],
+): Promise<TxQueryResult> {
+  const res = await fetch('/api/tx/query', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
+    body: JSON.stringify({ tabId, sql, params }),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return TxQueryResponse.parse(json)
+}
+
+const TxControlResponse = z.object({
+  committed: z.boolean().optional(),
+  rolledBack: z.boolean().optional(),
+  hadTransaction: z.boolean(),
+})
+
+async function txControl(
+  action: 'commit' | 'rollback',
+  connectionId: string,
+  tabId: string,
+) {
+  const res = await fetch(`/api/tx/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
+    body: JSON.stringify({ tabId }),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return TxControlResponse.parse(json)
+}
+
+export function commitTx(connectionId: string, tabId: string) {
+  return txControl('commit', connectionId, tabId)
+}
+
+export function rollbackTx(connectionId: string, tabId: string) {
+  return txControl('rollback', connectionId, tabId)
+}
+
 const FormatResponse = z.object({ sql: z.string() })
 
 /**
