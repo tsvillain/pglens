@@ -190,6 +190,17 @@ export async function runQuery(
   return QueryResponse.parse(json)
 }
 
+const FormatResponse = z.object({ sql: z.string() })
+
+/**
+ * Pretty-print SQL server-side (roadmap §5.2). No connection needed — the
+ * server formatter is a pure text transform.
+ */
+export async function formatSql(sql: string): Promise<string> {
+  const { sql: formatted } = await postJson('/api/format', { sql }, FormatResponse)
+  return formatted
+}
+
 export function updateConnectionApi(id: string, payload: ConnectPayload) {
   return postJson(
     `/api/connections/${encodeURIComponent(id)}`,

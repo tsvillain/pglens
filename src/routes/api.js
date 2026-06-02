@@ -26,6 +26,7 @@ const views = require('../db/views');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
+const { format: formatPgSql } = require('sql-formatter');
 
 const router = express.Router();
 
@@ -60,6 +61,10 @@ const TableListQuery = z.object({
 const QueryBodySchema = z.object({
   sql: z.string().min(1),
   params: z.array(z.unknown()).optional(),
+});
+
+const FormatBodySchema = z.object({
+  sql: z.string().min(1).max(1_000_000),
 });
 
 // ---- requireConnection middleware ------------------------------------------
@@ -1088,5 +1093,24 @@ router.post('/query',
       return sendError(res, 400, codes.DB_ERROR, err.message, { hint: `${Date.now() - started}ms` });
     }
   });
+
+// Pretty-print SQL for the Advanced-mode editor (roadmap §5.2 "format on save").
+// Pure text transform — no DB connection needed, so this route is open. We run
+// the JS `sql-formatter` (postgresql dialect) rather than the Perl pg-formatter
+// so a single `npm install` stays sufficient (CLAUDE.md principle #5).
+router.post('/format', validate({ body: FormatBodySchema }), (req, res) => {
+  try {
+    const sql = formatPgSql(req.body.sql, {
+      language: 'postgresql',
+      keywordCase: 'upper',
+      dataTypeCase: 'upper',
+      tabWidth: 2,
+    });
+    res.json({ sql });
+  } catch (err) {
+    // sql-formatter throws on unparseable input; surface it without the stack.
+    return sendError(res, 400, codes.BAD_REQUEST, `Could not format SQL: ${err.message}`);
+  }
+});
 
 module.exports = router;
