@@ -15,13 +15,18 @@ import { InsertRowDialog } from "@/components/InsertRowDialog";
 import { ImportDialog } from "@/components/ImportDialog";
 import { ExportMenu } from "@/components/ExportMenu";
 import { FkPanel, type FkTarget } from "@/components/FkPanel";
+import { ModeToggle } from "@/components/ModeToggle";
+import { SqlConsole } from "@/components/SqlConsole";
 import {
   getAggregates, getTableData, listViews, updateRow,
   type ColumnMeta, type FilterGroup, type SavedView, type TableData,
 } from "@/lib/api";
 import { type AggFn, previewAggregate } from "@/lib/aggSql";
+import { buildTableSelect } from "@/lib/tableSql";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/store/connection";
+import { tabId } from "@/store/tabs";
+import { type TabMode, useTabModeStore } from "@/store/tabMode";
 
 const PAGE_SIZES = [50, 100, 250, 500] as const;
 
@@ -100,6 +105,14 @@ export function TableView() {
   // The URL is the source of truth so the picker is deep-linkable.
   const selectedViewId = search.view ?? null;
 
+  // Per-tab Advanced toggle (roadmap §5.1). Mode + edited SQL are keyed by tab
+  // id so flipping back to No-code preserves the query the user was writing.
+  const tid = tabId({ kind: "table", tableName });
+  const mode = useTabModeStore((s) => s.mode[tid] ?? "nocode");
+  const advancedSql = useTabModeStore((s) => s.sql[tid]);
+  const setMode = useTabModeStore((s) => s.setMode);
+  const setTabSql = useTabModeStore((s) => s.setSql);
+
   // Switching tables: drop filter + sort + page, since column names referenced
   // by the prior table's filter won't exist on the new one. The selected
   // view id lives in the URL search params, which TanStack Router clears
@@ -159,6 +172,19 @@ export function TableView() {
   // for editing.
   const appliedFilter = pruneIncomplete(filter);
 
+  // The SELECT no-code mode is about to run — seeds the Advanced editor.
+  const generatedSql = useMemo(
+    () => buildTableSelect({ tableName, filter: appliedFilter, sort, limit, page }),
+    [tableName, appliedFilter, sort, limit, page],
+  );
+
+  // Flip mode. Entering Advanced for the first time seeds the editor with the
+  // current no-code SQL; an existing edit is preserved (never clobbered).
+  const switchMode = (next: TabMode) => {
+    if (next === "advanced" && advancedSql == null) setTabSql(tid, generatedSql);
+    setMode(tid, next);
+  };
+
   const query = useQuery({
     queryKey: ["table", connectionId, tableName, page, limit, sort, appliedFilter],
     queryFn: ({ signal }) =>
@@ -173,7 +199,9 @@ export function TableView() {
         },
         signal,
       ),
-    enabled: !!connectionId,
+    // Skip the grid read while in Advanced mode — its results aren't shown.
+    // React Query keeps the cache, so flipping back is instant.
+    enabled: !!connectionId && mode === "nocode",
     // Keep previous data only while paginating/sorting within the SAME
     // table. Switching tables must clear so the grid doesn't briefly
     // render the prior table's rows.
@@ -199,7 +227,7 @@ export function TableView() {
         { filter: appliedFilter, aggs: aggList },
         signal,
       ),
-    enabled: !!connectionId && aggList.length > 0,
+    enabled: !!connectionId && aggList.length > 0 && mode === "nocode",
     // Keep prior values on screen while recomputing so the footer doesn't flash.
     placeholderData: (prev) => prev,
   });
@@ -282,12 +310,14 @@ export function TableView() {
         <div className="min-w-0">
           <h1 className="truncate text-lg font-semibold">{tableName}</h1>
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            {data
-              ? `${data.totalCount.toLocaleString()} rows · page ${data.page} / ${totalPages}`
-              : query.isLoading
-                ? <Loading>Loading {tableName} rows…</Loading>
-                : ""}
-            {isRefetching && (
+            {mode === "advanced"
+              ? "Advanced mode (raw SQL)"
+              : data
+                ? `${data.totalCount.toLocaleString()} rows · page ${data.page} / ${totalPages}`
+                : query.isLoading
+                  ? <Loading>Loading {tableName} rows…</Loading>
+                  : ""}
+            {mode === "nocode" && isRefetching && (
               <>
                 <Spinner className="text-xs" aria-label="Updating" />
                 <span>Updating rows…</span>
@@ -296,57 +326,73 @@ export function TableView() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {data?.columns && (
+          <ModeToggle mode={mode} onChange={switchMode} />
+          {mode === "nocode" && (
             <>
-              <Button size="sm" onClick={() => setInsertOpen(true)}>
-                <Plus className="h-4 w-4" /> Insert row
+              {data?.columns && (
+                <>
+                  <Button size="sm" onClick={() => setInsertOpen(true)}>
+                    <Plus className="h-4 w-4" /> Insert row
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
+                    <Upload className="h-4 w-4" /> Import
+                  </Button>
+                  <ExportMenu
+                    connectionId={connectionId}
+                    tableName={tableName}
+                    columns={data.columns}
+                    filter={appliedFilter}
+                    sort={sort}
+                  />
+                </>
+              )}
+              <Select
+                value={String(limit)}
+                onChange={(e) => {
+                  setPage(1);
+                  setLimit(Number(e.target.value));
+                }}
+                className="w-28"
+                aria-label="Rows per page"
+              >
+                {PAGE_SIZES.map((n) => (
+                  <option key={n} value={n}>
+                    {n} rows
+                  </option>
+                ))}
+              </Select>
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+              >
+                <ChevronLeft className="h-4 w-4" />
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
-                <Upload className="h-4 w-4" /> Import
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={() => setPage((p) => p + 1)}
+                disabled={!data || page >= totalPages}
+              >
+                <ChevronRight className="h-4 w-4" />
               </Button>
-              <ExportMenu
-                connectionId={connectionId}
-                tableName={tableName}
-                columns={data.columns}
-                filter={appliedFilter}
-                sort={sort}
-              />
             </>
           )}
-          <Select
-            value={String(limit)}
-            onChange={(e) => {
-              setPage(1);
-              setLimit(Number(e.target.value));
-            }}
-            className="w-28"
-            aria-label="Rows per page"
-          >
-            {PAGE_SIZES.map((n) => (
-              <option key={n} value={n}>
-                {n} rows
-              </option>
-            ))}
-          </Select>
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page <= 1}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => setPage((p) => p + 1)}
-            disabled={!data || page >= totalPages}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
         </div>
       </header>
 
+      {mode === "advanced" ? (
+        <div className="min-h-0 flex-1">
+          <SqlConsole
+            connectionId={connectionId}
+            value={advancedSql ?? generatedSql}
+            onChange={(v) => setTabSql(tid, v)}
+            onRegenerate={() => setTabSql(tid, generatedSql)}
+          />
+        </div>
+      ) : (
+      <>
       <ViewBar
         connectionId={connectionId}
         tableName={tableName}
@@ -494,6 +540,8 @@ export function TableView() {
           </Loading>
         )}
       </div>
+      </>
+      )}
 
       {data?.columns && (
         <InsertRowDialog

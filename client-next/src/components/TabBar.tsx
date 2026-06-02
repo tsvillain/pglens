@@ -4,6 +4,7 @@ import { X, Home, Table as TableIcon, Terminal, GitBranch } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { tabId, tabLabel, tabRoute, useTabsStore, type Tab } from '@/store/tabs'
+import { useTabModeStore } from '@/store/tabMode'
 
 function routeToTab(pathname: string): Tab {
   if (pathname === '/' || pathname === '') return { kind: 'home' }
@@ -64,6 +65,8 @@ export function TabBar() {
             </button>
             <button
               onClick={() => {
+                // Drop any per-tab Advanced mode/SQL so a reopened tab starts clean.
+                useTabModeStore.getState().reset(id)
                 const next = close(id)
                 navigate({ to: next ? tabRoute(next) : '/' })
               }}
