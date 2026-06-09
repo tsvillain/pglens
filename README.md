@@ -3,7 +3,16 @@
 A no-code PostgreSQL workstation. View, explore, visualize, edit, and query your
 PostgreSQL databases through a fast local web interface.
 
-> **v3.1.0** turns pglens from a viewer into a client: filter, sort, save views,
+> **v3.2.0** adds Advanced Mode for engineers who want SQL. A per-tab
+> `[ No-code | Advanced ]` toggle swaps any grid for a schema-aware Monaco
+> editor seeded with the query no-code was about to run. It brings transaction
+> mode (implicit `BEGIN`, per-tab `Commit`/`Rollback`, idle auto-rollback),
+> multi-statement result tabs with `EXPLAIN ANALYZE` timing, and per-connection
+> query history plus a saved-query library with `{{variables}}`, folders, and
+> tags. Execution stays server-side parameterized — `:name` placeholders are
+> rewritten to positional `$n` binds.
+>
+> **v3.1.0** turned pglens from a viewer into a client: filter, sort, save views,
 > inline-edit, insert rows, follow foreign keys, aggregate, and export/import — all
 > without typing SQL. Every no-code action has a "Show SQL" disclosure, and the UI
 > never sends raw SQL fragments; the server parses structured specs into
@@ -35,7 +44,11 @@ PostgreSQL databases through a fast local web interface.
 - 📥 **CSV Import Wizard**: Map columns, choose insert mode (`INSERT`, `ON CONFLICT DO NOTHING`/`DO UPDATE`), dry-run preview, transactional execute
 - 📦 **Import/Export Schema**: Export your database schema as SQL and import it into another connection
 - 💽 **Streaming Backup**: Export a database dump with live byte/table progress and cancel
-- ⌨️ **Query Runner**: Advanced-mode raw-SQL escape hatch with a Monaco editor (`Cmd/Ctrl+Enter` to run)
+- 🔀 **Advanced Mode Toggle**: Per-tab `[ No-code | Advanced ]` switch that swaps the grid for a Monaco SQL editor seeded with the query no-code was about to run; mode and edits are preserved per tab
+- ⌨️ **SQL Editor**: Schema-aware autocomplete (tables/columns scoped to `FROM`/`JOIN`), `:name` parameters rewritten to positional `$n` binds, and format-on-save via `sql-formatter` (`Cmd/Ctrl+Enter` to run)
+- 🔁 **Transaction Mode**: `[ Auto-commit | Transaction ]` toggle holding a dedicated backend per tab — implicit `BEGIN`, `Commit`/`Rollback` buttons, "T" badge, close-confirmation, and idle auto-rollback
+- 🧾 **Multi-Statement Results**: Result tabs for multi-statement scripts over the shared DataGrid, with `EXPLAIN ANALYZE` planning/execution timing and CSV/JSON export
+- 🕘 **Query History & Saved Queries**: Per-connection run history plus a saved-query library with `{{variables}}`, folders, tags, and JSON export/import
 - 🔎 **Spotlight Search**: Quick table search with `Cmd+K` / `Ctrl+K` for fast navigation
 - 📊 **Data Viewer**: Browse table rows in a virtualized grid with page/sort
 - 🔢 **Row Numbers**: Row numbers displayed for easier navigation and reference
