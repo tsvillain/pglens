@@ -82,12 +82,18 @@ describe('listConnections', () => {
 })
 
 describe('runQuery', () => {
-  it('sends the connection id header and parses the v3 response', async () => {
+  it('sends the connection id header and parses the results envelope', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
-        rows: [{ one: 1 }],
-        fields: [{ name: 'one' }],
-        rowCount: 1,
+        results: [
+          {
+            rows: [{ one: 1 }],
+            fields: [{ name: 'one' }],
+            rowCount: 1,
+            command: 'SELECT',
+            durationMs: 2,
+          },
+        ],
         durationMs: 5,
       }),
     )
@@ -95,7 +101,39 @@ describe('runQuery', () => {
     const [, init] = fetchMock.mock.calls[0]
     expect((init as RequestInit).method).toBe('POST')
     expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
-    expect(result.rowCount).toBe(1)
+    expect(result.results).toHaveLength(1)
+    expect(result.results[0].rowCount).toBe(1)
+    expect(result.results[0].command).toBe('SELECT')
+  })
+
+  it('parses multiple result sets from a multi-statement run', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        results: [
+          { rows: [{ a: 1 }], fields: [{ name: 'a' }], rowCount: 1, command: 'SELECT', durationMs: 1 },
+          { rows: [], fields: [], rowCount: 3, command: 'INSERT 0 3', durationMs: 1 },
+        ],
+        durationMs: 9,
+      }),
+    )
+    const result = await runQuery('conn-1', 'SELECT 1; INSERT ...')
+    expect(result.results).toHaveLength(2)
+    expect(result.results[1].command).toBe('INSERT 0 3')
+  })
+
+  it('parses the EXPLAIN ANALYZE timing breakdown', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        results: [],
+        timing: { planningMs: 0.4, executionMs: 3.1, plan: { Plan: {} } },
+        durationMs: 7,
+      }),
+    )
+    const result = await runQuery('conn-1', 'SELECT 1', undefined, { explain: true })
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse((init as RequestInit).body as string).explain).toBe(true)
+    expect(result.timing?.planningMs).toBe(0.4)
+    expect(result.timing?.executionMs).toBe(3.1)
   })
 
   it('rethrows the new error envelope as ApiError', async () => {

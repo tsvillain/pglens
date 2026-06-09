@@ -133,6 +133,80 @@ test('full connection lifecycle: connect → list (masked) → tables → query 
   assert.equal(dcRes.status, 200);
 });
 
+test('transaction mode: implicit BEGIN, isolation, rollback discards, commit persists', async () => {
+  const connectRes = await http('/api/connect', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: DB_URL, sslMode: 'disable', name: 'tx-itest' }),
+  });
+  const { connectionId } = await connectRes.json();
+  assert.ok(connectionId);
+
+  // Helper: every call carries JSON + the connection header.
+  const h = (path, init = {}) =>
+    http(path, {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+        ...(init.headers || {}),
+      },
+    });
+
+  await h('/api/query', { method: 'POST', body: JSON.stringify({ sql: 'DROP TABLE IF EXISTS tx_items' }) });
+  await h('/api/query', {
+    method: 'POST',
+    body: JSON.stringify({ sql: 'CREATE TABLE tx_items (id serial primary key, label text)' }),
+  });
+
+  // First /tx/query implicitly BEGINs and reports the tab holds a transaction.
+  const ins = await h('/api/tx/query', {
+    method: 'POST',
+    body: JSON.stringify({ tabId: 'query', sql: "INSERT INTO tx_items (label) VALUES ('a')" }),
+  });
+  assert.equal(ins.status, 200);
+  assert.equal((await ins.json()).txOpen, true);
+
+  // /tx/status reflects the open transaction and its connection.
+  const status = await (await h('/api/tx/status?tabId=query', { method: 'GET' })).json();
+  assert.deepEqual(status, { open: true, connectionId });
+
+  // Isolation: a pooled (auto-commit) read does NOT see the uncommitted row…
+  const pooled = await (await h('/api/tables/tx_items', { method: 'GET' })).json();
+  assert.equal(pooled.rows.length, 0);
+  // …but the transaction sees its own write.
+  const inTx = await h('/api/tx/query', {
+    method: 'POST',
+    body: JSON.stringify({ tabId: 'query', sql: 'SELECT count(*)::int AS n FROM tx_items' }),
+  });
+  assert.equal((await inTx.json()).rows[0].n, 1);
+
+  // Rollback discards the row and closes the session.
+  const rb = await (await h('/api/tx/rollback', {
+    method: 'POST',
+    body: JSON.stringify({ tabId: 'query' }),
+  })).json();
+  assert.deepEqual(rb, { rolledBack: true, hadTransaction: true });
+  assert.equal((await (await h('/api/tables/tx_items', { method: 'GET' })).json()).rows.length, 0);
+  assert.equal((await (await h('/api/tx/status?tabId=query', { method: 'GET' })).json()).open, false);
+
+  // A fresh transaction that commits persists its row.
+  await h('/api/tx/query', {
+    method: 'POST',
+    body: JSON.stringify({ tabId: 'query', sql: "INSERT INTO tx_items (label) VALUES ('b')" }),
+  });
+  const cm = await (await h('/api/tx/commit', {
+    method: 'POST',
+    body: JSON.stringify({ tabId: 'query' }),
+  })).json();
+  assert.deepEqual(cm, { committed: true, hadTransaction: true });
+  assert.equal((await (await h('/api/tables/tx_items', { method: 'GET' })).json()).rows.length, 1);
+
+  // Cleanup + disconnect (also releases any lingering reserved backend).
+  await h('/api/query', { method: 'POST', body: JSON.stringify({ sql: 'DROP TABLE tx_items' }) });
+  await h('/api/disconnect', { method: 'POST', body: JSON.stringify({ connectionId }) });
+});
+
 test.after(() => {
   // Best-effort cleanup of the sandbox HOME.
   try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* ignore */ }

@@ -22,10 +22,16 @@ const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
 const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('../db/export');
 const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/import');
+const { splitStatements } = require('../db/statements');
+const { extractExplainTiming } = require('../db/explain');
+const { txManager } = require('../db/tx');
 const views = require('../db/views');
+const savedQueries = require('../db/savedQueries');
+const queryHistory = require('../db/queryHistory');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
+const { format: formatPgSql } = require('sql-formatter');
 
 const router = express.Router();
 
@@ -60,6 +66,13 @@ const TableListQuery = z.object({
 const QueryBodySchema = z.object({
   sql: z.string().min(1),
   params: z.array(z.unknown()).optional(),
+  // When set, the (single) statement is timed with EXPLAIN ANALYZE instead of
+  // run normally — drives the §5.4 timing breakdown.
+  explain: z.boolean().optional(),
+});
+
+const FormatBodySchema = z.object({
+  sql: z.string().min(1).max(1_000_000),
 });
 
 // ---- requireConnection middleware ------------------------------------------
@@ -1060,33 +1073,316 @@ router.delete('/views/:id', validate({ params: ViewIdParam }), (req, res) => {
   res.json({ deleted: true });
 });
 
+// ---- Saved queries (roadmap §5.5) -------------------------------------------
+//
+// Raw SQL + organizational metadata (folder / tags / description) and
+// Postman-style `{{variable}}` defaults, scoped per connection. Stored in
+// `~/.pglens/saved-queries.json` — see `src/db/savedQueries.js`. Listing is
+// open (no `requireConnection`) so the editor's Saved menu populates even when
+// the database isn't reachable.
+
+const SavedQueryListQuery = z.object({
+  connectionId: z.string().min(1).max(255).optional(),
+});
+
+const SavedQueryIdParam = z.object({ id: z.string().uuid() });
+
+const SavedQueryImportSchema = z.object({
+  connectionId: z.string().min(1).max(255),
+  savedQueries: z.array(savedQueries.ImportItemSchema).min(1).max(2000),
+});
+
+router.get('/saved-queries', validate({ query: SavedQueryListQuery }), (req, res) => {
+  res.json({ savedQueries: savedQueries.listSavedQueries(req.query) });
+});
+
+router.post('/saved-queries', validate({ body: savedQueries.SavedQueryBodySchema }), (req, res) => {
+  try {
+    res.status(201).json({ savedQuery: savedQueries.createSavedQuery(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+// Bulk import for the export/import flow. Registered before `/:id` is moot here
+// (this is POST, the id routes are PUT/DELETE) but kept adjacent for clarity.
+router.post('/saved-queries/import', validate({ body: SavedQueryImportSchema }), (req, res) => {
+  try {
+    const created = savedQueries.importMany(req.body.connectionId, req.body.savedQueries);
+    res.status(201).json({ savedQueries: created, count: created.length });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.put('/saved-queries/:id',
+  validate({ params: SavedQueryIdParam, body: savedQueries.SavedQueryPatchSchema }),
+  (req, res) => {
+    try {
+      const updated = savedQueries.updateSavedQuery(req.params.id, req.body);
+      if (!updated) {
+        return sendError(res, 404, codes.NOT_FOUND, 'Saved query not found');
+      }
+      res.json({ savedQuery: updated });
+    } catch (err) {
+      return sendError(res, 400, codes.BAD_REQUEST, err.message);
+    }
+  });
+
+router.delete('/saved-queries/:id', validate({ params: SavedQueryIdParam }), (req, res) => {
+  const ok = savedQueries.deleteSavedQuery(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'Saved query not found');
+  res.json({ deleted: true });
+});
+
+// ---- Query history (roadmap §5.5) -------------------------------------------
+//
+// Per-connection run log written by the Advanced editor after each run. Stored
+// in `~/.pglens/query-history.json` — see `src/db/queryHistory.js`. Like saved
+// queries, none of these touch the database, so no `requireConnection`.
+
+const HistoryListQuery = z.object({
+  connectionId: z.string().min(1).max(255),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
+const HistoryIdParam = z.object({ id: z.string().uuid() });
+
+const HistoryClearQuery = z.object({
+  connectionId: z.string().min(1).max(255),
+});
+
+router.get('/query-history', validate({ query: HistoryListQuery }), (req, res) => {
+  res.json({ entries: queryHistory.listHistory(req.query) });
+});
+
+router.post('/query-history', validate({ body: queryHistory.HistoryEntrySchema }), (req, res) => {
+  try {
+    res.status(201).json({ entry: queryHistory.addHistory(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.delete('/query-history/:id', validate({ params: HistoryIdParam }), (req, res) => {
+  const ok = queryHistory.deleteEntry(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'History entry not found');
+  res.json({ deleted: true });
+});
+
+// Clear every entry for a connection. The bare path (no `:id`) carries the
+// connection in the query string so it never shadows the per-entry delete.
+router.delete('/query-history', validate({ query: HistoryClearQuery }), (req, res) => {
+  const count = queryHistory.clearHistory(req.query.connectionId);
+  res.json({ cleared: true, count });
+});
+
 // ---- Raw-SQL escape hatch ---------------------------------------------------
+
+// Shape one statement's result for the wire. porsager exposes a column's type
+// OID as `.type`; we surface it as `dataTypeID` so the client can resolve a
+// type name (and pick the right cell renderer) for arbitrary SQL.
+function toResultDto(result) {
+  return {
+    rows: result.rows,
+    fields: (result.fields || []).map((f) => ({ name: f.name, dataTypeID: f.type })),
+    rowCount: result.rowCount ?? result.rows?.length ?? 0,
+    command: result.command ?? null,
+    durationMs: result.durationMs,
+  };
+}
+
+// Split the script and reject the param/explain combinations that can't run.
+// Returns the statement list, or sends a 400 and returns null.
+function prepareStatements(res, sql, params, explain) {
+  const statements = splitStatements(sql);
+  if (statements.length === 0) {
+    sendError(res, 400, codes.BAD_REQUEST, 'No SQL statement to run.');
+    return null;
+  }
+  if (explain && statements.length > 1) {
+    sendError(res, 400, codes.BAD_REQUEST, 'Explain analyze runs one statement at a time.');
+    return null;
+  }
+  if (!explain && statements.length > 1 && params && params.length > 0) {
+    sendError(res, 400, codes.BAD_REQUEST, 'Parameters are only supported with a single statement.');
+    return null;
+  }
+  return statements;
+}
 
 router.post('/query',
   requireConnection,
   validate({ body: QueryBodySchema }),
   async (req, res) => {
-    const { sql, params } = req.body;
+    const { sql, params, explain } = req.body;
     const pool = req.pool;
     const schema = req.schema;
     const started = Date.now();
     try {
-      // search_path + the user's SQL must run on one reserved connection,
-      // otherwise the SET can land on a different pooled backend.
-      const result = await pool.queryWithSchema(schema, sql, params);
+      const statements = prepareStatements(res, sql, params, explain);
+      if (!statements) return;
+
+      if (explain) {
+        // EXPLAIN ANALYZE runs inside a rolled-back transaction (see
+        // pool.explainAnalyze) so timing a write never mutates data.
+        const { rows } = await pool.explainAnalyze(schema, statements[0], params);
+        const timing = extractExplainTiming(rows);
+        return res.json({ results: [], timing, durationMs: Date.now() - started });
+      }
+
+      // search_path + the user's SQL share one reserved backend (otherwise the
+      // SET could land on a different pooled connection), and every statement of
+      // a multi-statement script runs on that same backend.
+      const results = await pool.runStatements(schema, statements, params);
       // Raw SQL may include DDL — drop cached metadata for this connection.
       invalidateMetadata(req.connectionId);
-      const fields = (result.fields || []).map(f => ({ name: f.name, dataTypeID: f.dataTypeID }));
       res.json({
-        rows: result.rows,
-        fields,
-        rowCount: result.rowCount ?? result.rows?.length ?? 0,
+        results: results.map(toResultDto),
         durationMs: Date.now() - started,
       });
     } catch (err) {
+      // A multi-statement script can fail partway after an earlier DDL statement
+      // has already committed (Auto-commit), so drop cached metadata even on
+      // error — re-introspecting is cheap and avoids a stale schema.
+      invalidateMetadata(req.connectionId);
       logger.warn({ err: err.message }, 'query failed');
       return sendError(res, 400, codes.DB_ERROR, err.message, { hint: `${Date.now() - started}ms` });
     }
   });
+
+// ---- Transaction mode (roadmap §5.3) ---------------------------------------
+//
+// An Advanced tab in Transaction mode holds one dedicated backend for the life
+// of the transaction. BEGIN runs implicitly on the first `/tx/query`; COMMIT /
+// ROLLBACK run on the same backend and release it. Sessions are keyed by tab id
+// (the auth token scopes the whole map to this install) and a session is bound
+// to the connection it opened against.
+
+const TabIdSchema = z.string().min(1).max(255).refine((s) => !s.includes('\0'), 'null byte');
+
+const TxQueryBodySchema = z.object({
+  tabId: TabIdSchema,
+  sql: z.string().min(1),
+  params: z.array(z.unknown()).optional(),
+  explain: z.boolean().optional(),
+});
+
+const TxControlBodySchema = z.object({ tabId: TabIdSchema });
+
+// Map a tx-manager error to the right envelope: 409 for state conflicts
+// (wrong connection / concurrent query), 503 when the connection is gone,
+// otherwise a Postgres error surfaced from the statement.
+function txErrorResponse(res, err) {
+  const status = err.statusCode || 400;
+  const code =
+    err.code === 'CONFLICT' ? codes.CONFLICT
+      : err.code === 'NO_CONNECTION' ? codes.NO_CONNECTION
+        : codes.DB_ERROR;
+  return sendError(res, status, code, err.message);
+}
+
+router.post('/tx/query',
+  requireConnection,
+  validate({ body: TxQueryBodySchema }),
+  async (req, res) => {
+    const { tabId, sql, params, explain } = req.body;
+    const started = Date.now();
+    try {
+      const statements = prepareStatements(res, sql, params, explain);
+      if (!statements) return;
+
+      if (explain) {
+        // Timed inside the tab's own open transaction (the user commits/rolls
+        // back), so unlike Auto-commit it is not self-rolled-back.
+        const rows = await txManager.explain({
+          connectionId: req.connectionId,
+          tabId,
+          schema: req.schema,
+          sql: statements[0],
+          params,
+        });
+        const timing = extractExplainTiming(rows);
+        return res.json({
+          results: [],
+          timing,
+          durationMs: Date.now() - started,
+          txOpen: txManager.status(tabId).open,
+        });
+      }
+
+      const results = await txManager.runStatements({
+        connectionId: req.connectionId,
+        tabId,
+        schema: req.schema,
+        statements,
+        params,
+      });
+      res.json({
+        results: results.map(toResultDto),
+        durationMs: Date.now() - started,
+        // BEGIN has run by the time the user's statement executes, so the tab
+        // holds a transaction even when that statement errored (handled below).
+        txOpen: txManager.status(tabId).open,
+      });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId }, 'tx query failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.post('/tx/commit',
+  requireConnection,
+  validate({ body: TxControlBodySchema }),
+  async (req, res) => {
+    try {
+      const { hadTransaction } = await txManager.commit(req.connectionId, req.body.tabId);
+      // Committed DDL may now be visible to pooled reads — drop cached metadata.
+      if (hadTransaction) invalidateMetadata(req.connectionId);
+      res.json({ committed: true, hadTransaction });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId: req.body.tabId }, 'tx commit failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.post('/tx/rollback',
+  requireConnection,
+  validate({ body: TxControlBodySchema }),
+  async (req, res) => {
+    try {
+      const { hadTransaction } = await txManager.rollback(req.connectionId, req.body.tabId);
+      res.json({ rolledBack: true, hadTransaction });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId: req.body.tabId }, 'tx rollback failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.get('/tx/status',
+  requireConnection,
+  validate({ query: z.object({ tabId: TabIdSchema }) }),
+  (req, res) => {
+    res.json(txManager.status(req.query.tabId));
+  });
+
+// Pretty-print SQL for the Advanced-mode editor (roadmap §5.2 "format on save").
+// Pure text transform — no DB connection needed, so this route is open. We run
+// the JS `sql-formatter` (postgresql dialect) rather than the Perl pg-formatter
+// so a single `npm install` stays sufficient (CLAUDE.md principle #5).
+router.post('/format', validate({ body: FormatBodySchema }), (req, res) => {
+  try {
+    const sql = formatPgSql(req.body.sql, {
+      language: 'postgresql',
+      keywordCase: 'upper',
+      dataTypeCase: 'upper',
+      tabWidth: 2,
+    });
+    res.json({ sql });
+  } catch (err) {
+    // sql-formatter throws on unparseable input; surface it without the stack.
+    return sendError(res, 400, codes.BAD_REQUEST, `Could not format SQL: ${err.message}`);
+  }
+});
 
 module.exports = router;

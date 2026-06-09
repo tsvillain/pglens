@@ -12,6 +12,8 @@ const LOG_FILE = path.join(LOG_DIR, 'pglens.log');
 const TOKEN_FILE = path.join(PGLENS_DIR, 'token');
 const CONNECTIONS_FILE = path.join(PGLENS_DIR, 'connections.json');
 const VIEWS_FILE = path.join(PGLENS_DIR, 'views.json');
+const SAVED_QUERIES_FILE = path.join(PGLENS_DIR, 'saved-queries.json');
+const QUERY_HISTORY_FILE = path.join(PGLENS_DIR, 'query-history.json');
 const PID_FILE = path.join(os.homedir(), '.pglens.pid');
 const PORT_FILE = path.join(os.homedir(), '.pglens.port');
 
@@ -33,6 +35,8 @@ module.exports = {
   TOKEN_FILE,
   CONNECTIONS_FILE,
   VIEWS_FILE,
+  SAVED_QUERIES_FILE,
+  QUERY_HISTORY_FILE,
   PID_FILE,
   PORT_FILE,
   ensureDir,

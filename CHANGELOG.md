@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-06-10
+
+Phase 2 — Advanced Mode. pglens gains a full SQL surface for engineers who
+want one, without compromising the no-code default: a per-tab `[ No-code |
+Advanced ]` toggle, a schema-aware Monaco editor, transaction mode, rich
+multi-statement results with `EXPLAIN ANALYZE` timing, and per-connection
+query history + a saved-query library. Execution stays server-side
+parameterized — the Advanced editor rewrites `:name` placeholders to
+positional `$n` binds, and no-code never ships raw SQL.
+
+### Added
+
+- **Per-tab No-code ⇄ Advanced toggle** (roadmap §5.1). Each table tab
+  carries a `[ No-code | Advanced ]` switch in its header. Flipping to
+  Advanced swaps the grid for a Monaco editor pre-seeded with the SELECT
+  no-code mode was about to run (filter → `WHERE`, sort → `ORDER BY`,
+  page/limit → `LIMIT`/`OFFSET`); the seed is display-only, the server
+  still parameterizes on execute. Mode and edited SQL are preserved per
+  tab (keyed by tab id, cleared on close) so flipping back and forth keeps
+  the query, with a **Reset from no-code** action to re-seed on demand.
+  No-code grid/aggregate fetches are gated to no-code mode so Advanced
+  does no wasted reads. The shared `SqlConsole` (editor + results + Run)
+  is reused by both the toggle and the standalone query runner and follows
+  the app light/dark theme.
+- **Monaco SQL editor — schema autocomplete, params, format-on-save**
+  (roadmap §5.2). Schema-aware completion of tables + columns from
+  `/api/schema`, scoped to the query's `FROM`/`JOIN` targets with
+  `table.`/`alias.column` lookup; case-sensitive identifiers are inserted
+  quoted. A `:name` parameter form below the editor binds values; on run,
+  placeholders are rewritten to positional `$n` and shipped as a params
+  array so execution stays server-side parameterized (the scanner skips
+  `::casts`, strings, quoted idents, comments, dollar-quotes, and array
+  slices). Format-on-save (Cmd/Ctrl+S + toolbar) via new `POST /api/format`
+  using the JS `sql-formatter` (postgresql dialect) — chosen over the Perl
+  `pg-formatter` so a single `npm install` stays sufficient. Completion
+  and format providers register once on the Monaco singleton; the focused
+  tab publishes its schema to them.
+- **Transaction mode** (roadmap §5.3). An `[ Auto-commit | Transaction ]`
+  toggle per Advanced tab. In Transaction mode the tab holds one dedicated
+  Postgres backend (porsager `reserve()`) for the life of the transaction:
+  `BEGIN` runs implicitly on the first query, `COMMIT`/`ROLLBACK` run on
+  the same backend, and the tab shows a **T** badge while open; closing a
+  tab with an open transaction confirms first and rolls back. A
+  session manager (`src/db/tx.js`) keyed by tab id and scoped per install
+  by the auth token binds each session to its connection — cross-connection
+  reuse and concurrent queries are rejected (`CONFLICT`), a failed
+  statement keeps the transaction open so it can be rolled back, and idle
+  sessions auto-roll-back after 5 min so a forgotten tab never pins a
+  backend. New routes `/api/tx/query`, `/tx/commit`, `/tx/rollback`,
+  `/tx/status`; commit invalidates cached metadata so committed DDL is
+  visible to pooled reads. Pool-close hooks roll back + release reserved
+  backends before `pool.end()` on disconnect/update/shutdown.
+- **Query result enhancements** (roadmap §5.4). Multi-statement scripts are
+  split server-side (`src/db/statements.js`) and each statement runs on one
+  reserved backend via the extended protocol, returning one result per
+  statement; `/api/query` and `/api/tx/query` now return `{ results[],
+  durationMs, timing? }`. `QueryResults` renders a result-tab bar over the
+  shared no-code `DataGrid` with client-side multi-column sort and CSV/JSON
+  export of the rows in hand. An **EXPLAIN** toggle runs `EXPLAIN (ANALYZE,
+  BUFFERS, FORMAT JSON)` and shows planning/execution/total timing plus the
+  raw plan — Auto-commit wraps the probe in `BEGIN..ROLLBACK` so timing a
+  write never mutates data, Transaction mode times it inside the open tx.
+  Column type OIDs are surfaced and resolved to type names so result cells
+  get the right renderer. Params are restricted to single-statement runs
+  (positional params can't span statements) with a clear 400 otherwise.
+- **Improved query history & saved queries** (roadmap §5.5). Query
+  history is now persisted per connection: the Advanced editor records
+  every run (raw SQL, duration, row count, success/error) to
+  `~/.pglens/query-history.json` via `GET/POST/DELETE /api/query-history`,
+  with a per-connection 200-entry ring buffer. A **History** menu in the
+  editor toolbar lists recent runs most-recent-first; click to reload the
+  SQL, delete an entry, or clear all. **Saved queries** are a
+  per-connection library of raw SQL with folder + tag organization and
+  optional description, persisted to `~/.pglens/saved-queries.json` via
+  `GET/POST/PUT/DELETE /api/saved-queries` (unique name per connection,
+  atomic writes). A **Saved** menu groups queries by folder with
+  name/folder/tag filtering, plus save / edit / delete and JSON
+  export/import (`POST /api/saved-queries/import`, auto-suffixing name
+  collisions). Saved queries support Postman-style `{{variable}}`
+  placeholders — a distinct template layer from the editor's `:name`
+  bound parameters (§5.2): `{{variables}}` are filled from saved defaults
+  and substituted into the SQL on load (the user reviews/edits before
+  running), while `:name` stays a server-side `$n` bind.
+
 ## [3.1.0] - 2026-05-29
 
 Phase 1 — No-Code Editing Core. pglens moves from "viewer" to "client":
@@ -368,7 +452,11 @@ migration 301-redirects to `/` so existing bookmarks keep working.
 - SQL injection prevention via table name sanitization
 - Input validation for pagination parameters
 
-[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/tsvillain/pglens/compare/v3.1.0...v3.2.0
+[3.1.0]: https://github.com/tsvillain/pglens/compare/v3.0.2...v3.1.0
+[3.0.2]: https://github.com/tsvillain/pglens/compare/v3.0.1...v3.0.2
+[3.0.1]: https://github.com/tsvillain/pglens/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/tsvillain/pglens/compare/v2.3.0...v3.0.0
 [2.3.0]: https://github.com/tsvillain/pglens/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/tsvillain/pglens/compare/v2.1.0...v2.2.0
