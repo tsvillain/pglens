@@ -26,6 +26,8 @@ const { splitStatements } = require('../db/statements');
 const { extractExplainTiming } = require('../db/explain');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
+const savedQueries = require('../db/savedQueries');
+const queryHistory = require('../db/queryHistory');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
@@ -1069,6 +1071,110 @@ router.delete('/views/:id', validate({ params: ViewIdParam }), (req, res) => {
   const ok = views.deleteView(req.params.id);
   if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'View not found');
   res.json({ deleted: true });
+});
+
+// ---- Saved queries (roadmap §5.5) -------------------------------------------
+//
+// Raw SQL + organizational metadata (folder / tags / description) and
+// Postman-style `{{variable}}` defaults, scoped per connection. Stored in
+// `~/.pglens/saved-queries.json` — see `src/db/savedQueries.js`. Listing is
+// open (no `requireConnection`) so the editor's Saved menu populates even when
+// the database isn't reachable.
+
+const SavedQueryListQuery = z.object({
+  connectionId: z.string().min(1).max(255).optional(),
+});
+
+const SavedQueryIdParam = z.object({ id: z.string().uuid() });
+
+const SavedQueryImportSchema = z.object({
+  connectionId: z.string().min(1).max(255),
+  savedQueries: z.array(savedQueries.ImportItemSchema).min(1).max(2000),
+});
+
+router.get('/saved-queries', validate({ query: SavedQueryListQuery }), (req, res) => {
+  res.json({ savedQueries: savedQueries.listSavedQueries(req.query) });
+});
+
+router.post('/saved-queries', validate({ body: savedQueries.SavedQueryBodySchema }), (req, res) => {
+  try {
+    res.status(201).json({ savedQuery: savedQueries.createSavedQuery(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+// Bulk import for the export/import flow. Registered before `/:id` is moot here
+// (this is POST, the id routes are PUT/DELETE) but kept adjacent for clarity.
+router.post('/saved-queries/import', validate({ body: SavedQueryImportSchema }), (req, res) => {
+  try {
+    const created = savedQueries.importMany(req.body.connectionId, req.body.savedQueries);
+    res.status(201).json({ savedQueries: created, count: created.length });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.put('/saved-queries/:id',
+  validate({ params: SavedQueryIdParam, body: savedQueries.SavedQueryPatchSchema }),
+  (req, res) => {
+    try {
+      const updated = savedQueries.updateSavedQuery(req.params.id, req.body);
+      if (!updated) {
+        return sendError(res, 404, codes.NOT_FOUND, 'Saved query not found');
+      }
+      res.json({ savedQuery: updated });
+    } catch (err) {
+      return sendError(res, 400, codes.BAD_REQUEST, err.message);
+    }
+  });
+
+router.delete('/saved-queries/:id', validate({ params: SavedQueryIdParam }), (req, res) => {
+  const ok = savedQueries.deleteSavedQuery(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'Saved query not found');
+  res.json({ deleted: true });
+});
+
+// ---- Query history (roadmap §5.5) -------------------------------------------
+//
+// Per-connection run log written by the Advanced editor after each run. Stored
+// in `~/.pglens/query-history.json` — see `src/db/queryHistory.js`. Like saved
+// queries, none of these touch the database, so no `requireConnection`.
+
+const HistoryListQuery = z.object({
+  connectionId: z.string().min(1).max(255),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
+const HistoryIdParam = z.object({ id: z.string().uuid() });
+
+const HistoryClearQuery = z.object({
+  connectionId: z.string().min(1).max(255),
+});
+
+router.get('/query-history', validate({ query: HistoryListQuery }), (req, res) => {
+  res.json({ entries: queryHistory.listHistory(req.query) });
+});
+
+router.post('/query-history', validate({ body: queryHistory.HistoryEntrySchema }), (req, res) => {
+  try {
+    res.status(201).json({ entry: queryHistory.addHistory(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.delete('/query-history/:id', validate({ params: HistoryIdParam }), (req, res) => {
+  const ok = queryHistory.deleteEntry(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'History entry not found');
+  res.json({ deleted: true });
+});
+
+// Clear every entry for a connection. The bare path (no `:id`) carries the
+// connection in the query string so it never shadows the per-entry delete.
+router.delete('/query-history', validate({ query: HistoryClearQuery }), (req, res) => {
+  const count = queryHistory.clearHistory(req.query.connectionId);
+  res.json({ cleared: true, count });
 });
 
 // ---- Raw-SQL escape hatch ---------------------------------------------------

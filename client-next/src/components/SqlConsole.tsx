@@ -8,19 +8,24 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Database, Gauge, Play, RotateCcw, Sparkles, Undo2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Loading, Spinner } from '@/components/ui/spinner'
 import { QueryResults } from '@/components/QueryResults'
+import { QueryHistoryMenu } from '@/components/QueryHistoryMenu'
+import { SavedQueriesMenu } from '@/components/SavedQueriesMenu'
 import {
   ApiError,
+  addQueryHistory,
   commitTx,
   getDatabaseSchema,
   rollbackTx,
   runQuery,
   runTxQuery,
+  type QueryResult,
+  type TxQueryResult,
 } from '@/lib/api'
 import { registerSqlSupport, setActiveSchema } from '@/lib/sqlLanguage'
 import { applyParams, extractParamNames } from '@/lib/sqlParams'
@@ -60,6 +65,7 @@ export function SqlConsole({
   onRegenerate,
 }: SqlConsoleProps) {
   const theme = useEffectiveTheme()
+  const qc = useQueryClient()
 
   // Schema powers autocomplete; cached and shared with the no-code views via the
   // same query key. Kept in a ref so the editor's focus handler can publish it
@@ -107,6 +113,31 @@ export function SqlConsole({
   const explainRef = useRef(explain)
   explainRef.current = explain
 
+  // Record each run to per-connection query history (roadmap §5.5). Stores the
+  // raw editor text (with any `:name` / `{{var}}` placeholders) so a restored
+  // entry reproduces what the user typed, not a rewritten form. Fire-and-forget:
+  // a history write failure never blocks the run.
+  const recordHistory = useCallback(
+    (success: boolean, data?: QueryResult | TxQueryResult, err?: unknown) => {
+      const sql = valueRef.current
+      if (!sql.trim()) return
+      const rowCount = data
+        ? data.results.reduce((n, r) => n + (r.rowCount ?? r.rows.length ?? 0), 0)
+        : null
+      addQueryHistory({
+        connectionId,
+        sql,
+        durationMs: data?.durationMs ?? null,
+        rowCount,
+        success,
+        error: success ? null : ((err as Error)?.message ?? 'Query failed').slice(0, 2000),
+      })
+        .then(() => qc.invalidateQueries({ queryKey: ['query-history', connectionId] }))
+        .catch(() => {})
+    },
+    [connectionId, qc],
+  )
+
   const mutation = useMutation({
     mutationFn: () => {
       const sql = valueRef.current
@@ -128,12 +159,14 @@ export function SqlConsole({
       }
       return runQuery(connectionId, text, params, opts)
     },
+    onSuccess: (data) => recordHistory(true, data),
     onError: (err) => {
       // Reserve/BEGIN never happened if the connection is gone — clear the
       // optimistic open flag. Other errors leave the transaction open to roll back.
       if (txModeRef.current === 'transaction' && (err as ApiError).code === 'NO_CONNECTION') {
         setTxClosed(tabId)
       }
+      recordHistory(false, undefined, err)
     },
   })
 
@@ -237,6 +270,12 @@ export function SqlConsole({
               <RotateCcw className="h-3.5 w-3.5" /> Reset from no-code
             </Button>
           )}
+          <SavedQueriesMenu
+            connectionId={connectionId}
+            currentSql={value}
+            onLoad={onChange}
+          />
+          <QueryHistoryMenu connectionId={connectionId} onLoad={onChange} />
           <Button
             size="sm"
             variant={explain ? 'default' : 'outline'}

@@ -685,6 +685,158 @@ export async function deleteView(id: string): Promise<void> {
   }
 }
 
+// ---- Saved queries (roadmap §5.5) -------------------------------------------
+
+const SavedQuerySchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  name: z.string(),
+  sql: z.string(),
+  description: z.string().nullable().optional(),
+  folder: z.string().nullable().optional(),
+  tags: z.array(z.string()).optional(),
+  // Postman-style `{{variable}}` default values (see lib/sqlTemplate.ts).
+  variables: z.record(z.string(), z.string()).nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+export type SavedQuery = z.infer<typeof SavedQuerySchema>
+
+const ListSavedQueriesResponse = z.object({ savedQueries: z.array(SavedQuerySchema) })
+const SavedQueryEnvelope = z.object({ savedQuery: SavedQuerySchema })
+const ImportSavedQueriesResponse = z.object({
+  savedQueries: z.array(SavedQuerySchema),
+  count: z.number(),
+})
+
+export interface SaveQueryPayload {
+  connectionId: string
+  name: string
+  sql: string
+  description?: string | null
+  folder?: string | null
+  tags?: string[]
+  variables?: Record<string, string> | null
+}
+
+/** A single saved query as it travels through export/import JSON. */
+export type SaveQueryImport = Omit<SaveQueryPayload, 'connectionId'>
+
+export function listSavedQueries(connectionId: string, signal?: AbortSignal) {
+  const qs = new URLSearchParams({ connectionId })
+  return api(`/api/saved-queries?${qs.toString()}`, ListSavedQueriesResponse, { signal })
+}
+
+export async function createSavedQuery(payload: SaveQueryPayload): Promise<SavedQuery> {
+  const { savedQuery } = await postJson('/api/saved-queries', payload, SavedQueryEnvelope)
+  return savedQuery
+}
+
+export async function updateSavedQuery(
+  id: string,
+  patch: Partial<SaveQueryPayload>,
+): Promise<SavedQuery> {
+  const { savedQuery } = await postJson(
+    `/api/saved-queries/${encodeURIComponent(id)}`,
+    patch,
+    SavedQueryEnvelope,
+    'PUT',
+  )
+  return savedQuery
+}
+
+export async function deleteSavedQuery(id: string): Promise<void> {
+  const res = await fetch(`/api/saved-queries/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+  })
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+}
+
+export async function importSavedQueries(
+  connectionId: string,
+  savedQueries: SaveQueryImport[],
+): Promise<SavedQuery[]> {
+  const res = await postJson(
+    '/api/saved-queries/import',
+    { connectionId, savedQueries },
+    ImportSavedQueriesResponse,
+  )
+  return res.savedQueries
+}
+
+// ---- Query history (roadmap §5.5) -------------------------------------------
+
+const QueryHistoryEntrySchema = z.object({
+  id: z.string(),
+  connectionId: z.string(),
+  sql: z.string(),
+  durationMs: z.number().nullable().optional(),
+  rowCount: z.number().nullable().optional(),
+  success: z.boolean(),
+  error: z.string().nullable().optional(),
+  executedAt: z.string(),
+})
+export type QueryHistoryEntry = z.infer<typeof QueryHistoryEntrySchema>
+
+const ListHistoryResponse = z.object({ entries: z.array(QueryHistoryEntrySchema) })
+const ClearHistoryResponse = z.object({ cleared: z.boolean(), count: z.number() })
+
+export interface AddHistoryPayload {
+  connectionId: string
+  sql: string
+  durationMs?: number | null
+  rowCount?: number | null
+  success: boolean
+  error?: string | null
+}
+
+export function listQueryHistory(
+  connectionId: string,
+  limit?: number,
+  signal?: AbortSignal,
+) {
+  const qs = new URLSearchParams({ connectionId })
+  if (limit) qs.set('limit', String(limit))
+  return api(`/api/query-history?${qs.toString()}`, ListHistoryResponse, { signal })
+}
+
+export async function addQueryHistory(payload: AddHistoryPayload): Promise<void> {
+  // Fire-and-forget from the caller's perspective; we still surface transport
+  // errors so a caller that cares can `.catch()` them.
+  await fetch('/api/query-history', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+    credentials: 'same-origin',
+  })
+}
+
+export async function deleteQueryHistoryEntry(id: string): Promise<void> {
+  const res = await fetch(`/api/query-history/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+  })
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw parseErrorBody(json, res.status)
+  }
+}
+
+export async function clearQueryHistory(connectionId: string): Promise<number> {
+  const qs = new URLSearchParams({ connectionId })
+  const res = await fetch(`/api/query-history?${qs.toString()}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return ClearHistoryResponse.parse(json).count
+}
+
 // ---- Inline row edit --------------------------------------------------------
 
 const UpdateRowResponse = z.object({

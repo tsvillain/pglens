@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Improved query history & saved queries** (roadmap §5.5). Query
+  history is now persisted per connection: the Advanced editor records
+  every run (raw SQL, duration, row count, success/error) to
+  `~/.pglens/query-history.json` via `GET/POST/DELETE /api/query-history`,
+  with a per-connection 200-entry ring buffer. A **History** menu in the
+  editor toolbar lists recent runs most-recent-first; click to reload the
+  SQL, delete an entry, or clear all. **Saved queries** are a
+  per-connection library of raw SQL with folder + tag organization and
+  optional description, persisted to `~/.pglens/saved-queries.json` via
+  `GET/POST/PUT/DELETE /api/saved-queries` (unique name per connection,
+  atomic writes). A **Saved** menu groups queries by folder with
+  name/folder/tag filtering, plus save / edit / delete and JSON
+  export/import (`POST /api/saved-queries/import`, auto-suffixing name
+  collisions). Saved queries support Postman-style `{{variable}}`
+  placeholders — a distinct template layer from the editor's `:name`
+  bound parameters (§5.2): `{{variables}}` are filled from saved defaults
+  and substituted into the SQL on load (the user reviews/edits before
+  running), while `:name` stays a server-side `$n` bind.
+
 ## [3.1.0] - 2026-05-29
 
 Phase 1 — No-Code Editing Core. pglens moves from "viewer" to "client":
