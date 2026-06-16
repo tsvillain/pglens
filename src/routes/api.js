@@ -24,6 +24,7 @@ const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('.
 const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/import');
 const { splitStatements } = require('../db/statements');
 const { extractExplainTiming } = require('../db/explain');
+const operations = require('../db/operations');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const savedQueries = require('../db/savedQueries');
@@ -1384,5 +1385,52 @@ router.post('/format', validate({ body: FormatBodySchema }), (req, res) => {
     return sendError(res, 400, codes.BAD_REQUEST, `Could not format SQL: ${err.message}`);
   }
 });
+
+// ---- Live activity dashboard (roadmap §6.1) --------------------------------
+//
+// One snapshot of the server's own stat views per call; the client polls this
+// every few seconds while the Operations panel is open. Each section degrades
+// independently inside getOverview(), so the route only 500s on a hard failure.
+
+router.get('/operations/overview', requireConnection, async (req, res) => {
+  try {
+    const overview = await operations.getOverview(req.pool, req.schema);
+    res.json(overview);
+  } catch (err) {
+    logger.error({ err: err.message }, 'operations overview failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// A backend pid to act on. Postgres backend pids are positive 32-bit ints.
+const BackendActionBody = z.object({
+  pid: z.coerce.number().int().positive(),
+});
+
+router.post('/operations/cancel',
+  requireConnection,
+  validate({ body: BackendActionBody }),
+  async (req, res) => {
+    try {
+      const result = await operations.cancelBackend(req.pool, req.body.pid);
+      res.json(result);
+    } catch (err) {
+      logger.warn({ err: err.message, pid: req.body.pid }, 'cancel backend failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+router.post('/operations/terminate',
+  requireConnection,
+  validate({ body: BackendActionBody }),
+  async (req, res) => {
+    try {
+      const result = await operations.terminateBackend(req.pool, req.body.pid);
+      res.json(result);
+    } catch (err) {
+      logger.warn({ err: err.message, pid: req.body.pid }, 'terminate backend failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
 
 module.exports = router;

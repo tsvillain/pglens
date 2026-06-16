@@ -1015,3 +1015,143 @@ export function getAggregates(
     { connectionId, signal },
   )
 }
+
+// ---- Live activity dashboard (roadmap §6.1) ---------------------------------
+
+// Postgres bigint/numeric values (sizes, LSN lag, epoch seconds) arrive as
+// strings through the driver, while int4 counts arrive as numbers. Accept
+// either and let the UI coerce with Number() at the point of display.
+const Numeric = z.union([z.number(), z.string()]).nullable()
+
+const ActivitySessionSchema = z.object({
+  pid: z.number(),
+  usename: z.string().nullable(),
+  application_name: z.string().nullable().optional(),
+  client_addr: z.string().nullable().optional(),
+  state: z.string().nullable(),
+  wait_event_type: z.string().nullable().optional(),
+  wait_event: z.string().nullable().optional(),
+  backend_type: z.string().nullable().optional(),
+  query: z.string().nullable(),
+  backend_start: z.string().nullable().optional(),
+  xact_start: z.string().nullable().optional(),
+  query_start: z.string().nullable().optional(),
+  state_change: z.string().nullable().optional(),
+  age_seconds: Numeric.optional(),
+  state_age_seconds: Numeric.optional(),
+})
+export type ActivitySession = z.infer<typeof ActivitySessionSchema>
+
+const BlockingEntrySchema = z.object({
+  blocked_pid: z.number(),
+  blocked_user: z.string().nullable(),
+  blocked_query: z.string().nullable(),
+  wait_event_type: z.string().nullable().optional(),
+  wait_event: z.string().nullable().optional(),
+  blocking_pid: z.number(),
+  blocking_user: z.string().nullable(),
+  blocking_query: z.string().nullable(),
+  blocking_state: z.string().nullable().optional(),
+})
+export type BlockingEntry = z.infer<typeof BlockingEntrySchema>
+
+const ReplicationEntrySchema = z.object({
+  pid: z.number(),
+  usename: z.string().nullable().optional(),
+  application_name: z.string().nullable().optional(),
+  client_addr: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  sync_state: z.string().nullable().optional(),
+  sent_lsn: z.string().nullable().optional(),
+  replay_lsn: z.string().nullable().optional(),
+  lag_bytes: Numeric.optional(),
+  write_lag_seconds: Numeric.optional(),
+  flush_lag_seconds: Numeric.optional(),
+  replay_lag_seconds: Numeric.optional(),
+})
+export type ReplicationEntry = z.infer<typeof ReplicationEntrySchema>
+
+const DatabaseSizeSchema = z
+  .object({ name: z.string(), bytes: Numeric, pretty: z.string() })
+  .nullable()
+export type DatabaseSize = z.infer<typeof DatabaseSizeSchema>
+
+const TableSizeSchema = z.object({
+  name: z.string(),
+  total_bytes: Numeric,
+  table_bytes: Numeric,
+  index_bytes: Numeric,
+  total_pretty: z.string(),
+})
+export type TableSize = z.infer<typeof TableSizeSchema>
+
+const SizesSchema = z.object({
+  database: DatabaseSizeSchema,
+  tables: z.array(TableSizeSchema),
+})
+
+const ConnectionStatsSchema = z.object({
+  total: z.number(),
+  active: z.number(),
+  idle: z.number(),
+  idle_in_transaction: z.number(),
+  max: z.number().nullable(),
+  reserved: z.number().nullable(),
+  level: z.enum(['ok', 'warn']),
+})
+export type ConnectionStats = z.infer<typeof ConnectionStatsSchema>
+
+// Every dashboard section is `{ data, error }` so one section failing (e.g.
+// replication on a restricted role) renders as an inline warning, not a blank
+// panel — mirrors getOverview() server-side.
+export interface OpsSection<T> {
+  data: T | null
+  error: string | null
+}
+function section<T>(schema: z.ZodType<T>) {
+  return z.object({ data: schema.nullable(), error: z.string().nullable() })
+}
+
+const OperationsOverviewSchema = z.object({
+  activity: section(z.array(ActivitySessionSchema)),
+  blocking: section(z.array(BlockingEntrySchema)),
+  replication: section(z.array(ReplicationEntrySchema)),
+  sizes: section(SizesSchema),
+  connections: section(ConnectionStatsSchema),
+})
+export type OperationsOverview = z.infer<typeof OperationsOverviewSchema>
+
+export function getOperationsOverview(connectionId: string, signal?: AbortSignal) {
+  return api('/api/operations/overview', OperationsOverviewSchema, { connectionId, signal })
+}
+
+const BackendActionResponse = z.object({
+  cancelled: z.boolean().optional(),
+  terminated: z.boolean().optional(),
+})
+
+async function backendAction(
+  action: 'cancel' | 'terminate',
+  connectionId: string,
+  pid: number,
+) {
+  const res = await fetch(`/api/operations/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
+    body: JSON.stringify({ pid }),
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return BackendActionResponse.parse(json)
+}
+
+/** Cancel the running query on a backend (gentle — keeps the session). */
+export function cancelBackend(connectionId: string, pid: number) {
+  return backendAction('cancel', connectionId, pid)
+}
+
+/** Terminate a whole backend session (hard — drops the connection). */
+export function terminateBackend(connectionId: string, pid: number) {
+  return backendAction('terminate', connectionId, pid)
+}

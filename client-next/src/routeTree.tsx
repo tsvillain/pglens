@@ -3,6 +3,7 @@ import { Home } from './pages/Home'
 import { TableView } from './pages/TableView'
 import { SchemaViz } from './pages/SchemaViz'
 import { QueryRunner } from './pages/QueryRunner'
+import { Operations } from './pages/Operations'
 import { Sidebar } from './components/Sidebar'
 import { TabBar } from './components/TabBar'
 import { Spotlight } from './components/Spotlight'
@@ -69,9 +70,16 @@ const queryRoute = createRoute({
   component: QueryRunner,
 })
 
+const operationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/operations',
+  component: Operations,
+})
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   tableRoute,
   schemaRoute,
   queryRoute,
+  operationsRoute,
 ])

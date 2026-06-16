@@ -4,6 +4,7 @@ export type Tab =
   | { kind: 'table'; tableName: string }
   | { kind: 'query' }
   | { kind: 'schema' }
+  | { kind: 'operations' }
   | { kind: 'home' }
 
 function tabId(t: Tab): string {
@@ -11,6 +12,7 @@ function tabId(t: Tab): string {
     case 'table': return `table:${t.tableName}`
     case 'query': return 'query'
     case 'schema': return 'schema'
+    case 'operations': return 'operations'
     case 'home': return 'home'
   }
 }
@@ -20,6 +22,7 @@ function tabLabel(t: Tab): string {
     case 'table': return t.tableName
     case 'query': return 'Query'
     case 'schema': return 'Schema'
+    case 'operations': return 'Operations'
     case 'home': return 'Home'
   }
 }
@@ -29,6 +32,7 @@ function tabRoute(t: Tab): string {
     case 'table': return `/tables/${encodeURIComponent(t.tableName)}`
     case 'query': return '/query'
     case 'schema': return '/schema'
+    case 'operations': return '/operations'
     case 'home': return '/'
   }
 }

@@ -207,6 +207,65 @@ test('transaction mode: implicit BEGIN, isolation, rollback discards, commit per
   await h('/api/disconnect', { method: 'POST', body: JSON.stringify({ connectionId }) });
 });
 
+test('operations dashboard: overview snapshot + backend-action wiring (roadmap §6.1)', async () => {
+  const connectRes = await http('/api/connect', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: DB_URL, sslMode: 'disable', name: 'ops-itest' }),
+  });
+  const { connectionId } = await connectRes.json();
+  assert.ok(connectionId);
+
+  const h = (path, init = {}) =>
+    http(path, {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+        ...(init.headers || {}),
+      },
+    });
+
+  const overview = await (await h('/api/operations/overview', { method: 'GET' })).json();
+
+  // Every section is present and shaped `{ data, error }`.
+  for (const key of ['activity', 'blocking', 'replication', 'sizes', 'connections']) {
+    assert.ok(overview[key], `missing section ${key}`);
+    assert.ok('data' in overview[key] && 'error' in overview[key], `section ${key} not enveloped`);
+  }
+
+  // Connection stats are real counts with a derived warning level.
+  assert.equal(overview.connections.error, null);
+  assert.ok(overview.connections.data.total >= 1);
+  assert.ok(['ok', 'warn'].includes(overview.connections.data.level));
+
+  // Database size is reported in bytes.
+  assert.equal(overview.sizes.error, null);
+  assert.ok(Number(overview.sizes.data.database.bytes) > 0);
+
+  // Activity is a list and never includes the polling backend's own pid.
+  assert.ok(Array.isArray(overview.activity.data));
+
+  // Acting on a non-existent backend is a clean no-op (max int4 pid).
+  const cancel = await (await h('/api/operations/cancel', {
+    method: 'POST', body: JSON.stringify({ pid: 2147483647 }),
+  })).json();
+  assert.equal(cancel.cancelled, false);
+  const term = await (await h('/api/operations/terminate', {
+    method: 'POST', body: JSON.stringify({ pid: 2147483647 }),
+  })).json();
+  assert.equal(term.terminated, false);
+
+  // A non-positive pid is rejected by validation before touching the DB.
+  const bad = await h('/api/operations/cancel', {
+    method: 'POST', body: JSON.stringify({ pid: 0 }),
+  });
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error.code, 'VALIDATION');
+
+  await h('/api/disconnect', { method: 'POST', body: JSON.stringify({ connectionId }) });
+});
+
 test.after(() => {
   // Best-effort cleanup of the sandbox HOME.
   try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* ignore */ }

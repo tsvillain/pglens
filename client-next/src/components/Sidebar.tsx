@@ -4,7 +4,7 @@ import {
   Link, useMatchRoute, useNavigate, useRouterState,
 } from '@tanstack/react-router'
 import {
-  Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
+  Activity, Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
   MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon, Terminal,
 } from 'lucide-react'
 
@@ -299,6 +299,22 @@ export function Sidebar() {
             )}
             {exportMut.isPending ? 'Exporting backup…' : 'Export backup'}
           </button>
+        </Section>
+      )}
+
+      {activeConn && (
+        <Section title="Operations">
+          <Link
+            to="/operations"
+            onClick={() => openTab({ kind: 'operations' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/operations' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <Activity className="h-3.5 w-3.5 text-muted-foreground" />
+            Live activity
+          </Link>
         </Section>
       )}
 

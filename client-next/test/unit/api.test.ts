@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, exportTableData, importTableData, listConnections, runQuery } from '@/lib/api'
+import {
+  ApiError, cancelBackend, exportTableData, getOperationsOverview,
+  importTableData, listConnections, runQuery, terminateBackend,
+} from '@/lib/api'
 import type { FilterGroup } from '@/lib/api'
 
 const fetchMock = vi.fn()
@@ -260,5 +263,81 @@ describe('importTableData', () => {
         mode: 'insert',
       }),
     ).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('getOperationsOverview', () => {
+  // A realistic overview: int4 counts arrive as numbers, bigint/numeric sizes
+  // and epoch lags arrive as strings through the driver — both must parse.
+  const overview = {
+    activity: {
+      data: [
+        {
+          pid: 42, usename: 'app', state: 'active', query: 'SELECT 1',
+          wait_event_type: null, wait_event: null, age_seconds: '12.5',
+        },
+      ],
+      error: null,
+    },
+    blocking: { data: [], error: null },
+    replication: { data: null, error: 'permission denied for pg_stat_replication' },
+    sizes: {
+      data: {
+        database: { name: 'mydb', bytes: '1048576', pretty: '1024 kB' },
+        tables: [
+          { name: 'users', total_bytes: '8192', table_bytes: '4096', index_bytes: '4096', total_pretty: '8192 bytes' },
+        ],
+      },
+      error: null,
+    },
+    connections: {
+      data: { total: 90, active: 10, idle: 80, idle_in_transaction: 0, max: 100, reserved: 3, level: 'warn' },
+      error: null,
+    },
+  }
+
+  it('sends the connection header and parses the section envelopes', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(overview))
+    const result = await getOperationsOverview('conn-1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/operations/overview')
+    expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
+    // String-encoded numerics survive parsing untouched (UI coerces them).
+    expect(result.sizes.data?.tables[0]?.total_bytes).toBe('8192')
+    expect(result.connections.data?.level).toBe('warn')
+    // A failed section is captured, not thrown.
+    expect(result.replication.data).toBeNull()
+    expect(result.replication.error).toMatch(/permission denied/)
+  })
+})
+
+describe('backend actions', () => {
+  it('cancelBackend POSTs the pid with the connection header', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ cancelled: true }))
+    const result = await cancelBackend('conn-1', 42)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/operations/cancel')
+    expect((init as RequestInit).method).toBe('POST')
+    expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ pid: 42 })
+    expect(result.cancelled).toBe(true)
+  })
+
+  it('terminateBackend hits the terminate route', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ terminated: false }))
+    const result = await terminateBackend('conn-1', 99)
+    const [url] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/operations/terminate')
+    expect(result.terminated).toBe(false)
+  })
+
+  it('throws ApiError when Postgres rejects the action', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: 'DB_ERROR', message: 'must be a superuser to terminate' } },
+        { status: 500 },
+      ),
+    )
+    await expect(terminateBackend('conn-1', 1)).rejects.toBeInstanceOf(ApiError)
   })
 })
