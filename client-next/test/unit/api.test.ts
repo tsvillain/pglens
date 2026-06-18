@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  ApiError, cancelBackend, exportTableData, getOperationsOverview,
-  importTableData, listConnections, runQuery, terminateBackend,
+  ApiError, cancelBackend, enableStatements, exportTableData,
+  getOperationsOverview, getSlowStatements, importTableData, listConnections,
+  resetStatements, runQuery, terminateBackend,
 } from '@/lib/api'
 import type { FilterGroup } from '@/lib/api'
 
@@ -339,5 +340,79 @@ describe('backend actions', () => {
       ),
     )
     await expect(terminateBackend('conn-1', 1)).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('getSlowStatements', () => {
+  it('builds the sort/limit query, sends the connection header, parses rows', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'ready',
+        available: true,
+        statements: [
+          {
+            queryid: '123', query: 'SELECT * FROM users WHERE id = $1',
+            // bigint counters as strings, float8 times as numbers — both parse.
+            calls: '40', total_exec_time: 800, mean_exec_time: 20,
+            stddev_exec_time: 5, min_exec_time: 10, max_exec_time: 90,
+            p95_exec_time_est: 28.2, rows: '40',
+            shared_blks_hit: '1000', shared_blks_read: '12', shared_blks_written: '0',
+            temp_blks_read: '0', temp_blks_written: '0',
+          },
+        ],
+      }),
+    )
+    const result = await getSlowStatements('conn-1', 'mean_exec_time', 25)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/operations/statements?sort=mean_exec_time&limit=25')
+    expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
+    expect(result.status).toBe('ready')
+    expect(result.statements[0]?.calls).toBe('40')
+    expect(result.statements[0]?.p95_exec_time_est).toBe(28.2)
+  })
+
+  it('parses the not_installed state with its enable DDL', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        status: 'not_installed',
+        available: true,
+        ddl: 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;',
+        statements: [],
+      }),
+    )
+    const result = await getSlowStatements('conn-1', 'total_exec_time')
+    expect(result.status).toBe('not_installed')
+    expect(result.ddl).toMatch(/CREATE EXTENSION/)
+    expect(result.statements).toEqual([])
+  })
+})
+
+describe('statement actions', () => {
+  it('enableStatements POSTs to the enable route with the connection header', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ enabled: true, installed: true, available: true }))
+    const result = await enableStatements('conn-1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/operations/statements/enable')
+    expect((init as RequestInit).method).toBe('POST')
+    expect(((init as RequestInit).headers as Record<string, string>)['x-connection-id']).toBe('conn-1')
+    expect(result.enabled).toBe(true)
+  })
+
+  it('resetStatements POSTs to the reset route', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ reset: true }))
+    const result = await resetStatements('conn-1')
+    const [url] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/operations/statements/reset')
+    expect(result.reset).toBe(true)
+  })
+
+  it('throws ApiError when the server rejects (e.g. not superuser)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: 'DB_ERROR', message: 'permission denied to create extension' } },
+        { status: 500 },
+      ),
+    )
+    await expect(enableStatements('conn-1')).rejects.toBeInstanceOf(ApiError)
   })
 })

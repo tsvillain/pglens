@@ -5,6 +5,7 @@ export type Tab =
   | { kind: 'query' }
   | { kind: 'schema' }
   | { kind: 'operations' }
+  | { kind: 'slow-queries' }
   | { kind: 'home' }
 
 function tabId(t: Tab): string {
@@ -13,6 +14,7 @@ function tabId(t: Tab): string {
     case 'query': return 'query'
     case 'schema': return 'schema'
     case 'operations': return 'operations'
+    case 'slow-queries': return 'slow-queries'
     case 'home': return 'home'
   }
 }
@@ -23,6 +25,7 @@ function tabLabel(t: Tab): string {
     case 'query': return 'Query'
     case 'schema': return 'Schema'
     case 'operations': return 'Operations'
+    case 'slow-queries': return 'Slow queries'
     case 'home': return 'Home'
   }
 }
@@ -33,6 +36,7 @@ function tabRoute(t: Tab): string {
     case 'query': return '/query'
     case 'schema': return '/schema'
     case 'operations': return '/operations'
+    case 'slow-queries': return '/slow-queries'
     case 'home': return '/'
   }
 }

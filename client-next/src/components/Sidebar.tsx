@@ -5,7 +5,7 @@ import {
 } from '@tanstack/react-router'
 import {
   Activity, Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
-  MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon, Terminal,
+  MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon, Terminal, Timer,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -314,6 +314,17 @@ export function Sidebar() {
           >
             <Activity className="h-3.5 w-3.5 text-muted-foreground" />
             Live activity
+          </Link>
+          <Link
+            to="/slow-queries"
+            onClick={() => openTab({ kind: 'slow-queries' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/slow-queries' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <Timer className="h-3.5 w-3.5 text-muted-foreground" />
+            Slow queries
           </Link>
         </Section>
       )}

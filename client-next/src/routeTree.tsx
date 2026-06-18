@@ -4,6 +4,7 @@ import { TableView } from './pages/TableView'
 import { SchemaViz } from './pages/SchemaViz'
 import { QueryRunner } from './pages/QueryRunner'
 import { Operations } from './pages/Operations'
+import { SlowQueries } from './pages/SlowQueries'
 import { Sidebar } from './components/Sidebar'
 import { TabBar } from './components/TabBar'
 import { Spotlight } from './components/Spotlight'
@@ -76,10 +77,17 @@ const operationsRoute = createRoute({
   component: Operations,
 })
 
+const slowQueriesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/slow-queries',
+  component: SlowQueries,
+})
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   tableRoute,
   schemaRoute,
   queryRoute,
   operationsRoute,
+  slowQueriesRoute,
 ])

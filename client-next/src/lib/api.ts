@@ -1155,3 +1155,87 @@ export function cancelBackend(connectionId: string, pid: number) {
 export function terminateBackend(connectionId: string, pid: number) {
   return backendAction('terminate', connectionId, pid)
 }
+
+// ---- Slow query view (roadmap §6.2) -----------------------------------------
+
+// One pg_stat_statements aggregate. bigint counters (calls, rows, blocks)
+// arrive as strings; the float8 `*_exec_time` values (milliseconds) arrive as
+// numbers. `p95_exec_time_est` is derived server-side (mean + 1.6449·stddev,
+// clamped) since pg_stat_statements stores no true percentiles.
+const SlowStatementSchema = z.object({
+  queryid: z.string(),
+  query: z.string().nullable(),
+  calls: Numeric,
+  total_exec_time: Numeric,
+  mean_exec_time: Numeric,
+  stddev_exec_time: Numeric,
+  min_exec_time: Numeric,
+  max_exec_time: Numeric,
+  p95_exec_time_est: z.number().nullable(),
+  rows: Numeric,
+  shared_blks_hit: Numeric,
+  shared_blks_read: Numeric,
+  shared_blks_dirtied: Numeric.optional(),
+  shared_blks_written: Numeric,
+  local_blks_hit: Numeric.optional(),
+  local_blks_read: Numeric.optional(),
+  temp_blks_read: Numeric,
+  temp_blks_written: Numeric,
+})
+export type SlowStatement = z.infer<typeof SlowStatementSchema>
+
+// The list is a small state machine so the UI shows the enable prompt vs. the
+// table without parsing error strings — mirrors getStatements() server-side.
+const StatementsResponseSchema = z.object({
+  status: z.enum(['ready', 'not_installed', 'not_loaded']),
+  available: z.boolean(),
+  ddl: z.string().optional(),
+  statements: z.array(SlowStatementSchema),
+})
+export type StatementsResponse = z.infer<typeof StatementsResponseSchema>
+
+// Sortable metrics (roadmap §6.2). Mirrors the server-side allowlist.
+export type StatementSort = 'total_exec_time' | 'mean_exec_time' | 'calls'
+
+export function getSlowStatements(
+  connectionId: string,
+  sort: StatementSort,
+  limit?: number,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ sort })
+  if (limit) params.set('limit', String(limit))
+  return api(`/api/operations/statements?${params}`, StatementsResponseSchema, {
+    connectionId,
+    signal,
+  })
+}
+
+const StatementActionResponse = z.object({
+  reset: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  installed: z.boolean().optional(),
+  available: z.boolean().optional(),
+})
+export type StatementActionResult = z.infer<typeof StatementActionResponse>
+
+async function statementsAction(action: 'enable' | 'reset', connectionId: string) {
+  const res = await fetch(`/api/operations/statements/${action}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
+    credentials: 'same-origin',
+  })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return StatementActionResponse.parse(json)
+}
+
+/** Create pg_stat_statements (idempotent; needs a privileged role). */
+export function enableStatements(connectionId: string) {
+  return statementsAction('enable', connectionId)
+}
+
+/** Discard all collected statistics (roadmap §6.2: "Reset stats"). */
+export function resetStatements(connectionId: string) {
+  return statementsAction('reset', connectionId)
+}
