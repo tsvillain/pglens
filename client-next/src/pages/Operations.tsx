@@ -14,6 +14,7 @@ import {
   type DatabaseSize, type OpsSection, type ReplicationEntry, type TableSize,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { formatBytes, formatDuration } from '@/lib/format'
 import { useConnectionStore } from '@/store/connection'
 
 // Roadmap §6.1: "Refresh every 5 seconds while the panel is open."
@@ -537,37 +538,4 @@ function Th({ children, className }: { children: React.ReactNode; className?: st
 
 function Td({ children, className, title }: { children: React.ReactNode; className?: string; title?: string }) {
   return <td className={cn('px-3 py-1.5', className)} title={title}>{children}</td>
-}
-
-function toNum(v: number | string | null | undefined): number | null {
-  if (v == null) return null
-  const n = typeof v === 'number' ? v : Number(v)
-  return Number.isFinite(n) ? n : null
-}
-
-function formatBytes(v: number | string | null | undefined): string {
-  const n = toNum(v)
-  if (n == null) return '—'
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB', 'TB', 'PB']
-  let val = n / 1024
-  let i = 0
-  while (val >= 1024 && i < units.length - 1) {
-    val /= 1024
-    i++
-  }
-  return `${val.toFixed(val >= 10 ? 0 : 1)} ${units[i]}`
-}
-
-function formatDuration(v: number | string | null | undefined): string {
-  const s = toNum(v)
-  if (s == null) return '—'
-  if (s < 1) return '<1s'
-  const sec = Math.floor(s)
-  const h = Math.floor(sec / 3600)
-  const m = Math.floor((sec % 3600) / 60)
-  const r = sec % 60
-  if (h > 0) return `${h}h ${m}m`
-  if (m > 0) return `${m}m ${r}s`
-  return `${r}s`
 }

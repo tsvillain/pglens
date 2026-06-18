@@ -25,6 +25,9 @@ process.env.HOME = sandbox;
 process.env.PGLENS_V3 = '0';
 process.env.PGLENS_BIND = '127.0.0.1';
 process.env.PGLENS_LOG_LEVEL = 'warn';
+// Keep secrets out of the real OS keychain — store them in the sandbox so the
+// suite runs headless / on CI / on a broken keychain without prompting.
+process.env.PGLENS_SECRET_STORE = 'file';
 
 const { startServer } = require('../../src/server');
 const { loadOrCreateToken } = require('../../src/auth');
@@ -179,7 +182,7 @@ test('transaction mode: implicit BEGIN, isolation, rollback discards, commit per
     method: 'POST',
     body: JSON.stringify({ tabId: 'query', sql: 'SELECT count(*)::int AS n FROM tx_items' }),
   });
-  assert.equal((await inTx.json()).rows[0].n, 1);
+  assert.equal((await inTx.json()).results[0].rows[0].n, 1);
 
   // Rollback discards the row and closes the session.
   const rb = await (await h('/api/tx/rollback', {
@@ -260,6 +263,50 @@ test('operations dashboard: overview snapshot + backend-action wiring (roadmap �
   const bad = await h('/api/operations/cancel', {
     method: 'POST', body: JSON.stringify({ pid: 0 }),
   });
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error.code, 'VALIDATION');
+
+  await h('/api/disconnect', { method: 'POST', body: JSON.stringify({ connectionId }) });
+});
+
+test('slow query view: state machine + sort validation (roadmap §6.2)', async () => {
+  const connectRes = await http('/api/connect', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: DB_URL, sslMode: 'disable', name: 'slow-itest' }),
+  });
+  const { connectionId } = await connectRes.json();
+  assert.ok(connectionId);
+
+  const h = (path, init = {}) =>
+    http(path, {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        'x-connection-id': connectionId,
+        ...(init.headers || {}),
+      },
+    });
+
+  // The list endpoint always answers with one of the three known states; we
+  // don't assume the test server has pg_stat_statements installed/preloaded.
+  const list = await (await h('/api/operations/statements?sort=total_exec_time', { method: 'GET' })).json();
+  assert.ok(['ready', 'not_installed', 'not_loaded'].includes(list.status), `unexpected status ${list.status}`);
+  assert.ok(Array.isArray(list.statements));
+
+  if (list.status === 'ready') {
+    // Real rows carry the derived p95 estimate alongside the raw aggregates.
+    for (const s of list.statements) {
+      assert.ok('p95_exec_time_est' in s);
+      assert.ok('total_exec_time' in s && 'calls' in s);
+    }
+  } else {
+    // Otherwise the enable DDL is offered for the one-click prompt.
+    assert.match(list.ddl, /CREATE EXTENSION IF NOT EXISTS pg_stat_statements/);
+  }
+
+  // A sort key off the allowlist is rejected by validation before any SQL runs.
+  const bad = await h('/api/operations/statements?sort=rows;DROP', { method: 'GET' });
   assert.equal(bad.status, 400);
   assert.equal((await bad.json()).error.code, 'VALIDATION');
 

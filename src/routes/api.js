@@ -25,6 +25,7 @@ const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/impo
 const { splitStatements } = require('../db/statements');
 const { extractExplainTiming } = require('../db/explain');
 const operations = require('../db/operations');
+const slowQueries = require('../db/slowQueries');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const savedQueries = require('../db/savedQueries');
@@ -1432,5 +1433,57 @@ router.post('/operations/terminate',
       return sendError(res, 500, codes.DB_ERROR, err.message);
     }
   });
+
+// ---- Slow query view (roadmap §6.2) ----------------------------------------
+//
+// Reads pg_stat_statements. The list response is a small state machine
+// (not_installed / not_loaded / ready) so the client renders the enable prompt
+// or the table without parsing error strings. The sort key is restricted to a
+// fixed allowlist by both the Zod enum here and the server-side SORT_COLUMNS
+// map, so no caller input reaches the ORDER BY.
+
+const StatementsQuery = z.object({
+  sort: z.enum(['total_exec_time', 'mean_exec_time', 'calls']).default('total_exec_time'),
+  limit: z.coerce.number().int().positive().max(slowQueries.MAX_LIMIT).optional(),
+});
+
+router.get('/operations/statements',
+  requireConnection,
+  validate({ query: StatementsQuery }),
+  async (req, res) => {
+    try {
+      const result = await slowQueries.getStatements(req.pool, {
+        sort: req.query.sort,
+        limit: req.query.limit,
+      });
+      res.json(result);
+    } catch (err) {
+      logger.error({ err: err.message }, 'slow query view failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+router.post('/operations/statements/enable', requireConnection, async (req, res) => {
+  try {
+    const result = await slowQueries.enableStatements(req.pool);
+    res.json(result);
+  } catch (err) {
+    // Typically a privilege error (CREATE EXTENSION needs a superuser).
+    logger.warn({ err: err.message }, 'enable pg_stat_statements failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message, {
+      hint: 'Enabling pg_stat_statements requires a superuser, and collection requires it in shared_preload_libraries.',
+    });
+  }
+});
+
+router.post('/operations/statements/reset', requireConnection, async (req, res) => {
+  try {
+    const result = await slowQueries.resetStatements(req.pool);
+    res.json(result);
+  } catch (err) {
+    logger.warn({ err: err.message }, 'reset pg_stat_statements failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
 
 module.exports = router;

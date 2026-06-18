@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { SqlConsole } from '@/components/SqlConsole'
 import { useConnectionStore } from '@/store/connection'
+import { useQuerySeedStore } from '@/store/querySeed'
 
 const DEFAULT_SQL = `-- Advanced mode. Raw SQL escape hatch.
 -- Press Cmd/Ctrl + Enter to run.
@@ -11,6 +12,18 @@ SELECT now();`
 export function QueryRunner() {
   const connectionId = useConnectionStore((s) => s.activeConnectionId)
   const [sql, setSql] = useState(DEFAULT_SQL)
+
+  // Apply a one-shot seed handed in from elsewhere (e.g. the slow-query
+  // drilldown's "Explain" action), then clear it so it doesn't reapply. Works
+  // whether this tab was just opened or was already mounted.
+  const seed = useQuerySeedStore((s) => s.seed)
+  const clearSeed = useQuerySeedStore((s) => s.clear)
+  useEffect(() => {
+    if (seed != null) {
+      setSql(seed)
+      clearSeed()
+    }
+  }, [seed, clearSeed])
 
   if (!connectionId) {
     return (
