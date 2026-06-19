@@ -2,11 +2,12 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
-  ChevronDown, ChevronRight, Copy, Database, Play, RefreshCw, RotateCcw,
+  ChevronDown, ChevronRight, Copy, Database, Gauge, Play, RefreshCw, RotateCcw,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
+import { ExplainPlanDialog } from '@/components/ExplainPlanDialog'
 import { Select } from '@/components/ui/select'
 import { Loading, Spinner } from '@/components/ui/spinner'
 import {
@@ -302,11 +303,13 @@ function StatementRow({ stmt }: { stmt: SlowStatement }) {
 function Drilldown({ stmt }: { stmt: SlowStatement }) {
   const navigate = useNavigate()
   const open = useTabsStore((s) => s.open)
+  const connectionId = useConnectionStore((s) => s.activeConnectionId)
   const [copied, setCopied] = useState(false)
+  const [planOpen, setPlanOpen] = useState(false)
   const query = stmt.query?.trim() ?? ''
 
   // EXPLAIN integration (roadmap §6.2): hand the statement to the Query editor
-  // ready to run, where the §6.3 plan visualizer will plug in later.
+  // ready to run.
   const explain = () => {
     useQuerySeedStore.getState().setSeed(buildExplainSql(query))
     open({ kind: 'query' })
@@ -347,6 +350,16 @@ function Drilldown({ stmt }: { stmt: SlowStatement }) {
       </div>
 
       <div className="flex items-center gap-2 pt-1">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setPlanOpen(true)}
+          disabled={!query || !connectionId}
+          title="Visualize the plan (EXPLAIN, estimates only — the query is not run)"
+        >
+          <Gauge className="h-3.5 w-3.5" />
+          Visualize plan
+        </Button>
         <Button size="sm" variant="outline" onClick={explain} disabled={!query}>
           <Play className="h-3.5 w-3.5" />
           Explain in editor
@@ -356,6 +369,16 @@ function Drilldown({ stmt }: { stmt: SlowStatement }) {
           {copied ? 'Copied' : 'Copy'}
         </Button>
       </div>
+
+      {connectionId && (
+        <ExplainPlanDialog
+          open={planOpen}
+          onClose={() => setPlanOpen(false)}
+          connectionId={connectionId}
+          sql={query}
+          title="Query plan"
+        />
+      )}
     </div>
   )
 }

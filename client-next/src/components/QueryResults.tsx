@@ -1,10 +1,9 @@
 import { useMemo, useState } from 'react'
-import { CheckCircle2, Download, Gauge } from 'lucide-react'
+import { CheckCircle2, Download } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Dialog } from '@/components/ui/dialog'
 import { DataGrid, type SortState } from '@/components/DataGrid'
-import { JsonViewer } from '@/components/JsonViewer'
+import { ExplainPlan } from '@/components/ExplainPlan'
 import {
   type ColumnMeta,
   type ExplainTiming,
@@ -193,10 +192,11 @@ function ExportButton({
 }
 
 /**
- * Parse / plan / execute timing breakdown from EXPLAIN ANALYZE (roadmap §5.4).
- * Postgres reports planning and execution time; "parse" isn't separately
- * exposed, so total wall-clock stands in as the third figure. The raw plan is
- * available behind "View plan" for inspection (full visualizer is §6.3).
+ * EXPLAIN result — rendered by the §6.3 plan visualizer. The toggle in the
+ * editor toolbar chooses between EXPLAIN ANALYZE (actual times, §5.4 timing) and
+ * a plain EXPLAIN (estimates only); the visualizer adapts to whichever is
+ * present. `totalMs` is the run's wall-clock, shown alongside the planner's
+ * planning/execution split.
  */
 function TimingBreakdown({
   timing,
@@ -205,50 +205,16 @@ function TimingBreakdown({
   timing: ExplainTiming
   totalMs: number
 }) {
-  const [showPlan, setShowPlan] = useState(false)
-  const fmt = (ms: number | null) => (ms == null ? '—' : `${ms.toFixed(2)} ms`)
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <Gauge className="h-4 w-4" />
-        <span className="font-medium text-foreground">EXPLAIN ANALYZE</span>
+  if (timing.plan == null) {
+    // No plan tree (older server / odd output) — show the bare figures.
+    const fmt = (ms: number | null) => (ms == null ? '—' : `${ms.toFixed(2)} ms`)
+    return (
+      <div className="flex flex-wrap gap-2 text-sm">
+        <span>Planning {fmt(timing.planningMs)}</span>
+        <span>· Execution {fmt(timing.executionMs)}</span>
+        <span>· Total {totalMs} ms</span>
       </div>
-      <div className="grid max-w-md grid-cols-3 gap-2">
-        <Stat label="Planning" value={fmt(timing.planningMs)} />
-        <Stat label="Execution" value={fmt(timing.executionMs)} />
-        <Stat label="Total" value={`${totalMs} ms`} />
-      </div>
-      {timing.plan != null && (
-        <div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setShowPlan(true)}
-          >
-            View plan
-          </Button>
-        </div>
-      )}
-      <Dialog
-        open={showPlan}
-        onClose={() => setShowPlan(false)}
-        title="Query plan"
-        className="max-w-2xl"
-      >
-        {timing.plan != null && <JsonViewer value={timing.plan} />}
-      </Dialog>
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-border bg-card px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className="font-mono text-sm font-medium text-foreground">{value}</div>
-    </div>
-  )
+    )
+  }
+  return <ExplainPlan raw={timing.plan} totalMs={totalMs} />
 }

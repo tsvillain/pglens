@@ -89,9 +89,12 @@ export function SqlConsole({
   const paramNames = useMemo(() => extractParamNames(value), [value])
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
 
-  // When on, Run times the statement with EXPLAIN ANALYZE and shows the
-  // parse/plan/execute breakdown instead of the rows (roadmap §5.4).
+  // When on, Run EXPLAINs the statement and shows the §6.3 plan visualizer
+  // instead of the rows. `analyze` is the EXPLAIN ⇄ EXPLAIN ANALYZE toggle:
+  // ANALYZE (default) runs the statement for real timings; plain EXPLAIN shows
+  // estimates only and executes nothing (safe for writes / expensive queries).
   const [explain, setExplain] = useState(false)
+  const [analyze, setAnalyze] = useState(true)
 
   // Per-tab transaction state (roadmap §5.3). `txMode` is the Auto-commit ⇄
   // Transaction toggle; `txOpen` tracks whether a transaction is currently open
@@ -112,6 +115,8 @@ export function SqlConsole({
   txModeRef.current = txMode
   const explainRef = useRef(explain)
   explainRef.current = explain
+  const analyzeRef = useRef(analyze)
+  analyzeRef.current = analyze
 
   // Record each run to per-connection query history (roadmap §5.5). Stores the
   // raw editor text (with any `:name` / `{{var}}` placeholders) so a restored
@@ -149,7 +154,7 @@ export function SqlConsole({
               return [applied.sql, applied.params] as const
             })()
           : ([sql, undefined] as const)
-      const opts = { explain: explainRef.current }
+      const opts = { explain: explainRef.current, analyze: analyzeRef.current }
       if (txModeRef.current === 'transaction') {
         // BEGIN runs implicitly on the first statement — mark the tab as holding
         // a transaction up front so the badge/buttons reflect it even if the
@@ -202,7 +207,7 @@ export function SqlConsole({
   // Short run summary for the toolbar; QueryResults shows the per-result detail.
   const summary = mutation.data
     ? mutation.data.timing
-      ? `EXPLAIN ANALYZE · ${mutation.data.durationMs} ms`
+      ? `${mutation.data.timing.executionMs != null ? 'EXPLAIN ANALYZE' : 'EXPLAIN'} · ${mutation.data.durationMs} ms`
       : `${mutation.data.results.length} result${mutation.data.results.length === 1 ? '' : 's'} · ${mutation.data.durationMs} ms`
     : null
   // Name exported result files after the table when this is a table tab's
@@ -281,10 +286,13 @@ export function SqlConsole({
             variant={explain ? 'default' : 'outline'}
             aria-pressed={explain}
             onClick={() => setExplain((v) => !v)}
-            title="Time the statement with EXPLAIN ANALYZE (parse / plan / execute)"
+            title="EXPLAIN the statement and visualize the plan (roadmap §6.3)"
           >
             <Gauge className="h-3.5 w-3.5" /> Explain
           </Button>
+          {explain && (
+            <ExplainModeToggle analyze={analyze} onChange={setAnalyze} />
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -429,6 +437,53 @@ function TxToggle({
                 ? 'bg-background text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
               blocked && 'cursor-not-allowed opacity-40 hover:text-muted-foreground',
+            )}
+          >
+            {label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * `[ Plan | Analyze ]` segmented switch shown when Explain is on (roadmap §6.3).
+ * "Plan" is a plain EXPLAIN — estimates only, the statement is not executed
+ * (safe for writes / expensive queries). "Analyze" is EXPLAIN ANALYZE — actually
+ * runs the statement for real timings.
+ */
+function ExplainModeToggle({
+  analyze,
+  onChange,
+}: {
+  analyze: boolean
+  onChange: (analyze: boolean) => void
+}) {
+  const options: Array<{ value: boolean; label: string; title: string }> = [
+    { value: false, label: 'Plan', title: 'Plain EXPLAIN — estimates only, nothing runs' },
+    { value: true, label: 'Analyze', title: 'EXPLAIN ANALYZE — runs the statement for actual timings' },
+  ]
+  return (
+    <div
+      role="tablist"
+      aria-label="Explain mode"
+      className="inline-flex rounded-md border border-border bg-muted/40 p-0.5 text-xs"
+    >
+      {options.map(({ value, label, title }) => {
+        const active = analyze === value
+        return (
+          <button
+            key={label}
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(value)}
+            title={title}
+            className={cn(
+              'rounded px-2 py-1 transition',
+              active
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
             )}
           >
             {label}

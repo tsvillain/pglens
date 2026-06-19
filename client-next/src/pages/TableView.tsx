@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Plus, Upload } from "lucide-react";
+import { ChevronLeft, ChevronRight, Gauge, Plus, Upload } from "lucide-react";
 
 import { Loading, Spinner } from "@/components/ui/spinner";
 
@@ -14,6 +14,7 @@ import { ViewBar } from "@/components/ViewBar";
 import { InsertRowDialog } from "@/components/InsertRowDialog";
 import { ImportDialog } from "@/components/ImportDialog";
 import { ExportMenu } from "@/components/ExportMenu";
+import { ExplainPlanDialog } from "@/components/ExplainPlanDialog";
 import { FkPanel, type FkTarget } from "@/components/FkPanel";
 import { ModeToggle } from "@/components/ModeToggle";
 import { SqlConsole } from "@/components/SqlConsole";
@@ -98,6 +99,7 @@ export function TableView() {
   const [aggregations, setAggregations] = useState<Record<string, AggFn>>({});
   const [insertOpen, setInsertOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
   // The FK cell the user clicked → drives the referenced-row side panel.
   const [fkTarget, setFkTarget] = useState<FkTarget | null>(null);
 
@@ -344,6 +346,14 @@ export function TableView() {
                     filter={appliedFilter}
                     sort={sort}
                   />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setExplainOpen(true)}
+                    title="Visualize the query plan for the current filter & sort (roadmap §6.3)"
+                  >
+                    <Gauge className="h-4 w-4" /> Explain plan
+                  </Button>
                 </>
               )}
               <Select
@@ -575,6 +585,14 @@ export function TableView() {
           }}
         />
       )}
+
+      <ExplainPlanDialog
+        open={explainOpen}
+        onClose={() => setExplainOpen(false)}
+        connectionId={connectionId}
+        sql={generatedSql}
+        title={`Query plan · ${tableName}`}
+      />
 
       {fkTarget && (
         <FkPanel

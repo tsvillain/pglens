@@ -68,9 +68,13 @@ const TableListQuery = z.object({
 const QueryBodySchema = z.object({
   sql: z.string().min(1),
   params: z.array(z.unknown()).optional(),
-  // When set, the (single) statement is timed with EXPLAIN ANALYZE instead of
-  // run normally — drives the §5.4 timing breakdown.
+  // When set, the (single) statement is EXPLAINed instead of run normally —
+  // drives the §5.4 timing breakdown and §6.3 plan visualizer.
   explain: z.boolean().optional(),
+  // Only meaningful with `explain`. Defaults to true (EXPLAIN ANALYZE, which
+  // executes the statement). `false` runs a plain EXPLAIN — estimates only,
+  // nothing executes — for the §6.3 EXPLAIN ⇄ EXPLAIN ANALYZE toggle.
+  analyze: z.boolean().optional(),
 });
 
 const FormatBodySchema = z.object({
@@ -1217,7 +1221,7 @@ router.post('/query',
   requireConnection,
   validate({ body: QueryBodySchema }),
   async (req, res) => {
-    const { sql, params, explain } = req.body;
+    const { sql, params, explain, analyze } = req.body;
     const pool = req.pool;
     const schema = req.schema;
     const started = Date.now();
@@ -1226,9 +1230,12 @@ router.post('/query',
       if (!statements) return;
 
       if (explain) {
-        // EXPLAIN ANALYZE runs inside a rolled-back transaction (see
-        // pool.explainAnalyze) so timing a write never mutates data.
-        const { rows } = await pool.explainAnalyze(schema, statements[0], params);
+        // analyze (default) executes the statement; EXPLAIN ANALYZE runs inside
+        // a rolled-back transaction (see pool.explainAnalyze) so timing a write
+        // never mutates data. A plain EXPLAIN only plans — never executes.
+        const { rows } = analyze === false
+          ? await pool.explain(schema, statements[0], params)
+          : await pool.explainAnalyze(schema, statements[0], params);
         const timing = extractExplainTiming(rows);
         return res.json({ results: [], timing, durationMs: Date.now() - started });
       }
@@ -1268,6 +1275,8 @@ const TxQueryBodySchema = z.object({
   sql: z.string().min(1),
   params: z.array(z.unknown()).optional(),
   explain: z.boolean().optional(),
+  // See QueryBodySchema.analyze — false ⇒ plain EXPLAIN (no execution).
+  analyze: z.boolean().optional(),
 });
 
 const TxControlBodySchema = z.object({ tabId: TabIdSchema });
@@ -1288,7 +1297,7 @@ router.post('/tx/query',
   requireConnection,
   validate({ body: TxQueryBodySchema }),
   async (req, res) => {
-    const { tabId, sql, params, explain } = req.body;
+    const { tabId, sql, params, explain, analyze } = req.body;
     const started = Date.now();
     try {
       const statements = prepareStatements(res, sql, params, explain);
@@ -1296,13 +1305,15 @@ router.post('/tx/query',
 
       if (explain) {
         // Timed inside the tab's own open transaction (the user commits/rolls
-        // back), so unlike Auto-commit it is not self-rolled-back.
+        // back), so unlike Auto-commit it is not self-rolled-back. A plain
+        // EXPLAIN (analyze: false) only plans and executes nothing.
         const rows = await txManager.explain({
           connectionId: req.connectionId,
           tabId,
           schema: req.schema,
           sql: statements[0],
           params,
+          analyze: analyze !== false,
         });
         const timing = extractExplainTiming(rows);
         return res.json({

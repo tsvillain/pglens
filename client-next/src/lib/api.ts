@@ -193,8 +193,21 @@ const QueryResponse = z.object({
 export type QueryResult = z.infer<typeof QueryResponse>
 
 export interface RunQueryOptions {
-  /** Time the (single) statement with EXPLAIN ANALYZE instead of running it. */
+  /** EXPLAIN the (single) statement instead of returning rows (§5.4 / §6.3). */
   explain?: boolean
+  /**
+   * Only meaningful with `explain`. Defaults to true (EXPLAIN ANALYZE, which
+   * runs the statement). `false` requests a plain EXPLAIN — planner estimates
+   * only, nothing executes — the §6.3 EXPLAIN ⇄ EXPLAIN ANALYZE toggle.
+   */
+  analyze?: boolean
+}
+
+// Send `analyze` only alongside `explain`, and only when overriding the
+// server's default (ANALYZE) — i.e. when explicitly false.
+function explainBody(options: RunQueryOptions) {
+  if (!options.explain) return { explain: undefined, analyze: undefined }
+  return { explain: true, analyze: options.analyze === false ? false : undefined }
 }
 
 export async function runQuery(
@@ -209,7 +222,7 @@ export async function runQuery(
       'content-type': 'application/json',
       'x-connection-id': connectionId,
     },
-    body: JSON.stringify({ sql, params, explain: options.explain || undefined }),
+    body: JSON.stringify({ sql, params, ...explainBody(options) }),
     credentials: 'same-origin',
   })
   const json = await res.json().catch(() => null)
@@ -238,7 +251,7 @@ export async function runTxQuery(
   const res = await fetch('/api/tx/query', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
-    body: JSON.stringify({ tabId, sql, params, explain: options.explain || undefined }),
+    body: JSON.stringify({ tabId, sql, params, ...explainBody(options) }),
     credentials: 'same-origin',
   })
   const json = await res.json().catch(() => null)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildExplainSql } from '@/lib/explainSql'
+import { buildExplainJsonSql, buildExplainSql } from '@/lib/explainSql'
 
 describe('buildExplainSql', () => {
   it('uses GENERIC_PLAN for a normalized (parameterized) statement', () => {
@@ -30,5 +30,23 @@ describe('buildExplainSql', () => {
 
   it('trims surrounding whitespace before building', () => {
     expect(buildExplainSql('  SELECT 1  ')).toBe('EXPLAIN\nSELECT 1')
+  })
+})
+
+describe('buildExplainJsonSql', () => {
+  it('wraps a plain query in EXPLAIN (FORMAT JSON)', () => {
+    expect(buildExplainJsonSql('SELECT * FROM users')).toBe(
+      'EXPLAIN (FORMAT JSON) SELECT * FROM users',
+    )
+  })
+
+  it('strips a trailing semicolon so the prefix wraps cleanly', () => {
+    expect(buildExplainJsonSql('SELECT 1;')).toBe('EXPLAIN (FORMAT JSON) SELECT 1')
+    expect(buildExplainJsonSql('SELECT 1 ;  ')).toBe('EXPLAIN (FORMAT JSON) SELECT 1')
+  })
+
+  it('uses GENERIC_PLAN for a parameterized (normalized) statement', () => {
+    const out = buildExplainJsonSql('SELECT * FROM users WHERE id = $1')
+    expect(out).toBe('EXPLAIN (GENERIC_PLAN, FORMAT JSON) SELECT * FROM users WHERE id = $1')
   })
 })

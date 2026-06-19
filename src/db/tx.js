@@ -190,19 +190,21 @@ function createTxManager({ reserveConnection: reserve, idleTimeoutMs = IDLE_TIME
   }
 
   /**
-   * Time one statement with `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` inside the
-   * tab's open transaction (roadmap §5.4). Unlike Auto-commit mode it is NOT
-   * wrapped in its own rollback — the statement executes within the user's
-   * transaction, which they commit or roll back themselves. Returns the raw
+   * EXPLAIN one statement inside the tab's open transaction. With `analyze`
+   * (the default), runs `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` — the
+   * statement executes within the user's transaction (roadmap §5.4), which
+   * they commit or roll back themselves, so unlike Auto-commit mode it is NOT
+   * self-rolled-back. With `analyze: false`, runs plain `EXPLAIN (FORMAT JSON)`
+   * — estimates only, nothing executes (the §6.3 toggle). Returns the raw
    * EXPLAIN rows for the caller to parse.
    */
-  async function explain({ connectionId, tabId, schema, sql, params }) {
+  async function explain({ connectionId, tabId, schema, sql, params, analyze = true }) {
     const session = await getSession(connectionId, tabId, schema);
     return withBusy(session, async () => {
-      const r = await session.reserved.query(
-        `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${sql}`,
-        params,
-      );
+      const prefix = analyze
+        ? 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)'
+        : 'EXPLAIN (FORMAT JSON)';
+      const r = await session.reserved.query(`${prefix} ${sql}`, params);
       return r.rows;
     });
   }

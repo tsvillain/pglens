@@ -114,6 +114,27 @@ function createPoolWrapper(sqlClient) {
       }
     },
     /**
+     * Plan a single statement with `EXPLAIN (FORMAT JSON)` WITHOUT ANALYZE —
+     * estimates only, the statement is never executed. This is the safe side of
+     * the §6.3 EXPLAIN ⇄ EXPLAIN ANALYZE toggle: it works for writes and for
+     * queries too expensive to actually run, since plain EXPLAIN only plans.
+     * Returns the raw `EXPLAIN` rows for the caller to parse. No surrounding
+     * transaction is needed because nothing is executed.
+     */
+    explain: async (schema, queryText, params) => {
+      const reserved = await sqlClient.reserve();
+      try {
+        await reserved.unsafe(`SET search_path TO ${quoteIdent(schema)}`);
+        const result = await reserved.unsafe(
+          `EXPLAIN (FORMAT JSON) ${queryText}`,
+          params || [],
+        );
+        return { rows: result };
+      } finally {
+        reserved.release();
+      }
+    },
+    /**
      * Stream a query in server-side cursor batches. `onBatch(rows)` is awaited
      * before the next batch is fetched, so callers writing to an HTTP response
      * can apply backpressure (await `drain`) and the whole result set never has
