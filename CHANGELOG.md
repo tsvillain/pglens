@@ -7,6 +7,275 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-06-23
+
+Phase 3 (part 2) — Postgres-native operations. The EXPLAIN plan visualizer
+and index assistant turn pglens into the tool you open when something is
+slow. Both read only from the server's own catalogs and stat views; the
+only SQL either generates is a `DROP INDEX` shown for review, never run for
+you.
+
+### Added
+
+- **EXPLAIN plan visualizer** (roadmap §6.3). A tree view of an
+  `EXPLAIN (FORMAT JSON)` plan with each node's cost, planned vs. actual
+  rows, and — under `EXPLAIN (ANALYZE, BUFFERS)` — its real timing. The
+  analytical core is a pure, heavily unit-tested parser
+  (`explainPlan.ts`) that the `ExplainPlan` component only renders: it
+  computes **exclusive** (self) time and cost per node by subtracting
+  children, multiplies `Actual Total Time`/`Actual Rows` by `Actual Loops`
+  to recover real totals from Postgres's per-loop averages, and derives the
+  planner's row **misestimate factor and direction** (over/under). A
+  heatmap colors nodes by exclusive time, rows, or cost (green → red) so
+  the costly node lights up rather than its parents, and every node type
+  carries a plain-English tooltip. A toggle switches between plain
+  `EXPLAIN` and `EXPLAIN (ANALYZE, BUFFERS)`. Reachable from (a) the
+  Advanced-mode Explain toggle, (b) a no-code query's "Show SQL" panel, and
+  (c) the slow-query drilldown — each hands the plan to the same parser via
+  `ExplainPlanDialog`, with a raw-JSON escape hatch. Unrecognized input
+  falls back to the raw view instead of throwing.
+- **Index assistant** (roadmap §6.4). A new Operations sub-panel
+  (`GET /api/operations/indexes`) of read-only advice derived from the
+  catalogs, assembled in one round trip with each section isolated so a
+  role missing one stat view still gets the rest:
+  - **Unused indexes** — `pg_stat_user_indexes` where `idx_scan = 0`,
+    largest first, excluding primary-key / unique / exclusion / invalid
+    indexes (dropping those changes semantics, not just reclaims space).
+  - **Duplicate indexes** — groups of exactly-redundant indexes (same
+    table, columns, opclasses, collations, expression, predicate, and
+    access method); keep one, drop the rest.
+  - **Sequential-scan-heavy tables** — `pg_stat_user_tables` where seq
+    scans outnumber index scans on a table ≥ 10K live rows: the
+    catalog-only proxy for a missing index.
+
+  Every removable index carries a `DROP INDEX` DDL built through the app's
+  identifier escaper, shown for the user to review and run in the editor —
+  the module never executes it. The column-level `CREATE INDEX`
+  recommender and `pgstattuple` bloat checks are deferred (they need hypopg
+  / a full-relation scan); the seq-scan section stands in until hypopg
+  integration lands.
+
+## [3.3.0] - 2026-06-18
+
+Phase 3 (part 1) — Postgres-native operations. A new **Operations** sidebar
+section makes pglens the tool you open when the database is busy or broken:
+a live activity dashboard over the server's own stat views, and a slow-query
+view backed by `pg_stat_statements`. Everything is read-only introspection
+of system catalogs — no caller-supplied SQL reaches the server — except the
+explicit, privileged actions (cancel/terminate a backend, enable/reset
+`pg_stat_statements`).
+
+### Added
+
+- **Live activity dashboard** (roadmap §6.1). `GET /api/operations/overview`
+  assembles the panel in one round trip, each reader isolated so a section a
+  role can't see (e.g. replication) comes back as `{ data: null, error }`
+  while the rest renders. Sections: **active sessions** (`pg_stat_activity`,
+  with state, wait event, truncated query, age — excluding pglens's own
+  polling backend); **locks & blocking** (`pg_blocking_pids()`) as
+  blocker → blocked chains; **replication** (`pg_stat_replication`, lag in
+  bytes and seconds); **database & table sizes** (top 20 relations with
+  heap / index / toast bytes broken out); and **connection count** vs.
+  `max_connections` with an 80% warning threshold. Two privileged
+  per-backend actions — **cancel query** (`pg_cancel_backend`) and
+  **terminate session** (`pg_terminate_backend`) — via
+  `POST /api/operations/cancel` and `/terminate`. The client polls every
+  few seconds while the panel is open.
+- **Slow query view** (roadmap §6.2). `GET /api/operations/statements`
+  surfaces the top `pg_stat_statements` aggregates for the current database,
+  sortable by `total_exec_time` / `mean_exec_time` / `calls` (the sort key
+  is mapped through a fixed server-side allowlist, never interpolated). The
+  payload is a small **state machine** the client renders without parsing
+  error strings: `not_installed` (offers the
+  `CREATE EXTENSION pg_stat_statements` DDL preview when available),
+  `not_loaded` (created but absent from `shared_preload_libraries`), or
+  `ready`. Each row carries an **estimated p95** execution time —
+  `pg_stat_statements` records only mean/stddev/min/max, so p95 is modeled
+  as `mean + 1.6449·stddev` clamped to `[mean, max]` — plus call count,
+  timing spread, and shared/local/temp block IO. One-click **enable**
+  (`POST .../statements/enable`) and **reset**
+  (`POST .../statements/reset`, `pg_stat_statements_reset()`), both
+  requiring a privileged role. Requires PostgreSQL 13+ (the `*_exec_time`
+  column names).
+
+## [3.2.0] - 2026-06-10
+
+Phase 2 — Advanced Mode. pglens gains a full SQL surface for engineers who
+want one, without compromising the no-code default: a per-tab `[ No-code |
+Advanced ]` toggle, a schema-aware Monaco editor, transaction mode, rich
+multi-statement results with `EXPLAIN ANALYZE` timing, and per-connection
+query history + a saved-query library. Execution stays server-side
+parameterized — the Advanced editor rewrites `:name` placeholders to
+positional `$n` binds, and no-code never ships raw SQL.
+
+### Added
+
+- **Per-tab No-code ⇄ Advanced toggle** (roadmap §5.1). Each table tab
+  carries a `[ No-code | Advanced ]` switch in its header. Flipping to
+  Advanced swaps the grid for a Monaco editor pre-seeded with the SELECT
+  no-code mode was about to run (filter → `WHERE`, sort → `ORDER BY`,
+  page/limit → `LIMIT`/`OFFSET`); the seed is display-only, the server
+  still parameterizes on execute. Mode and edited SQL are preserved per
+  tab (keyed by tab id, cleared on close) so flipping back and forth keeps
+  the query, with a **Reset from no-code** action to re-seed on demand.
+  No-code grid/aggregate fetches are gated to no-code mode so Advanced
+  does no wasted reads. The shared `SqlConsole` (editor + results + Run)
+  is reused by both the toggle and the standalone query runner and follows
+  the app light/dark theme.
+- **Monaco SQL editor — schema autocomplete, params, format-on-save**
+  (roadmap §5.2). Schema-aware completion of tables + columns from
+  `/api/schema`, scoped to the query's `FROM`/`JOIN` targets with
+  `table.`/`alias.column` lookup; case-sensitive identifiers are inserted
+  quoted. A `:name` parameter form below the editor binds values; on run,
+  placeholders are rewritten to positional `$n` and shipped as a params
+  array so execution stays server-side parameterized (the scanner skips
+  `::casts`, strings, quoted idents, comments, dollar-quotes, and array
+  slices). Format-on-save (Cmd/Ctrl+S + toolbar) via new `POST /api/format`
+  using the JS `sql-formatter` (postgresql dialect) — chosen over the Perl
+  `pg-formatter` so a single `npm install` stays sufficient. Completion
+  and format providers register once on the Monaco singleton; the focused
+  tab publishes its schema to them.
+- **Transaction mode** (roadmap §5.3). An `[ Auto-commit | Transaction ]`
+  toggle per Advanced tab. In Transaction mode the tab holds one dedicated
+  Postgres backend (porsager `reserve()`) for the life of the transaction:
+  `BEGIN` runs implicitly on the first query, `COMMIT`/`ROLLBACK` run on
+  the same backend, and the tab shows a **T** badge while open; closing a
+  tab with an open transaction confirms first and rolls back. A
+  session manager (`src/db/tx.js`) keyed by tab id and scoped per install
+  by the auth token binds each session to its connection — cross-connection
+  reuse and concurrent queries are rejected (`CONFLICT`), a failed
+  statement keeps the transaction open so it can be rolled back, and idle
+  sessions auto-roll-back after 5 min so a forgotten tab never pins a
+  backend. New routes `/api/tx/query`, `/tx/commit`, `/tx/rollback`,
+  `/tx/status`; commit invalidates cached metadata so committed DDL is
+  visible to pooled reads. Pool-close hooks roll back + release reserved
+  backends before `pool.end()` on disconnect/update/shutdown.
+- **Query result enhancements** (roadmap §5.4). Multi-statement scripts are
+  split server-side (`src/db/statements.js`) and each statement runs on one
+  reserved backend via the extended protocol, returning one result per
+  statement; `/api/query` and `/api/tx/query` now return `{ results[],
+  durationMs, timing? }`. `QueryResults` renders a result-tab bar over the
+  shared no-code `DataGrid` with client-side multi-column sort and CSV/JSON
+  export of the rows in hand. An **EXPLAIN** toggle runs `EXPLAIN (ANALYZE,
+  BUFFERS, FORMAT JSON)` and shows planning/execution/total timing plus the
+  raw plan — Auto-commit wraps the probe in `BEGIN..ROLLBACK` so timing a
+  write never mutates data, Transaction mode times it inside the open tx.
+  Column type OIDs are surfaced and resolved to type names so result cells
+  get the right renderer. Params are restricted to single-statement runs
+  (positional params can't span statements) with a clear 400 otherwise.
+- **Improved query history & saved queries** (roadmap §5.5). Query
+  history is now persisted per connection: the Advanced editor records
+  every run (raw SQL, duration, row count, success/error) to
+  `~/.pglens/query-history.json` via `GET/POST/DELETE /api/query-history`,
+  with a per-connection 200-entry ring buffer. A **History** menu in the
+  editor toolbar lists recent runs most-recent-first; click to reload the
+  SQL, delete an entry, or clear all. **Saved queries** are a
+  per-connection library of raw SQL with folder + tag organization and
+  optional description, persisted to `~/.pglens/saved-queries.json` via
+  `GET/POST/PUT/DELETE /api/saved-queries` (unique name per connection,
+  atomic writes). A **Saved** menu groups queries by folder with
+  name/folder/tag filtering, plus save / edit / delete and JSON
+  export/import (`POST /api/saved-queries/import`, auto-suffixing name
+  collisions). Saved queries support Postman-style `{{variable}}`
+  placeholders — a distinct template layer from the editor's `:name`
+  bound parameters (§5.2): `{{variables}}` are filled from saved defaults
+  and substituted into the SQL on load (the user reviews/edits before
+  running), while `:name` stays a server-side `$n` bind.
+
+## [3.1.0] - 2026-05-29
+
+Phase 1 — No-Code Editing Core. pglens moves from "viewer" to "client":
+filter, sort, save views, edit, insert, follow foreign keys, aggregate,
+and export/import — all without typing SQL. Every action has a working
+"Show SQL" disclosure, and no-code UI never sends raw SQL fragments over
+the wire; the server parses structured specs into parameterized queries.
+
+### Added
+
+- **Visual filter builder** above every table grid: column + type-aware
+  operator (`=`, `!=`, ranges, `LIKE`/`ILIKE`, `IN`, `IS NULL`, jsonb
+  `@>`, array `&&`) + value, with a "Show SQL" disclosure of the
+  generated `WHERE`. `GET /api/tables/:tableName` accepts a structured
+  filter spec parsed server-side into parameterized SQL. Cursor
+  pagination falls back to `OFFSET` when a filter is present.
+- **Visual multi-column sort builder**: drag-to-reorder `SortBar` chips
+  (HTML5 DnD, no new deps) plus shift/cmd/ctrl-click multi-sort on
+  grid headers with priority badges. `GET /api/tables/:tableName` gains
+  a structured `sort` array parsed via `buildOrderBy` (identifiers
+  validated against column metadata, direction whitelisted); the primary
+  key is appended as a tie-break. Legacy `sortColumn`/`sortDirection`
+  retained for the v2 client.
+- **Saved views** — named bundles of filter + sort scoped to a
+  `(connection, table)` pair, persisted to `~/.pglens/views.json` with
+  atomic writes and a unique-name guard. `GET/POST/PUT/DELETE
+  /api/views`; listing stays open so the sidebar works with no live
+  pool. `ViewBar` with picker, dirty indicator, save / save-as /
+  rename / delete; the selected view is URL state (`?view=<uuid>`) for
+  deep links, and the sidebar nests views under each table with a count
+  badge.
+- **Type-aware inline editing**: double-click a cell to edit with a
+  per-type widget (boolean toggle, date/datetime picker, JSON/array
+  dialog with validation, UUID text + generate, bigint-safe number,
+  text). `PATCH /api/tables/:tableName/rows` takes `{ where, set }` and
+  emits a parameterized `UPDATE` pinned to the primary key (jsonb
+  stringified + cast). Optimistic update with rollback on error,
+  per-cell spinner, and auto-dismissing error pill. PK columns are not
+  editable.
+- **Schema-generated row insert form** via `POST
+  /api/tables/:tableName/rows` and a parameterized `INSERT` builder
+  (`src/db/insert.js`). Each field is tri-state — DEFAULT (omit) / NULL
+  / value; an empty payload emits `DEFAULT VALUES`. NOT-NULL-without-
+  default columns are required; defaults are ghosted. NOT NULL / CHECK /
+  unique violations surface through the standard error envelope.
+  Includes "Show SQL" and "Insert & add another".
+- **FK click-through navigation**: click any foreign-key cell to slide
+  in a side panel with the full referenced row (fetched through the
+  existing filtered read endpoint — no backend change). Supports chained
+  FK navigation with breadcrumbs, "Show all rows in `<table>` where
+  `<col>` = `<val>`" (jumps to the origin table with the equality filter
+  pre-applied), and "Edit referenced row" inline. URL-carried FK values
+  are type-coerced against column metadata.
+- **Per-column aggregations strip** pinned to the bottom of every grid:
+  count / sum / avg / min / max / stddev / count distinct /
+  count true|false, type-gated and computed server-side against the
+  active filter via `GET /api/tables/:tableName/aggregate`
+  (`src/db/aggregate.js`, reuses `buildWhere`). Sticky `tfoot` fn picker
+  with a Show SQL preview.
+- **Per-table data export** to CSV (RFC 4180), JSON, or SQL `INSERT`
+  via `GET /api/tables/:tableName/export`, respecting the current
+  filter, sort, and a chosen column subset. Rows stream through a
+  server-side cursor with drain-aware backpressure, so memory stays flat
+  regardless of table size. `ExportMenu` dialog with format toggle,
+  per-column picker, and Show SQL.
+- **Per-table CSV import wizard**: upload, map CSV columns → table
+  columns (auto-guessed by header), choose insert mode (`INSERT`,
+  `ON CONFLICT DO NOTHING`, `ON CONFLICT … DO UPDATE`), dry-run preview
+  of rows/conflicts, execute in a transaction.
+
+### Changed
+
+- **Neutral off-black dark mode**: replaced the bluish-slate palette
+  with neutral grays (background ~`#161616`, surfaces lift to `#1c1c1c`,
+  de-tinted borders).
+- **Column metadata** returned by the table read now carries `udtName`,
+  `isNullable`, `hasDefault`, and the raw default expression, so the
+  frontend can pick the right edit/insert widget and ghost defaults.
+- **Global DB dump** (`/api/export`) now reuses the shared `sqlLiteral()`
+  serializer from `src/db/export.js` instead of a hand-coded copy,
+  removing the risk of drift between the global-backup and per-table
+  export paths. Output unchanged.
+
+### Fixed
+
+- **Connection store** now syncs the resolved connection id back after
+  resolution, fixing stale-id state.
+
+### Known limitations
+
+- FK and enum columns in the inline editor and insert form degrade to a
+  text input (with a `→ table.column` hint) until the FK lookup pipeline
+  lands.
+
 ## [3.0.2] - 2026-05-22
 
 ### Fixed
@@ -274,7 +543,13 @@ migration 301-redirects to `/` so existing bookmarks keep working.
 - SQL injection prevention via table name sanitization
 - Input validation for pagination parameters
 
-[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/tsvillain/pglens/compare/v3.3.0...v3.4.0
+[3.3.0]: https://github.com/tsvillain/pglens/compare/v3.2.0...v3.3.0
+[3.2.0]: https://github.com/tsvillain/pglens/compare/v3.1.0...v3.2.0
+[3.1.0]: https://github.com/tsvillain/pglens/compare/v3.0.2...v3.1.0
+[3.0.2]: https://github.com/tsvillain/pglens/compare/v3.0.1...v3.0.2
+[3.0.1]: https://github.com/tsvillain/pglens/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/tsvillain/pglens/compare/v2.3.0...v3.0.0
 [2.3.0]: https://github.com/tsvillain/pglens/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/tsvillain/pglens/compare/v2.1.0...v2.2.0

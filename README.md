@@ -1,43 +1,34 @@
 # pglens
 
-A no-code PostgreSQL workstation. View, explore, visualize, and query your
-PostgreSQL databases through a fast local web interface.
+A no-code PostgreSQL workstation. View, explore, visualize, edit, and query your
+PostgreSQL databases through a fast local web interface — SQL is the escape hatch,
+not the entry point. Every no-code action has a "Show SQL" disclosure, and the UI
+never sends raw SQL fragments; the server parses structured specs into
+parameterized queries.
 
-> **v3.0.0** is a foundation rewrite. The interface is now a React 18 + TypeScript
-> app, and the server is hardened with per-install auth, OS-keychain secrets, and
-> localhost-only binding. See [Breaking Changes](#breaking-changes-in-v300) before
-> upgrading.
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Features
 
-- 🔌 **Connection Manager**: Manage multiple database connections from a single UI
-- 🔐 **Per-install Auth Token**: Every route is gated by a local token; passwords live in the OS keychain
-- 💾 **Connection Persistence**: Saved connections are restored when you reopen the app
-- 🚀 **Background Service**: Runs as a daemon process for persistent access
-- 🗂️ **Table & View Browser**: View all tables and views in your database in a clean, searchable sidebar
-- 🗃️ **Schema Selection**: Browse any schema in your database, not just `public`
-- 🕸️ **Schema Visualization**: Interactive auto-laid-out graph (dagre) of table relationships, with filtering, hover spotlight, and minimap
-- 📐 **Schema Export**: Export the diagram as SVG or Mermaid ER (copy or `.mmd` download)
-- 📥 **Import/Export**: Export your database schema as SQL and import it into another connection
-- 💽 **Streaming Backup**: Export a database dump with live byte/table progress and cancel
-- ⌨️ **Query Runner**: Advanced-mode raw-SQL escape hatch with a Monaco editor (`Cmd/Ctrl+Enter` to run)
-- 🔎 **Spotlight Search**: Quick table search with `Cmd+K` / `Ctrl+K` for fast navigation
-- 📊 **Data Viewer**: Browse table rows in a virtualized grid with page/sort
-- 🔢 **Row Numbers**: Row numbers displayed for easier navigation and reference
-- 📋 **Table Schema**: View table structure and column definitions directly from the UI
-- 📝 **Cell Content Viewer**: Double-click any cell to view full content in a popup
-- 🎨 **JSON/JSONB Viewer**: Collapsible, syntax-highlighted JSON tree
-- 🕒 **Timezone Support**: View timestamps in local, UTC, or other timezones
-- 📋 **Clipboard Support**: One-click copy for cell contents
-- 🪟 **Multiple Tabs**: Open tables, the visualizer, and the query runner side-by-side in separate tabs
-- 🔄 **Server-Side Sorting**: Click column headers to sort data directly on the database server
-- 📄 **Pagination**: Navigate through large tables with Previous/Next buttons
-- 👁️ **Column Visibility**: Show or hide columns to focus on what matters
-- 🎨 **Theme Support**: Choose between light, dark, or system theme
-- ⚡ **Optimized Performance**: Cached table metadata + parallelized count/data queries
-- 🔒 **SSL Support**: Configurable SSL modes (Disable, Require, Prefer, Verify CA/Full)
-- 📜 **Structured Logs**: `pino` JSON logs viewable with `pglens logs`
-- **Easy Setup**: Install globally and run with a single command
+- **Browse & explore** — multi-connection manager, searchable table/view sidebar,
+  any schema (not just `public`), virtualized data grid, JSON/JSONB tree viewer,
+  cell content popup, timezone display, `Cmd/Ctrl+K` spotlight search.
+- **No-code data client** — type-aware filter builder, multi-column sort, named
+  saved views (deep-linkable), inline cell editing, row insert form, FK
+  click-through, per-column aggregations.
+- **Import / export** — stream CSV / JSON / SQL `INSERT`, CSV import wizard with
+  dry-run, schema export/import, streaming database backup with progress.
+- **Schema visualization** — interactive auto-laid-out relationship graph, export
+  as SVG or Mermaid ER.
+- **Advanced (SQL) mode** — per-tab `[ No-code | Advanced ]` toggle into a
+  schema-aware Monaco editor, transaction mode (`BEGIN`/`Commit`/`Rollback`,
+  idle auto-rollback), multi-statement result tabs with `EXPLAIN ANALYZE` timing,
+  query history, and a saved-query library with `{{variables}}`.
+- **Postgres-native ops** — EXPLAIN plan visualizer, index assistant, live
+  activity dashboard, slow-query view.
+- **Hardened by default** — per-install auth token, OS-keychain secrets,
+  `127.0.0.1`-only binding, configurable SSL, structured `pino` logs
+  (`pglens logs`).
 
 ## Installation
 
@@ -126,48 +117,10 @@ with the exact commands to fix it:
 > re-running the install script. If you have an `npm -g` copy, remove it (`pglens doctor`
 > or `npm rm -g pglens`) — don't delete `~/.pglens`, that's the supported install.
 
-## How It Works
-
-1. **Start**: Run `pglens start` to launch the background service
-2. **Connect**: Add one or more database connections via the Web UI
-3. **Explore**:
-   - Use the sidebar to browse tables across different connections
-   - Double-click cells to view detailed content
-   - Use the "Columns" menu to toggle visibility
-   - Visualize table relationships using the Schema button; export as SVG or Mermaid
-   - Run raw SQL from the query runner when you need the escape hatch
-   - Export your database schema and import to another environment
-   - Switch themes for comfortable viewing
-
-## Development
-
-To develop or modify pglens:
-
-```bash
-# Clone the repository
-git clone https://github.com/tsvillain/pglens.git
-cd pglens
-
-# Install dependencies
-npm install
-```
-
-### Run Server Locally
-
-To run the server locally in foreground:
-
-```bash
-node bin/pglens serve
-```
-
 ## Contributing
 
-Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on:
-
-- How to set up your development environment
-- Code style and guidelines
-- Pull request process
-- Issue reporting
+Want to hack on pglens or send a patch? See [CONTRIBUTING.md](CONTRIBUTING.md) for
+dev setup, code style, and the PR process.
 
 ## Breaking Changes in v3.0.0
 

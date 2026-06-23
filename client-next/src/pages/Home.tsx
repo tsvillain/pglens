@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Plus, ServerCog } from 'lucide-react'
+import { Eye, EyeOff, Plus, ServerCog } from 'lucide-react'
 import { useState } from 'react'
 import { z } from 'zod'
 
@@ -13,6 +13,11 @@ import { useConnectionStore } from '@/store/connection'
 import { useTabsStore } from '@/store/tabs'
 
 const HealthSchema = z.object({ ok: z.boolean(), version: z.string().optional() })
+
+function maskHost(host?: string | null) {
+  if (!host) return '—'
+  return '•'.repeat(Math.min(host.length, 28))
+}
 
 async function fetchHealth() {
   const res = await fetch('/api/v3/health')
@@ -27,6 +32,14 @@ export function Home() {
 
   const [search, setSearch] = useState('')
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [revealed, setRevealed] = useState<Set<string>>(new Set())
+
+  const toggleHost = (id: string) =>
+    setRevealed((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
 
   const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth, retry: false })
   const connections = useQuery({
@@ -107,19 +120,49 @@ export function Home() {
                 <span className="truncate font-medium">{c.name}</span>
               </div>
               <div className="grid gap-1 text-xs text-muted-foreground">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center justify-between gap-3">
                   <span className="shrink-0">host</span>
-                  <span className="min-w-0 truncate font-mono" title={c.host ?? undefined}>{c.host ?? '—'}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span
+                      className="min-w-0 truncate font-mono"
+                      title={revealed.has(c.id) ? (c.host ?? undefined) : undefined}
+                    >
+                      {revealed.has(c.id) ? (c.host ?? '—') : maskHost(c.host)}
+                    </span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={revealed.has(c.id) ? 'Hide host' : 'Show host'}
+                      className="shrink-0 cursor-pointer text-muted-foreground hover:text-foreground"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleHost(c.id)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          toggleHost(c.id)
+                        }
+                      }}
+                    >
+                      {revealed.has(c.id) ? (
+                        <EyeOff className="h-3.5 w-3.5" />
+                      ) : (
+                        <Eye className="h-3.5 w-3.5" />
+                      )}
+                    </span>
+                  </span>
                 </div>
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center justify-between gap-3">
                   <span className="shrink-0">database</span>
                   <span className="min-w-0 truncate font-mono" title={c.database ?? undefined}>{c.database ?? '—'}</span>
                 </div>
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center justify-between gap-3">
                   <span className="shrink-0">schema</span>
                   <span className="min-w-0 truncate font-mono" title={c.schema ?? undefined}>{c.schema ?? 'public'}</span>
                 </div>
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center justify-between gap-3">
                   <span className="shrink-0">ssl</span>
                   <span className="min-w-0 truncate font-mono" title={c.sslMode ?? undefined}>{c.sslMode ?? 'prefer'}</span>
                 </div>

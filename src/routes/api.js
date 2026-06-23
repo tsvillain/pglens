@@ -15,9 +15,26 @@ const {
   getConnectionSchema, updateConnectionSchema, updateConnection,
 } = require('../db/connection');
 const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
+const { buildWhere } = require('../db/filter');
+const { buildOrderBy } = require('../db/sort');
+const { computeAggregates } = require('../db/aggregate');
+const { buildUpdateRow } = require('../db/update');
+const { buildInsertRow } = require('../db/insert');
+const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('../db/export');
+const { IMPORT_MODES, buildImportStatement, batchSizeFor } = require('../db/import');
+const { splitStatements } = require('../db/statements');
+const { extractExplainTiming } = require('../db/explain');
+const operations = require('../db/operations');
+const slowQueries = require('../db/slowQueries');
+const indexAdvisor = require('../db/indexAdvisor');
+const { txManager } = require('../db/tx');
+const views = require('../db/views');
+const savedQueries = require('../db/savedQueries');
+const queryHistory = require('../db/queryHistory');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
+const { format: formatPgSql } = require('sql-formatter');
 
 const router = express.Router();
 
@@ -42,11 +59,27 @@ const TableListQuery = z.object({
   cursor: z.union([z.string(), z.number()]).optional(),
   sortColumn: z.string().min(1).optional(),
   sortDirection: z.enum(['asc', 'desc', 'ASC', 'DESC']).optional(),
+  // JSON-encoded multi-column sort spec (validated structurally by buildOrderBy).
+  // Wins over legacy sortColumn/sortDirection when both are sent.
+  sort: z.string().max(8_000).optional(),
+  // JSON-encoded filter spec (validated structurally by buildWhere).
+  filter: z.string().max(64_000).optional(),
 });
 
 const QueryBodySchema = z.object({
   sql: z.string().min(1),
   params: z.array(z.unknown()).optional(),
+  // When set, the (single) statement is EXPLAINed instead of run normally —
+  // drives the §5.4 timing breakdown and §6.3 plan visualizer.
+  explain: z.boolean().optional(),
+  // Only meaningful with `explain`. Defaults to true (EXPLAIN ANALYZE, which
+  // executes the statement). `false` runs a plain EXPLAIN — estimates only,
+  // nothing executes — for the §6.3 EXPLAIN ⇄ EXPLAIN ANALYZE toggle.
+  analyze: z.boolean().optional(),
+});
+
+const FormatBodySchema = z.object({
+  sql: z.string().min(1).max(1_000_000),
 });
 
 // ---- requireConnection middleware ------------------------------------------
@@ -214,7 +247,7 @@ async function getForeignKeyRelations(pool, tableName, schema) {
 
 async function getColumnMetadata(pool, tableName, schema) {
   const r = await pool.query(`
-    SELECT column_name, data_type
+    SELECT column_name, data_type, udt_name, is_nullable, column_default
     FROM information_schema.columns
     WHERE table_schema = $2 AND table_name = $1
     ORDER BY ordinal_position;
@@ -228,8 +261,18 @@ async function getColumnMetadata(pool, tableName, schema) {
 
   const out = {};
   for (const row of r.rows) {
+    // `data_type` is the SQL standard name (e.g. "ARRAY", "USER-DEFINED").
+    // Surface the real Postgres type (`udt_name`, e.g. `int4`, `text`,
+    // `_text`, the enum name) so the editor can pick the right widget for
+    // arrays and enums.
     out[row.column_name] = {
       dataType: row.data_type,
+      udtName: row.udt_name,
+      isNullable: row.is_nullable === 'YES',
+      hasDefault: row.column_default !== null,
+      // Raw default expression (e.g. `nextval('seq')`, `now()`, `'active'::text`).
+      // The insert form ghosts this so the user knows what they're skipping.
+      defaultValue: row.column_default,
       isPrimaryKey: pkCols.has(row.column_name),
       isForeignKey: !!fkRels[row.column_name],
       foreignKeyRef: fkRels[row.column_name] || null,
@@ -284,8 +327,6 @@ router.get('/tables/:tableName',
       const page = req.query.page || 1;
       const limit = req.query.limit || 100;
       const cursor = req.query.cursor;
-      const sortColumn = req.query.sortColumn || null;
-      const sortDirection = (req.query.sortDirection || 'asc').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
       const pool = req.pool;
       const schema = req.schema;
@@ -294,48 +335,93 @@ router.get('/tables/:tableName',
       const { columns: columnMetadata, primaryKeyColumn } =
         await getTableMetadata(pool, req.connectionId, schema, tableName);
 
-      if (sortColumn && !columnMetadata[sortColumn]) {
-        return sendError(res, 400, codes.BAD_REQUEST, 'Invalid sort column');
+      // Resolve the user sort spec. Prefer the structured `sort` array; fall
+      // back to legacy single-column `sortColumn`/`sortDirection` for the v2
+      // client and older v3 builds.
+      let sortSpec = null;
+      if (req.query.sort) {
+        try {
+          sortSpec = JSON.parse(req.query.sort);
+        } catch {
+          return sendError(res, 400, codes.BAD_REQUEST, 'Invalid sort JSON');
+        }
+      } else if (req.query.sortColumn) {
+        sortSpec = [{
+          column: req.query.sortColumn,
+          direction: (req.query.sortDirection || 'asc').toLowerCase() === 'desc' ? 'desc' : 'asc',
+        }];
+      }
+      const hasUserSort = Array.isArray(sortSpec) && sortSpec.length > 0;
+
+      // Parse the structured filter spec once. The Zod-validated shape +
+      // column-existence check happen inside buildWhere; surface any error
+      // as a 400 so the user can fix the bar input.
+      let filterSpec = null;
+      if (req.query.filter) {
+        try {
+          filterSpec = JSON.parse(req.query.filter);
+        } catch {
+          return sendError(res, 400, codes.BAD_REQUEST, 'Invalid filter JSON');
+        }
+      }
+      let whereClause = '', whereParams = [];
+      try {
+        ({ sql: whereClause, params: whereParams } = buildWhere(filterSpec, columnMetadata));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      const hasFilter = whereClause !== '';
+
+      // Resolve ORDER BY. The helper validates every column, whitelists the
+      // direction, quotes identifiers, and appends the PK as final tie-break
+      // when the user sort doesn't already include it.
+      let orderByClause = '';
+      try {
+        ({ sql: orderByClause } = buildOrderBy(sortSpec, columnMetadata, primaryKeyColumn));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
       }
 
       // COUNT and the data query are independent — run them concurrently to
       // collapse two latency round-trips into one. The data query is built
       // inline below; count runs alongside it.
-      const countPromise = pool.query(`SELECT COUNT(*) as total FROM ${qualifiedTable}`);
+      const countPromise = pool.query(
+        `SELECT COUNT(*) as total FROM ${qualifiedTable}${whereClause}`,
+        whereParams,
+      );
       // Build the data query without awaiting, so it runs alongside the count.
       // `emitCursor` marks branches where nextCursor is the last row's PK.
+      // Cursor pagination is disabled when a filter is applied OR a user sort
+      // is active — the cursor's "next PK > $1" assumption only holds against
+      // the default PK-ordered, unfiltered row stream.
       let dataPromise, emitCursor = false;
+      const nextParam = (i) => `$${whereParams.length + i}`;
 
-      if (sortColumn) {
+      if (hasUserSort) {
         const offset = (page - 1) * limit;
-        let orderByClause = `ORDER BY ${quoteIdent(sortColumn)} ${sortDirection}`;
-        if (primaryKeyColumn && sortColumn !== primaryKeyColumn) {
-          orderByClause += `, ${quoteIdent(primaryKeyColumn)} ASC`;
-        }
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} ${orderByClause} LIMIT $1 OFFSET $2`,
-          [limit, offset],
+          `SELECT * FROM ${qualifiedTable}${whereClause}${orderByClause} LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
+          [...whereParams, limit, offset],
         );
-      } else if (primaryKeyColumn && cursor !== undefined) {
+      } else if (!hasFilter && primaryKeyColumn && cursor !== undefined) {
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} WHERE ${quoteIdent(primaryKeyColumn)} > $1 ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $2`,
+          `SELECT * FROM ${qualifiedTable} WHERE ${quoteIdent(primaryKeyColumn)} > $1${orderByClause} LIMIT $2`,
           [cursor, limit],
         );
         emitCursor = true;
-      } else if (primaryKeyColumn && page === 1) {
+      } else if (!hasFilter && primaryKeyColumn && page === 1) {
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} ORDER BY ${quoteIdent(primaryKeyColumn)} ASC LIMIT $1`,
+          `SELECT * FROM ${qualifiedTable}${orderByClause} LIMIT $1`,
           [limit],
         );
         emitCursor = true;
       } else {
         const offset = (page - 1) * limit;
-        const orderBy = primaryKeyColumn ? `ORDER BY ${quoteIdent(primaryKeyColumn)} ASC ` : '';
         dataPromise = pool.query(
-          `SELECT * FROM ${qualifiedTable} ${orderBy}LIMIT $1 OFFSET $2`,
-          [limit, offset],
+          `SELECT * FROM ${qualifiedTable}${whereClause}${orderByClause} LIMIT ${nextParam(1)} OFFSET ${nextParam(2)}`,
+          [...whereParams, limit, offset],
         );
-        emitCursor = !!primaryKeyColumn;
+        emitCursor = !hasFilter && !!primaryKeyColumn;
       }
 
       const [countResult, dataResult] = await Promise.all([countPromise, dataPromise]);
@@ -358,6 +444,427 @@ router.get('/tables/:tableName',
     } catch (err) {
       logger.error({ err: err.message, table: req.params.tableName }, 'table read failed');
       return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Aggregations strip -----------------------------------------------------
+//
+// GET /api/tables/:tableName/aggregate?filter=<json>&aggs=<json>
+//   Per-column aggregations (count/sum/avg/min/max/stddev/count distinct/
+//   count true|false) computed against the current filter. `aggs` is a JSON
+//   array of { column, fn }; returns { results: [{ column, fn, value }] } in
+//   request order. Functions are gated by column type server-side.
+
+const AggregateListQuery = z.object({
+  filter: z.string().max(64_000).optional(),
+  aggs: z.string().max(64_000).optional(),
+});
+
+router.get('/tables/:tableName/aggregate',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    query: AggregateListQuery,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+
+    try {
+      const { columns: columnMetadata } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      let filterSpec = null, aggSpec = null;
+      try {
+        if (req.query.filter) filterSpec = JSON.parse(req.query.filter);
+        if (req.query.aggs) aggSpec = JSON.parse(req.query.aggs);
+      } catch {
+        return sendError(res, 400, codes.BAD_REQUEST, 'Invalid filter or aggs JSON');
+      }
+
+      let whereClause = '', whereParams = [];
+      try {
+        ({ sql: whereClause, params: whereParams } = buildWhere(filterSpec, columnMetadata));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      let result;
+      try {
+        result = await computeAggregates(req.connectionId, qualifiedTable, {
+          aggs: aggSpec,
+          columnMetadata,
+          whereSql: whereClause,
+          params: whereParams,
+        });
+      } catch (err) {
+        // computeAggregates flags user errors (bad column/fn) with statusCode 400.
+        if (err.statusCode === 400) {
+          return sendError(res, 400, codes.BAD_REQUEST, err.message);
+        }
+        throw err;
+      }
+
+      res.json(result);
+    } catch (err) {
+      logger.error({ err: err.message, table: tableName }, 'aggregate failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Per-table data export --------------------------------------------------
+//
+// GET /api/tables/:tableName/export?format=csv|json|sql&filter=<json>&sort=<json>&columns=<json>
+//   Streams the table's rows in the chosen format, respecting the current
+//   filter, sort, and (optionally) a visible-column subset. Rows are pulled
+//   through a server-side cursor in batches and written straight to the
+//   response, so memory stays flat regardless of table size.
+
+const TableExportQuery = z.object({
+  format: z.enum(EXPORT_FORMATS).default('csv'),
+  filter: z.string().max(64_000).optional(),
+  sort: z.string().max(8_000).optional(),
+  // JSON array of column names to include (defaults to all, in ordinal order).
+  columns: z.string().max(64_000).optional(),
+  // Hard cap on rows emitted. Omitted ⇒ every matching row.
+  limit: z.coerce.number().int().positive().max(10_000_000).optional(),
+});
+
+const EXPORT_BATCH_SIZE = 500;
+
+router.get('/tables/:tableName/export',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    query: TableExportQuery,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+    const { format, limit } = req.query;
+
+    try {
+      const { columns: columnMetadata, primaryKeyColumn } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      // Parse the optional JSON params. Bad JSON is a user error → 400.
+      let filterSpec = null, sortSpec = null, requestedColumns = null;
+      try {
+        if (req.query.filter) filterSpec = JSON.parse(req.query.filter);
+        if (req.query.sort) sortSpec = JSON.parse(req.query.sort);
+        if (req.query.columns) requestedColumns = JSON.parse(req.query.columns);
+      } catch {
+        return sendError(res, 400, codes.BAD_REQUEST, 'Invalid filter, sort, or columns JSON');
+      }
+
+      // Resolve the columns to emit. A requested subset is whitelisted against
+      // real columns (preserving request order); unknown names are rejected so
+      // a typo can't silently drop data. Default is every column in ordinal
+      // order.
+      let exportColumns;
+      if (Array.isArray(requestedColumns) && requestedColumns.length > 0) {
+        const unknown = requestedColumns.filter((c) => !columnMetadata[c]);
+        if (unknown.length > 0) {
+          return sendError(res, 400, codes.BAD_REQUEST,
+            `Unknown export column(s): ${unknown.join(', ')}`);
+        }
+        exportColumns = requestedColumns;
+      } else {
+        exportColumns = Object.keys(columnMetadata);
+      }
+
+      let whereClause = '', whereParams = [];
+      try {
+        ({ sql: whereClause, params: whereParams } = buildWhere(filterSpec, columnMetadata));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      let orderByClause = '';
+      try {
+        ({ sql: orderByClause } = buildOrderBy(sortSpec, columnMetadata, primaryKeyColumn));
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      const params = [...whereParams];
+      let limitClause = '';
+      if (limit) {
+        limitClause = ` LIMIT $${params.length + 1}`;
+        params.push(limit);
+      }
+      const colList = exportColumns.map(quoteIdent).join(', ');
+      const query =
+        `SELECT ${colList} FROM ${qualifiedTable}${whereClause}${orderByClause}${limitClause}`;
+
+      const meta = FORMAT_META[format];
+      const safeName = `${tableName}.${meta.extension}`.replace(/[^A-Za-z0-9._-]/g, '_');
+      res.setHeader('Content-Type', meta.contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+
+      const serializer = createSerializer(format, { columns: exportColumns, tableName });
+
+      // Backpressure-aware write: pause cursor fetches while the socket drains.
+      const write = (chunk) =>
+        res.write(chunk) ? Promise.resolve() : new Promise((r) => res.once('drain', r));
+
+      await write(serializer.head());
+      await pool.cursor(query, params, EXPORT_BATCH_SIZE, async (rows) => {
+        let chunk = '';
+        for (const row of rows) chunk += serializer.row(row);
+        await write(chunk);
+      });
+      await write(serializer.foot());
+      res.end();
+    } catch (err) {
+      logger.error({ err: err.message, table: tableName }, 'table export failed');
+      // Once streaming has begun the status/headers are already flushed; the
+      // best we can do is terminate the (now-truncated) download.
+      if (!res.headersSent) {
+        return sendError(res, 500, codes.DB_ERROR, err.message);
+      }
+      res.end();
+    }
+  });
+
+// ---- Per-table CSV import ---------------------------------------------------
+//
+// POST /api/tables/:tableName/import
+//   Body: {
+//     columns: string[],          // target columns, in order
+//     rows: unknown[][],          // each row's cells, aligned to `columns`
+//     mode: 'insert'|'skip'|'update',
+//     conflictColumns?: string[], // required for 'update' (the ON CONFLICT key)
+//     emptyAsNull?: boolean,      // blank cell → NULL (default true)
+//     dryRun?: boolean,           // count only, then roll back (default false)
+//   }
+//   Returns: { dryRun, mode, attempted, inserted, updated, conflicts, batches }
+//
+// The client parses the CSV file, maps headers → columns, and projects each
+// row to the chosen target columns; the server validates the columns, builds
+// parameterized multi-row INSERTs (batched under Postgres' 65535-param cap),
+// and runs every batch inside ONE transaction so the import is all-or-nothing.
+// A dry run runs the same statements then rolls back, reporting the counts the
+// real run would produce — for plain `insert` mode the dry run probes with
+// ON CONFLICT DO NOTHING so it can report conflicts without aborting.
+
+// 65535 params / 1 column ⇒ ~65k rows max per batch; cap total rows per request
+// well above any reasonable interactive paste while still bounding the body.
+const MAX_IMPORT_ROWS = 500_000;
+
+const ImportBodySchema = z.object({
+  columns: z.array(z.string().min(1).max(255)).min(1).max(1600),
+  rows: z.array(z.array(z.unknown())).min(1).max(MAX_IMPORT_ROWS),
+  mode: z.enum(IMPORT_MODES),
+  conflictColumns: z.array(z.string().min(1).max(255)).optional(),
+  emptyAsNull: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+});
+
+// Thrown to unwind porsager's transaction (forcing a ROLLBACK) once a dry run
+// has gathered its counts. Carries the tallies back out to the route.
+const ROLLBACK = Symbol('pglens-dry-run-rollback');
+
+router.post('/tables/:tableName/import',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    body: ImportBodySchema,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+    const {
+      columns: targetColumns, rows, mode,
+      conflictColumns = [], emptyAsNull = true, dryRun = false,
+    } = req.body;
+
+    try {
+      const { columns: columnMetadata } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      // Validate the mapping up front so a bad column 400s before we open a
+      // transaction. (buildImportStatement re-checks, but this gives a cleaner
+      // single error rather than failing mid-batch.)
+      const unknown = targetColumns.filter((c) => !columnMetadata[c]);
+      if (unknown.length > 0) {
+        return sendError(res, 400, codes.BAD_REQUEST,
+          `Unknown column(s): ${unknown.join(', ')}`);
+      }
+      if (mode === 'update') {
+        if (conflictColumns.length === 0) {
+          return sendError(res, 400, codes.BAD_REQUEST,
+            'Update mode requires conflictColumns', {
+              hint: 'Map the table\'s primary-key or a unique column.',
+            });
+        }
+        const badConflict = conflictColumns.filter((c) => !targetColumns.includes(c));
+        if (badConflict.length > 0) {
+          return sendError(res, 400, codes.BAD_REQUEST,
+            `Conflict column(s) not in the mapping: ${badConflict.join(', ')}`);
+        }
+      }
+
+      // A plain-INSERT dry run can't report conflicts without aborting, so it
+      // probes with DO NOTHING. The real run uses the requested mode.
+      const planMode = dryRun && mode === 'insert' ? 'skip' : mode;
+      const batchSize = batchSizeFor(targetColumns.length);
+
+      const runImport = async (exec) => {
+        let attempted = 0, inserted = 0, updated = 0, batches = 0;
+        for (let i = 0; i < rows.length; i += batchSize) {
+          const batch = rows.slice(i, i + batchSize);
+          const { sql, params } = buildImportStatement({
+            qualifiedTable, targetColumns, columnMeta: columnMetadata,
+            rows: batch, mode: planMode, conflictColumns, emptyAsNull,
+          });
+          const result = await exec.query(sql, params);
+          attempted += batch.length;
+          batches += 1;
+          // RETURNING yields a row per affected row, flagged inserted vs
+          // updated by (xmax = 0). Rows DO NOTHING skipped are absent.
+          for (const r of result.rows) {
+            if (r.pglens_inserted) inserted += 1;
+            else updated += 1;
+          }
+        }
+        return { attempted, inserted, updated };
+      };
+
+      let counts;
+      if (dryRun) {
+        try {
+          await pool.transaction(async (tx) => {
+            counts = await runImport(tx);
+            throw ROLLBACK; // discard the probe writes
+          });
+        } catch (err) {
+          if (err !== ROLLBACK) throw err;
+        }
+      } else {
+        counts = await pool.transaction(runImport);
+      }
+
+      // `attempted - (inserted + updated)` is what ON CONFLICT dropped. For
+      // update mode nothing is dropped, so this is 0.
+      const conflicts = counts.attempted - counts.inserted - counts.updated;
+      res.json({
+        dryRun, mode,
+        attempted: counts.attempted,
+        inserted: counts.inserted,
+        updated: counts.updated,
+        conflicts,
+        batches: dryRun ? undefined : Math.ceil(rows.length / batchSize),
+      });
+    } catch (err) {
+      logger.warn({ err: err.message, table: tableName }, 'import failed');
+      return sendError(res, 400, codes.DB_ERROR, err.message, {
+        hint: dryRun ? undefined : 'No rows were imported — the transaction rolled back.',
+      });
+    }
+  });
+
+// ---- Inline row edit --------------------------------------------------------
+//
+// PATCH /api/tables/:tableName/rows
+//   Body: { where: { pk_col: value, ... }, set: { col: value, ... } }
+//   Returns: { row } — the freshly-updated row, post-trigger.
+//
+// `where` must list every primary-key column (so the UPDATE can only touch a
+// single row). `set` keys must be known columns; jsonb values get `::jsonb`
+// cast applied for us. Empty payloads, unknown columns, and missing PK
+// columns all 400 with a hint.
+
+const RowUpdateBodySchema = z.object({
+  where: z.record(z.string().min(1).max(255), z.unknown()),
+  set: z.record(z.string().min(1).max(255), z.unknown()),
+});
+
+router.patch('/tables/:tableName/rows',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    body: RowUpdateBodySchema,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+
+    try {
+      const { columns } = await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      let built;
+      try {
+        built = buildUpdateRow(req.body, columns, qualifiedTable);
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      const result = await pool.query(built.sql, built.params);
+      if (!result.rows.length) {
+        // Either the PK changed underneath us or the row was deleted. The
+        // client should refetch and replay the edit if still applicable.
+        return sendError(res, 404, codes.NOT_FOUND,
+          'Row not found — it may have been deleted or its primary key changed', {
+            hint: 'Refresh the table and try again.',
+          });
+      }
+      res.json({ row: result.rows[0] });
+    } catch (err) {
+      logger.warn({ err: err.message, table: tableName }, 'row update failed');
+      return sendError(res, 400, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Row insert -------------------------------------------------------------
+//
+// POST /api/tables/:tableName/rows
+//   Body: { values: { col: value, ... } }
+//   Returns: { row } — the freshly-inserted row, post-trigger/default.
+//
+// Columns omitted from `values` take their DEFAULT (or NULL); an empty object
+// inserts an all-defaults row. Unknown columns 400; NOT NULL / CHECK / unique
+// violations surface from Postgres through the error envelope.
+
+const RowInsertBodySchema = z.object({
+  values: z.record(z.string().min(1).max(255), z.unknown()),
+});
+
+router.post('/tables/:tableName/rows',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    body: RowInsertBodySchema,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+
+    try {
+      const { columns } = await getTableMetadata(pool, req.connectionId, schema, tableName);
+
+      let built;
+      try {
+        built = buildInsertRow(req.body, columns, qualifiedTable);
+      } catch (err) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+
+      const result = await pool.query(built.sql, built.params);
+      res.status(201).json({ row: result.rows[0] });
+    } catch (err) {
+      logger.warn({ err: err.message, table: tableName }, 'row insert failed');
+      return sendError(res, 400, codes.DB_ERROR, err.message);
     }
   });
 
@@ -430,18 +937,7 @@ router.get('/export', requireConnection, async (req, res) => {
       const rows = await pool.query(`SELECT * FROM ${quoteQualifiedIdent(schema, tableName)}`);
       for (const row of rows.rows) {
         const keys = Object.keys(row).map(k => quoteIdent(k)).join(', ');
-        const values = Object.values(row).map(val => {
-          if (val === null) return 'NULL';
-          if (typeof val === 'number' || typeof val === 'boolean') return val;
-          if (val instanceof Date) return `'${val.toISOString()}'`;
-          if (Array.isArray(val)) {
-            const arr = val.map(v => v === null ? 'NULL'
-              : typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : v).join(',');
-            return `'{${arr}}'`;
-          }
-          if (typeof val === 'object') return `'${JSON.stringify(val).replace(/'/g, "''")}'`;
-          return `'${String(val).replace(/'/g, "''")}'`;
-        }).join(', ');
+        const values = Object.values(row).map(sqlLiteral).join(', ');
         res.write(`INSERT INTO ${quoteIdent(tableName)} (${keys}) VALUES (${values});\n`);
       }
       res.write('\n');
@@ -538,33 +1034,485 @@ router.get('/schema', requireConnection, async (req, res) => {
   }
 });
 
+// ---- Saved views ------------------------------------------------------------
+//
+// Views persist `(filter + sort + visible columns + column widths + timezone)`
+// per (connectionId, tableName). They live in `~/.pglens/views.json` — see
+// `src/db/views.js`. Listing is open (no `requireConnection`) so the sidebar
+// can show views even when the database isn't reachable.
+
+const ViewListQuery = z.object({
+  connectionId: z.string().min(1).max(255).optional(),
+  tableName: z.string().min(1).max(255).optional(),
+});
+
+const ViewIdParam = z.object({ id: z.string().uuid() });
+
+router.get('/views', validate({ query: ViewListQuery }), (req, res) => {
+  res.json({ views: views.listViews(req.query) });
+});
+
+router.post('/views', validate({ body: views.ViewBodySchema }), (req, res) => {
+  try {
+    res.status(201).json({ view: views.createView(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.put('/views/:id',
+  validate({ params: ViewIdParam, body: views.ViewPatchSchema }),
+  (req, res) => {
+    try {
+      const updated = views.updateView(req.params.id, req.body);
+      if (!updated) {
+        return sendError(res, 404, codes.NOT_FOUND, 'View not found');
+      }
+      res.json({ view: updated });
+    } catch (err) {
+      return sendError(res, 400, codes.BAD_REQUEST, err.message);
+    }
+  });
+
+router.delete('/views/:id', validate({ params: ViewIdParam }), (req, res) => {
+  const ok = views.deleteView(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'View not found');
+  res.json({ deleted: true });
+});
+
+// ---- Saved queries (roadmap §5.5) -------------------------------------------
+//
+// Raw SQL + organizational metadata (folder / tags / description) and
+// Postman-style `{{variable}}` defaults, scoped per connection. Stored in
+// `~/.pglens/saved-queries.json` — see `src/db/savedQueries.js`. Listing is
+// open (no `requireConnection`) so the editor's Saved menu populates even when
+// the database isn't reachable.
+
+const SavedQueryListQuery = z.object({
+  connectionId: z.string().min(1).max(255).optional(),
+});
+
+const SavedQueryIdParam = z.object({ id: z.string().uuid() });
+
+const SavedQueryImportSchema = z.object({
+  connectionId: z.string().min(1).max(255),
+  savedQueries: z.array(savedQueries.ImportItemSchema).min(1).max(2000),
+});
+
+router.get('/saved-queries', validate({ query: SavedQueryListQuery }), (req, res) => {
+  res.json({ savedQueries: savedQueries.listSavedQueries(req.query) });
+});
+
+router.post('/saved-queries', validate({ body: savedQueries.SavedQueryBodySchema }), (req, res) => {
+  try {
+    res.status(201).json({ savedQuery: savedQueries.createSavedQuery(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+// Bulk import for the export/import flow. Registered before `/:id` is moot here
+// (this is POST, the id routes are PUT/DELETE) but kept adjacent for clarity.
+router.post('/saved-queries/import', validate({ body: SavedQueryImportSchema }), (req, res) => {
+  try {
+    const created = savedQueries.importMany(req.body.connectionId, req.body.savedQueries);
+    res.status(201).json({ savedQueries: created, count: created.length });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.put('/saved-queries/:id',
+  validate({ params: SavedQueryIdParam, body: savedQueries.SavedQueryPatchSchema }),
+  (req, res) => {
+    try {
+      const updated = savedQueries.updateSavedQuery(req.params.id, req.body);
+      if (!updated) {
+        return sendError(res, 404, codes.NOT_FOUND, 'Saved query not found');
+      }
+      res.json({ savedQuery: updated });
+    } catch (err) {
+      return sendError(res, 400, codes.BAD_REQUEST, err.message);
+    }
+  });
+
+router.delete('/saved-queries/:id', validate({ params: SavedQueryIdParam }), (req, res) => {
+  const ok = savedQueries.deleteSavedQuery(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'Saved query not found');
+  res.json({ deleted: true });
+});
+
+// ---- Query history (roadmap §5.5) -------------------------------------------
+//
+// Per-connection run log written by the Advanced editor after each run. Stored
+// in `~/.pglens/query-history.json` — see `src/db/queryHistory.js`. Like saved
+// queries, none of these touch the database, so no `requireConnection`.
+
+const HistoryListQuery = z.object({
+  connectionId: z.string().min(1).max(255),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
+const HistoryIdParam = z.object({ id: z.string().uuid() });
+
+const HistoryClearQuery = z.object({
+  connectionId: z.string().min(1).max(255),
+});
+
+router.get('/query-history', validate({ query: HistoryListQuery }), (req, res) => {
+  res.json({ entries: queryHistory.listHistory(req.query) });
+});
+
+router.post('/query-history', validate({ body: queryHistory.HistoryEntrySchema }), (req, res) => {
+  try {
+    res.status(201).json({ entry: queryHistory.addHistory(req.body) });
+  } catch (err) {
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
+  }
+});
+
+router.delete('/query-history/:id', validate({ params: HistoryIdParam }), (req, res) => {
+  const ok = queryHistory.deleteEntry(req.params.id);
+  if (!ok) return sendError(res, 404, codes.NOT_FOUND, 'History entry not found');
+  res.json({ deleted: true });
+});
+
+// Clear every entry for a connection. The bare path (no `:id`) carries the
+// connection in the query string so it never shadows the per-entry delete.
+router.delete('/query-history', validate({ query: HistoryClearQuery }), (req, res) => {
+  const count = queryHistory.clearHistory(req.query.connectionId);
+  res.json({ cleared: true, count });
+});
+
 // ---- Raw-SQL escape hatch ---------------------------------------------------
+
+// Shape one statement's result for the wire. porsager exposes a column's type
+// OID as `.type`; we surface it as `dataTypeID` so the client can resolve a
+// type name (and pick the right cell renderer) for arbitrary SQL.
+function toResultDto(result) {
+  return {
+    rows: result.rows,
+    fields: (result.fields || []).map((f) => ({ name: f.name, dataTypeID: f.type })),
+    rowCount: result.rowCount ?? result.rows?.length ?? 0,
+    command: result.command ?? null,
+    durationMs: result.durationMs,
+  };
+}
+
+// Split the script and reject the param/explain combinations that can't run.
+// Returns the statement list, or sends a 400 and returns null.
+function prepareStatements(res, sql, params, explain) {
+  const statements = splitStatements(sql);
+  if (statements.length === 0) {
+    sendError(res, 400, codes.BAD_REQUEST, 'No SQL statement to run.');
+    return null;
+  }
+  if (explain && statements.length > 1) {
+    sendError(res, 400, codes.BAD_REQUEST, 'Explain analyze runs one statement at a time.');
+    return null;
+  }
+  if (!explain && statements.length > 1 && params && params.length > 0) {
+    sendError(res, 400, codes.BAD_REQUEST, 'Parameters are only supported with a single statement.');
+    return null;
+  }
+  return statements;
+}
 
 router.post('/query',
   requireConnection,
   validate({ body: QueryBodySchema }),
   async (req, res) => {
-    const { sql, params } = req.body;
+    const { sql, params, explain, analyze } = req.body;
     const pool = req.pool;
     const schema = req.schema;
     const started = Date.now();
     try {
-      // search_path + the user's SQL must run on one reserved connection,
-      // otherwise the SET can land on a different pooled backend.
-      const result = await pool.queryWithSchema(schema, sql, params);
+      const statements = prepareStatements(res, sql, params, explain);
+      if (!statements) return;
+
+      if (explain) {
+        // analyze (default) executes the statement; EXPLAIN ANALYZE runs inside
+        // a rolled-back transaction (see pool.explainAnalyze) so timing a write
+        // never mutates data. A plain EXPLAIN only plans — never executes.
+        const { rows } = analyze === false
+          ? await pool.explain(schema, statements[0], params)
+          : await pool.explainAnalyze(schema, statements[0], params);
+        const timing = extractExplainTiming(rows);
+        return res.json({ results: [], timing, durationMs: Date.now() - started });
+      }
+
+      // search_path + the user's SQL share one reserved backend (otherwise the
+      // SET could land on a different pooled connection), and every statement of
+      // a multi-statement script runs on that same backend.
+      const results = await pool.runStatements(schema, statements, params);
       // Raw SQL may include DDL — drop cached metadata for this connection.
       invalidateMetadata(req.connectionId);
-      const fields = (result.fields || []).map(f => ({ name: f.name, dataTypeID: f.dataTypeID }));
       res.json({
-        rows: result.rows,
-        fields,
-        rowCount: result.rowCount ?? result.rows?.length ?? 0,
+        results: results.map(toResultDto),
         durationMs: Date.now() - started,
       });
     } catch (err) {
+      // A multi-statement script can fail partway after an earlier DDL statement
+      // has already committed (Auto-commit), so drop cached metadata even on
+      // error — re-introspecting is cheap and avoids a stale schema.
+      invalidateMetadata(req.connectionId);
       logger.warn({ err: err.message }, 'query failed');
       return sendError(res, 400, codes.DB_ERROR, err.message, { hint: `${Date.now() - started}ms` });
     }
   });
+
+// ---- Transaction mode (roadmap §5.3) ---------------------------------------
+//
+// An Advanced tab in Transaction mode holds one dedicated backend for the life
+// of the transaction. BEGIN runs implicitly on the first `/tx/query`; COMMIT /
+// ROLLBACK run on the same backend and release it. Sessions are keyed by tab id
+// (the auth token scopes the whole map to this install) and a session is bound
+// to the connection it opened against.
+
+const TabIdSchema = z.string().min(1).max(255).refine((s) => !s.includes('\0'), 'null byte');
+
+const TxQueryBodySchema = z.object({
+  tabId: TabIdSchema,
+  sql: z.string().min(1),
+  params: z.array(z.unknown()).optional(),
+  explain: z.boolean().optional(),
+  // See QueryBodySchema.analyze — false ⇒ plain EXPLAIN (no execution).
+  analyze: z.boolean().optional(),
+});
+
+const TxControlBodySchema = z.object({ tabId: TabIdSchema });
+
+// Map a tx-manager error to the right envelope: 409 for state conflicts
+// (wrong connection / concurrent query), 503 when the connection is gone,
+// otherwise a Postgres error surfaced from the statement.
+function txErrorResponse(res, err) {
+  const status = err.statusCode || 400;
+  const code =
+    err.code === 'CONFLICT' ? codes.CONFLICT
+      : err.code === 'NO_CONNECTION' ? codes.NO_CONNECTION
+        : codes.DB_ERROR;
+  return sendError(res, status, code, err.message);
+}
+
+router.post('/tx/query',
+  requireConnection,
+  validate({ body: TxQueryBodySchema }),
+  async (req, res) => {
+    const { tabId, sql, params, explain, analyze } = req.body;
+    const started = Date.now();
+    try {
+      const statements = prepareStatements(res, sql, params, explain);
+      if (!statements) return;
+
+      if (explain) {
+        // Timed inside the tab's own open transaction (the user commits/rolls
+        // back), so unlike Auto-commit it is not self-rolled-back. A plain
+        // EXPLAIN (analyze: false) only plans and executes nothing.
+        const rows = await txManager.explain({
+          connectionId: req.connectionId,
+          tabId,
+          schema: req.schema,
+          sql: statements[0],
+          params,
+          analyze: analyze !== false,
+        });
+        const timing = extractExplainTiming(rows);
+        return res.json({
+          results: [],
+          timing,
+          durationMs: Date.now() - started,
+          txOpen: txManager.status(tabId).open,
+        });
+      }
+
+      const results = await txManager.runStatements({
+        connectionId: req.connectionId,
+        tabId,
+        schema: req.schema,
+        statements,
+        params,
+      });
+      res.json({
+        results: results.map(toResultDto),
+        durationMs: Date.now() - started,
+        // BEGIN has run by the time the user's statement executes, so the tab
+        // holds a transaction even when that statement errored (handled below).
+        txOpen: txManager.status(tabId).open,
+      });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId }, 'tx query failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.post('/tx/commit',
+  requireConnection,
+  validate({ body: TxControlBodySchema }),
+  async (req, res) => {
+    try {
+      const { hadTransaction } = await txManager.commit(req.connectionId, req.body.tabId);
+      // Committed DDL may now be visible to pooled reads — drop cached metadata.
+      if (hadTransaction) invalidateMetadata(req.connectionId);
+      res.json({ committed: true, hadTransaction });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId: req.body.tabId }, 'tx commit failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.post('/tx/rollback',
+  requireConnection,
+  validate({ body: TxControlBodySchema }),
+  async (req, res) => {
+    try {
+      const { hadTransaction } = await txManager.rollback(req.connectionId, req.body.tabId);
+      res.json({ rolledBack: true, hadTransaction });
+    } catch (err) {
+      logger.warn({ err: err.message, tabId: req.body.tabId }, 'tx rollback failed');
+      return txErrorResponse(res, err);
+    }
+  });
+
+router.get('/tx/status',
+  requireConnection,
+  validate({ query: z.object({ tabId: TabIdSchema }) }),
+  (req, res) => {
+    res.json(txManager.status(req.query.tabId));
+  });
+
+// Pretty-print SQL for the Advanced-mode editor (roadmap §5.2 "format on save").
+// Pure text transform — no DB connection needed, so this route is open. We run
+// the JS `sql-formatter` (postgresql dialect) rather than the Perl pg-formatter
+// so a single `npm install` stays sufficient (CLAUDE.md principle #5).
+router.post('/format', validate({ body: FormatBodySchema }), (req, res) => {
+  try {
+    const sql = formatPgSql(req.body.sql, {
+      language: 'postgresql',
+      keywordCase: 'upper',
+      dataTypeCase: 'upper',
+      tabWidth: 2,
+    });
+    res.json({ sql });
+  } catch (err) {
+    // sql-formatter throws on unparseable input; surface it without the stack.
+    return sendError(res, 400, codes.BAD_REQUEST, `Could not format SQL: ${err.message}`);
+  }
+});
+
+// ---- Live activity dashboard (roadmap §6.1) --------------------------------
+//
+// One snapshot of the server's own stat views per call; the client polls this
+// every few seconds while the Operations panel is open. Each section degrades
+// independently inside getOverview(), so the route only 500s on a hard failure.
+
+router.get('/operations/overview', requireConnection, async (req, res) => {
+  try {
+    const overview = await operations.getOverview(req.pool, req.schema);
+    res.json(overview);
+  } catch (err) {
+    logger.error({ err: err.message }, 'operations overview failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// A backend pid to act on. Postgres backend pids are positive 32-bit ints.
+const BackendActionBody = z.object({
+  pid: z.coerce.number().int().positive(),
+});
+
+router.post('/operations/cancel',
+  requireConnection,
+  validate({ body: BackendActionBody }),
+  async (req, res) => {
+    try {
+      const result = await operations.cancelBackend(req.pool, req.body.pid);
+      res.json(result);
+    } catch (err) {
+      logger.warn({ err: err.message, pid: req.body.pid }, 'cancel backend failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+router.post('/operations/terminate',
+  requireConnection,
+  validate({ body: BackendActionBody }),
+  async (req, res) => {
+    try {
+      const result = await operations.terminateBackend(req.pool, req.body.pid);
+      res.json(result);
+    } catch (err) {
+      logger.warn({ err: err.message, pid: req.body.pid }, 'terminate backend failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- Slow query view (roadmap §6.2) ----------------------------------------
+//
+// Reads pg_stat_statements. The list response is a small state machine
+// (not_installed / not_loaded / ready) so the client renders the enable prompt
+// or the table without parsing error strings. The sort key is restricted to a
+// fixed allowlist by both the Zod enum here and the server-side SORT_COLUMNS
+// map, so no caller input reaches the ORDER BY.
+
+const StatementsQuery = z.object({
+  sort: z.enum(['total_exec_time', 'mean_exec_time', 'calls']).default('total_exec_time'),
+  limit: z.coerce.number().int().positive().max(slowQueries.MAX_LIMIT).optional(),
+});
+
+router.get('/operations/statements',
+  requireConnection,
+  validate({ query: StatementsQuery }),
+  async (req, res) => {
+    try {
+      const result = await slowQueries.getStatements(req.pool, {
+        sort: req.query.sort,
+        limit: req.query.limit,
+      });
+      res.json(result);
+    } catch (err) {
+      logger.error({ err: err.message }, 'slow query view failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+router.post('/operations/statements/enable', requireConnection, async (req, res) => {
+  try {
+    const result = await slowQueries.enableStatements(req.pool);
+    res.json(result);
+  } catch (err) {
+    // Typically a privilege error (CREATE EXTENSION needs a superuser).
+    logger.warn({ err: err.message }, 'enable pg_stat_statements failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message, {
+      hint: 'Enabling pg_stat_statements requires a superuser, and collection requires it in shared_preload_libraries.',
+    });
+  }
+});
+
+router.post('/operations/statements/reset', requireConnection, async (req, res) => {
+  try {
+    const result = await slowQueries.resetStatements(req.pool);
+    res.json(result);
+  } catch (err) {
+    logger.warn({ err: err.message }, 'reset pg_stat_statements failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// ---- Index assistant (roadmap §6.4) ----------------------------------------
+//
+// Read-only catalog advice (unused / duplicate indexes + heavy seq-scan
+// tables). Each section degrades independently inside getAdvice(), so the route
+// only 500s on a hard failure. The DROP DDL each removable index carries is for
+// the user to review and run in the editor — nothing here executes it.
+
+router.get('/operations/indexes', requireConnection, async (req, res) => {
+  try {
+    const advice = await indexAdvisor.getAdvice(req.pool, req.schema);
+    res.json(advice);
+  } catch (err) {
+    logger.error({ err: err.message }, 'index assistant failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
 
 module.exports = router;
