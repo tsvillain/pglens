@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-06-23
+
+Phase 3 (part 2) — Postgres-native operations. The EXPLAIN plan visualizer
+and index assistant turn pglens into the tool you open when something is
+slow. Both read only from the server's own catalogs and stat views; the
+only SQL either generates is a `DROP INDEX` shown for review, never run for
+you.
+
+### Added
+
+- **EXPLAIN plan visualizer** (roadmap §6.3). A tree view of an
+  `EXPLAIN (FORMAT JSON)` plan with each node's cost, planned vs. actual
+  rows, and — under `EXPLAIN (ANALYZE, BUFFERS)` — its real timing. The
+  analytical core is a pure, heavily unit-tested parser
+  (`explainPlan.ts`) that the `ExplainPlan` component only renders: it
+  computes **exclusive** (self) time and cost per node by subtracting
+  children, multiplies `Actual Total Time`/`Actual Rows` by `Actual Loops`
+  to recover real totals from Postgres's per-loop averages, and derives the
+  planner's row **misestimate factor and direction** (over/under). A
+  heatmap colors nodes by exclusive time, rows, or cost (green → red) so
+  the costly node lights up rather than its parents, and every node type
+  carries a plain-English tooltip. A toggle switches between plain
+  `EXPLAIN` and `EXPLAIN (ANALYZE, BUFFERS)`. Reachable from (a) the
+  Advanced-mode Explain toggle, (b) a no-code query's "Show SQL" panel, and
+  (c) the slow-query drilldown — each hands the plan to the same parser via
+  `ExplainPlanDialog`, with a raw-JSON escape hatch. Unrecognized input
+  falls back to the raw view instead of throwing.
+- **Index assistant** (roadmap §6.4). A new Operations sub-panel
+  (`GET /api/operations/indexes`) of read-only advice derived from the
+  catalogs, assembled in one round trip with each section isolated so a
+  role missing one stat view still gets the rest:
+  - **Unused indexes** — `pg_stat_user_indexes` where `idx_scan = 0`,
+    largest first, excluding primary-key / unique / exclusion / invalid
+    indexes (dropping those changes semantics, not just reclaims space).
+  - **Duplicate indexes** — groups of exactly-redundant indexes (same
+    table, columns, opclasses, collations, expression, predicate, and
+    access method); keep one, drop the rest.
+  - **Sequential-scan-heavy tables** — `pg_stat_user_tables` where seq
+    scans outnumber index scans on a table ≥ 10K live rows: the
+    catalog-only proxy for a missing index.
+
+  Every removable index carries a `DROP INDEX` DDL built through the app's
+  identifier escaper, shown for the user to review and run in the editor —
+  the module never executes it. The column-level `CREATE INDEX`
+  recommender and `pgstattuple` bloat checks are deferred (they need hypopg
+  / a full-relation scan); the seq-scan section stands in until hypopg
+  integration lands.
+
+## [3.3.0] - 2026-06-18
+
+Phase 3 (part 1) — Postgres-native operations. A new **Operations** sidebar
+section makes pglens the tool you open when the database is busy or broken:
+a live activity dashboard over the server's own stat views, and a slow-query
+view backed by `pg_stat_statements`. Everything is read-only introspection
+of system catalogs — no caller-supplied SQL reaches the server — except the
+explicit, privileged actions (cancel/terminate a backend, enable/reset
+`pg_stat_statements`).
+
+### Added
+
+- **Live activity dashboard** (roadmap §6.1). `GET /api/operations/overview`
+  assembles the panel in one round trip, each reader isolated so a section a
+  role can't see (e.g. replication) comes back as `{ data: null, error }`
+  while the rest renders. Sections: **active sessions** (`pg_stat_activity`,
+  with state, wait event, truncated query, age — excluding pglens's own
+  polling backend); **locks & blocking** (`pg_blocking_pids()`) as
+  blocker → blocked chains; **replication** (`pg_stat_replication`, lag in
+  bytes and seconds); **database & table sizes** (top 20 relations with
+  heap / index / toast bytes broken out); and **connection count** vs.
+  `max_connections` with an 80% warning threshold. Two privileged
+  per-backend actions — **cancel query** (`pg_cancel_backend`) and
+  **terminate session** (`pg_terminate_backend`) — via
+  `POST /api/operations/cancel` and `/terminate`. The client polls every
+  few seconds while the panel is open.
+- **Slow query view** (roadmap §6.2). `GET /api/operations/statements`
+  surfaces the top `pg_stat_statements` aggregates for the current database,
+  sortable by `total_exec_time` / `mean_exec_time` / `calls` (the sort key
+  is mapped through a fixed server-side allowlist, never interpolated). The
+  payload is a small **state machine** the client renders without parsing
+  error strings: `not_installed` (offers the
+  `CREATE EXTENSION pg_stat_statements` DDL preview when available),
+  `not_loaded` (created but absent from `shared_preload_libraries`), or
+  `ready`. Each row carries an **estimated p95** execution time —
+  `pg_stat_statements` records only mean/stddev/min/max, so p95 is modeled
+  as `mean + 1.6449·stddev` clamped to `[mean, max]` — plus call count,
+  timing spread, and shared/local/temp block IO. One-click **enable**
+  (`POST .../statements/enable`) and **reset**
+  (`POST .../statements/reset`, `pg_stat_statements_reset()`), both
+  requiring a privileged role. Requires PostgreSQL 13+ (the `*_exec_time`
+  column names).
+
 ## [3.2.0] - 2026-06-10
 
 Phase 2 — Advanced Mode. pglens gains a full SQL surface for engineers who
@@ -452,7 +543,9 @@ migration 301-redirects to `/` so existing bookmarks keep working.
 - SQL injection prevention via table name sanitization
 - Input validation for pagination parameters
 
-[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/tsvillain/pglens/compare/v3.3.0...v3.4.0
+[3.3.0]: https://github.com/tsvillain/pglens/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/tsvillain/pglens/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/tsvillain/pglens/compare/v3.0.2...v3.1.0
 [3.0.2]: https://github.com/tsvillain/pglens/compare/v3.0.1...v3.0.2

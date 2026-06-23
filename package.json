@@ -1,6 +1,6 @@
 {
   "name": "pglens",
-  "version": "3.2.0",
+  "version": "3.4.0",
   "description": "A no-code PostgreSQL workstation: browse, filter, edit, and query your databases from a fast local web UI",
   "bin": {
     "pglens": "./bin/pglens"
