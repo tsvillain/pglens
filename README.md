@@ -55,19 +55,13 @@ curl -fsSL https://pglens.org/install.sh | bash
 iwr https://pglens.org/install.ps1 -useb | iex
 ```
 
-### Alternative: Install via npm
+The installer is self-contained (it bundles Node if you don't have it), keeps pglens
+under `~/.pglens`, and a re-run upgrades in place. **This is the supported install.**
 
-If you already have Node.js installed, you can use npm:
-
-```bash
-npm install -g pglens
-```
-
-Or install locally in your project:
-
-```bash
-npm install pglens
-```
+> **Note on npm.** `npm install -g pglens` works but is **not recommended** — it installs
+> outside `~/.pglens` and ends up shadowing the curl copy, which is the usual cause of
+> "I upgraded but still see the old version". `pglens doctor` flags an npm install and
+> prints the commands to remove it. Stick to the curl script above.
 
 ## Usage
 
@@ -87,6 +81,7 @@ reprint it at any time with:
 pglens url      # full URL with token
 pglens token    # token only
 pglens logs -f  # tail structured logs
+pglens doctor   # diagnose install problems (shadowed/stale binaries)
 ```
 
 > **Auth:** Opening the printed URL stores an `HttpOnly` cookie, so subsequent visits
@@ -112,6 +107,24 @@ To stop the background service:
 ```bash
 pglens stop
 ```
+
+## Troubleshooting
+
+### `pglens --version` shows an old version after upgrading
+
+Almost always one of two things — run `pglens doctor` and it will tell you which,
+with the exact commands to fix it:
+
+- **Stale shell hash.** Your shell cached the path to the old binary. Run `hash -r`
+  (bash/zsh) or open a new terminal.
+- **A shadowing npm copy on PATH.** If you also ran `npm install -g pglens`, that copy
+  lives in your npm prefix and can win on `PATH` over the curl install in `~/.pglens`.
+  `pglens doctor` lists every copy it finds and prints removal commands for the npm one.
+  Your data (`~/.pglens/connections.json`, `token`, `logs/`) is never touched.
+
+> **The curl install is canonical.** pglens lives under `~/.pglens` and upgrades by
+> re-running the install script. If you have an `npm -g` copy, remove it (`pglens doctor`
+> or `npm rm -g pglens`) — don't delete `~/.pglens`, that's the supported install.
 
 ## How It Works
 

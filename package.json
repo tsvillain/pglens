@@ -1,18 +1,20 @@
 {
   "name": "pglens",
-  "version": "3.0.0",
-  "description": "A simple PostgreSQL database viewer tool",
+  "version": "3.4.0",
+  "description": "A no-code PostgreSQL workstation: browse, filter, edit, and query your databases from a fast local web UI",
   "bin": {
     "pglens": "./bin/pglens"
   },
   "files": [
     "bin",
     "src",
+    "scripts/postinstall.js",
     "client-next/dist",
     "README.md"
   ],
   "scripts": {
     "prepack": "npm --prefix client-next ci && npm --prefix client-next run build",
+    "postinstall": "node scripts/postinstall.js",
     "start": "node bin/pglens",
     "test": "node scripts/run-tests.js test/unit",
     "test:coverage": "node scripts/run-tests.js test/unit --experimental-test-coverage --test-coverage-include=src/** --test-reporter=spec",
@@ -49,6 +51,7 @@
     "pino": "^9.14.0",
     "pino-roll": "^3.1.0",
     "postgres": "^3.4.3",
+    "sql-formatter": "^15.8.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
