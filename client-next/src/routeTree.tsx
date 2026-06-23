@@ -5,6 +5,7 @@ import { SchemaViz } from './pages/SchemaViz'
 import { QueryRunner } from './pages/QueryRunner'
 import { Operations } from './pages/Operations'
 import { SlowQueries } from './pages/SlowQueries'
+import { IndexAssistant } from './pages/IndexAssistant'
 import { Sidebar } from './components/Sidebar'
 import { TabBar } from './components/TabBar'
 import { Spotlight } from './components/Spotlight'
@@ -83,6 +84,12 @@ const slowQueriesRoute = createRoute({
   component: SlowQueries,
 })
 
+const indexAssistantRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/index-assistant',
+  component: IndexAssistant,
+})
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   tableRoute,
@@ -90,4 +97,5 @@ export const routeTree = rootRoute.addChildren([
   queryRoute,
   operationsRoute,
   slowQueriesRoute,
+  indexAssistantRoute,
 ])
