@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { X, Home, Table as TableIcon, Terminal, GitBranch, Activity, Timer } from 'lucide-react'
+import { X, Home, Table as TableIcon, Terminal, GitBranch, Activity, Timer, Lightbulb } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -20,6 +20,7 @@ function routeToTab(pathname: string): Tab {
   if (pathname === '/schema') return { kind: 'schema' }
   if (pathname === '/operations') return { kind: 'operations' }
   if (pathname === '/slow-queries') return { kind: 'slow-queries' }
+  if (pathname === '/index-assistant') return { kind: 'index-assistant' }
   return { kind: 'home' }
 }
 
@@ -30,6 +31,7 @@ function tabIcon(t: Tab) {
     case 'schema': return GitBranch
     case 'operations': return Activity
     case 'slow-queries': return Timer
+    case 'index-assistant': return Lightbulb
     case 'home': return Home
   }
 }

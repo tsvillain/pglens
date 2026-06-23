@@ -5,7 +5,8 @@ import {
 } from '@tanstack/react-router'
 import {
   Activity, Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
-  MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon, Terminal, Timer,
+  Lightbulb, MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon,
+  Terminal, Timer,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -325,6 +326,17 @@ export function Sidebar() {
           >
             <Timer className="h-3.5 w-3.5 text-muted-foreground" />
             Slow queries
+          </Link>
+          <Link
+            to="/index-assistant"
+            onClick={() => openTab({ kind: 'index-assistant' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/index-assistant' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <Lightbulb className="h-3.5 w-3.5 text-muted-foreground" />
+            Index assistant
           </Link>
         </Section>
       )}

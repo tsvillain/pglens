@@ -26,6 +26,7 @@ const { splitStatements } = require('../db/statements');
 const { extractExplainTiming } = require('../db/explain');
 const operations = require('../db/operations');
 const slowQueries = require('../db/slowQueries');
+const indexAdvisor = require('../db/indexAdvisor');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const savedQueries = require('../db/savedQueries');
@@ -1493,6 +1494,23 @@ router.post('/operations/statements/reset', requireConnection, async (req, res) 
     res.json(result);
   } catch (err) {
     logger.warn({ err: err.message }, 'reset pg_stat_statements failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// ---- Index assistant (roadmap §6.4) ----------------------------------------
+//
+// Read-only catalog advice (unused / duplicate indexes + heavy seq-scan
+// tables). Each section degrades independently inside getAdvice(), so the route
+// only 500s on a hard failure. The DROP DDL each removable index carries is for
+// the user to review and run in the editor — nothing here executes it.
+
+router.get('/operations/indexes', requireConnection, async (req, res) => {
+  try {
+    const advice = await indexAdvisor.getAdvice(req.pool, req.schema);
+    res.json(advice);
+  } catch (err) {
+    logger.error({ err: err.message }, 'index assistant failed');
     return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });

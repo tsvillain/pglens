@@ -1252,3 +1252,55 @@ export function enableStatements(connectionId: string) {
 export function resetStatements(connectionId: string) {
   return statementsAction('reset', connectionId)
 }
+
+// ---- Index assistant (roadmap §6.4) -----------------------------------------
+
+// One removable index. `drop_ddl` is generated server-side (properly quoted)
+// for the user to review and run in the editor — pglens never runs it directly.
+const RemovableIndexSchema = z.object({
+  index_name: z.string(),
+  indexdef: z.string(),
+  size_bytes: Numeric,
+  size_pretty: z.string().nullable(),
+  idx_scan: Numeric,
+  drop_ddl: z.string(),
+})
+export type RemovableIndex = z.infer<typeof RemovableIndexSchema>
+
+const UnusedIndexSchema = RemovableIndexSchema.extend({
+  table_name: z.string(),
+})
+export type UnusedIndex = z.infer<typeof UnusedIndexSchema>
+
+// A group of exactly-redundant indexes on one table: keep one, drop the rest.
+const DuplicateGroupSchema = z.object({
+  table_name: z.string(),
+  indexes: z.array(RemovableIndexSchema),
+})
+export type DuplicateGroup = z.infer<typeof DuplicateGroupSchema>
+
+// A table leaning on sequential scans — a missing-index candidate (columns are
+// the user's call; see the server module note on hypopg).
+const SeqScanTableSchema = z.object({
+  table_name: z.string(),
+  seq_scan: Numeric,
+  seq_tup_read: Numeric,
+  idx_scan: Numeric,
+  n_live_tup: Numeric,
+  size_bytes: Numeric,
+  size_pretty: z.string().nullable(),
+})
+export type SeqScanTable = z.infer<typeof SeqScanTableSchema>
+
+// Each section is `{ data, error }` so one failing (e.g. a role without stat
+// visibility) renders inline, not as a blank page — mirrors getAdvice().
+const IndexAdviceSchema = z.object({
+  unused: section(z.array(UnusedIndexSchema)),
+  duplicate: section(z.array(DuplicateGroupSchema)),
+  seqScans: section(z.array(SeqScanTableSchema)),
+})
+export type IndexAdvice = z.infer<typeof IndexAdviceSchema>
+
+export function getIndexAdvice(connectionId: string, signal?: AbortSignal) {
+  return api('/api/operations/indexes', IndexAdviceSchema, { connectionId, signal })
+}
