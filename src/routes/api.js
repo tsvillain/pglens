@@ -27,6 +27,7 @@ const { extractExplainTiming } = require('../db/explain');
 const operations = require('../db/operations');
 const slowQueries = require('../db/slowQueries');
 const indexAdvisor = require('../db/indexAdvisor');
+const schemaDiff = require('../db/schemaDiff');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const savedQueries = require('../db/savedQueries');
@@ -1511,6 +1512,60 @@ router.get('/operations/indexes', requireConnection, async (req, res) => {
     res.json(advice);
   } catch (err) {
     logger.error({ err: err.message }, 'index assistant failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// ---- Schema diff & migration generator (roadmap §7.1) ----------------------
+//
+// GET /api/schema-diff?source=<connId>&target=<connId>
+//   Diffs two registered connections (each at its own configured schema) and
+//   returns the structured diff plus a forward (source→target) and backward
+//   (target→source) migration. Every generated statement is flagged destructive
+//   or not; nothing is executed — the user runs it from the editor, exactly like
+//   the index assistant's DROP DDL. This route takes two connections, so it
+//   resolves both pools itself rather than using the single-connection
+//   `requireConnection` middleware.
+
+const SchemaDiffQuery = z.object({
+  source: z.string().min(1).max(255),
+  target: z.string().min(1).max(255),
+});
+
+router.get('/schema-diff', validate({ query: SchemaDiffQuery }), async (req, res) => {
+  const { source, target } = req.query;
+  if (source === target) {
+    return sendError(res, 400, codes.BAD_REQUEST, 'Pick two different connections to diff.');
+  }
+  const sourcePool = getPool(source);
+  const targetPool = getPool(target);
+  if (!sourcePool || !targetPool) {
+    return sendError(res, 503, codes.NO_CONNECTION,
+      'One or both connections are not connected', {
+        hint: 'Reconnect both databases, then try again.',
+      });
+  }
+  const sourceSchema = getConnectionSchema(source);
+  const targetSchema = getConnectionSchema(target);
+  if (!sourceSchema || sourceSchema.includes('\0') ||
+      !targetSchema || targetSchema.includes('\0')) {
+    return sendError(res, 400, codes.BAD_REQUEST, 'A connection has an invalid schema name');
+  }
+
+  try {
+    const [sourceSnap, targetSnap] = await Promise.all([
+      schemaDiff.introspectSchema(sourcePool, sourceSchema),
+      schemaDiff.introspectSchema(targetPool, targetSchema),
+    ]);
+    res.json({
+      source: { connectionId: source, schema: sourceSchema },
+      target: { connectionId: target, schema: targetSchema },
+      diff: schemaDiff.diffSchemas(sourceSnap, targetSnap),
+      forward: schemaDiff.buildMigration(sourceSnap, targetSnap),
+      backward: schemaDiff.buildMigration(targetSnap, sourceSnap),
+    });
+  } catch (err) {
+    logger.error({ err: err.message }, 'schema diff failed');
     return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });

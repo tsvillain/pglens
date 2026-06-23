@@ -6,6 +6,7 @@ import { QueryRunner } from './pages/QueryRunner'
 import { Operations } from './pages/Operations'
 import { SlowQueries } from './pages/SlowQueries'
 import { IndexAssistant } from './pages/IndexAssistant'
+import { SchemaDiff } from './pages/SchemaDiff'
 import { Sidebar } from './components/Sidebar'
 import { TabBar } from './components/TabBar'
 import { Spotlight } from './components/Spotlight'
@@ -90,6 +91,12 @@ const indexAssistantRoute = createRoute({
   component: IndexAssistant,
 })
 
+const schemaDiffRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/schema-diff',
+  component: SchemaDiff,
+})
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   tableRoute,
@@ -98,4 +105,5 @@ export const routeTree = rootRoute.addChildren([
   operationsRoute,
   slowQueriesRoute,
   indexAssistantRoute,
+  schemaDiffRoute,
 ])
