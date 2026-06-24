@@ -5,7 +5,7 @@ import {
 } from '@tanstack/react-router'
 import {
   Activity, Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
-  GitCompare, Lightbulb, MoreVertical, Pencil, Plus, Power, Search,
+  GitCompare, Lightbulb, MoreVertical, Network, Pencil, Plus, Power, Search,
   Table as TableIcon, Terminal, Timer,
 } from 'lucide-react'
 
@@ -276,6 +276,17 @@ export function Sidebar() {
           >
             <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
             Visualize
+          </Link>
+          <Link
+            to="/erd"
+            onClick={() => openTab({ kind: 'erd' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/erd' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <Network className="h-3.5 w-3.5 text-muted-foreground" />
+            ERD editor
           </Link>
           <Link
             to="/query"

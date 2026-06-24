@@ -28,6 +28,7 @@ const operations = require('../db/operations');
 const slowQueries = require('../db/slowQueries');
 const indexAdvisor = require('../db/indexAdvisor');
 const schemaDiff = require('../db/schemaDiff');
+const schemaEdit = require('../db/schemaEdit');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const savedQueries = require('../db/savedQueries');
@@ -978,7 +979,7 @@ router.get('/schema', requireConnection, async (req, res) => {
         WHERE tc.table_schema = $1 AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
       `, [schema]),
       pool.query(`
-        SELECT kcu.table_name, kcu.column_name,
+        SELECT kcu.table_name, kcu.column_name, tc.constraint_name,
                ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name
         FROM information_schema.table_constraints AS tc
         JOIN information_schema.key_column_usage AS kcu
@@ -998,6 +999,7 @@ router.get('/schema', requireConnection, async (req, res) => {
     for (const row of fkResult.rows) {
       (fkMap[row.table_name] ??= {})[row.column_name] = {
         table: row.foreign_table_name, column: row.foreign_column_name,
+        name: row.constraint_name,
       };
     }
     const colsByTable = {};
@@ -1032,6 +1034,55 @@ router.get('/schema', requireConnection, async (req, res) => {
   } catch (err) {
     logger.error({ err: err.message }, 'schema read failed');
     return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// POST /api/schema/ddl — Visual ERD editor (roadmap §7.2).
+//   Takes structured edit ops (never SQL fragments) and returns reviewable DDL.
+//   Nothing is executed: the statements go to the editor's Run button, exactly
+//   like the schema-diff and index-assistant generators. requireConnection only
+//   supplies the schema name the ops are scoped to; no query runs here.
+const IdentName = z.string().min(1).max(255).refine((s) => !s.includes('\0'), 'null byte');
+const SchemaEditOp = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('add_column'),
+    table: IdentName,
+    column: z.object({
+      name: IdentName,
+      type: z.string().min(1).max(100),
+      notNull: z.boolean().optional(),
+      default: z.string().max(200).optional(),
+    }),
+  }),
+  z.object({
+    op: z.literal('alter_column'),
+    table: IdentName,
+    name: IdentName,
+    rename: IdentName.optional(),
+    type: z.string().min(1).max(100).optional(),
+    notNull: z.boolean().optional(),
+    // null = DROP DEFAULT, string = SET DEFAULT, absent = leave default alone.
+    default: z.string().max(200).nullable().optional(),
+  }),
+  z.object({ op: z.literal('drop_column'), table: IdentName, name: IdentName }),
+  z.object({
+    op: z.literal('add_foreign_key'),
+    table: IdentName,
+    column: IdentName,
+    refTable: IdentName,
+    refColumn: IdentName,
+    name: IdentName.optional(),
+  }),
+  z.object({ op: z.literal('drop_foreign_key'), table: IdentName, name: IdentName }),
+]);
+const SchemaDdlBody = z.object({ ops: z.array(SchemaEditOp).min(1).max(200) });
+
+router.post('/schema/ddl', requireConnection, validate({ body: SchemaDdlBody }), (req, res) => {
+  try {
+    res.json(schemaEdit.buildEditDDL(req.schema, req.body.ops));
+  } catch (err) {
+    // buildEditDDL throws on a bad type/default the allowlist rejects.
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
   }
 });
 

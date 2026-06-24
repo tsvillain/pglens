@@ -4,6 +4,7 @@ export type Tab =
   | { kind: 'table'; tableName: string }
   | { kind: 'query' }
   | { kind: 'schema' }
+  | { kind: 'erd' }
   | { kind: 'operations' }
   | { kind: 'slow-queries' }
   | { kind: 'index-assistant' }
@@ -15,6 +16,7 @@ function tabId(t: Tab): string {
     case 'table': return `table:${t.tableName}`
     case 'query': return 'query'
     case 'schema': return 'schema'
+    case 'erd': return 'erd'
     case 'operations': return 'operations'
     case 'slow-queries': return 'slow-queries'
     case 'index-assistant': return 'index-assistant'
@@ -28,6 +30,7 @@ function tabLabel(t: Tab): string {
     case 'table': return t.tableName
     case 'query': return 'Query'
     case 'schema': return 'Schema'
+    case 'erd': return 'ERD editor'
     case 'operations': return 'Operations'
     case 'slow-queries': return 'Slow queries'
     case 'index-assistant': return 'Index assistant'
@@ -41,6 +44,7 @@ function tabRoute(t: Tab): string {
     case 'table': return `/tables/${encodeURIComponent(t.tableName)}`
     case 'query': return '/query'
     case 'schema': return '/schema'
+    case 'erd': return '/erd'
     case 'operations': return '/operations'
     case 'slow-queries': return '/slow-queries'
     case 'index-assistant': return '/index-assistant'
