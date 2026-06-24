@@ -6,6 +6,8 @@
  * fit and needs no extra round-trip.
  */
 
+import { downloadBlob } from '@/lib/download'
+
 export type ResultExportFormat = 'csv' | 'json'
 
 type Row = Record<string, unknown>
@@ -39,18 +41,6 @@ const MIME: Record<ResultExportFormat, string> = {
   json: 'application/json',
 }
 
-function triggerDownload(text: string, fileName: string, mime: string) {
-  const blob = new Blob([text], { type: mime })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
-}
-
 /** Serialize and download the active result set in `format`. */
 export function downloadResult(
   format: ResultExportFormat,
@@ -60,5 +50,5 @@ export function downloadResult(
 ) {
   const text =
     format === 'csv' ? resultToCsv(columns, rows) : resultToJson(rows)
-  triggerDownload(text, `${baseName}.${format}`, MIME[format])
+  downloadBlob(text, `${baseName}.${format}`, MIME[format])
 }

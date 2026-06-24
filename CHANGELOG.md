@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Phase 4 (part 1) — Smart features. Schema diff & migration generator: the
+start of the v3.5.0 set.
+
+### Added
+
+- **Schema diff & migration generator** (roadmap §7.1). A new "Diff &
+  migrate" tool (`GET /api/schema-diff?source=<id>&target=<id>`) that
+  introspects two connected databases — each at its configured schema — and
+  produces a structured diff plus a **forward** (source→target) and
+  **backward** (target→source) migration. The analytical core is pure and
+  unit-tested (`src/db/schemaDiff.js`): Postgres renders the constraint/index
+  DDL via `pg_get_constraintdef`/`pg_get_indexdef`, while `diffSchemas` and
+  `buildMigration` (the reverse is just the same builder with arguments
+  swapped) run on plain snapshots. Generated statements are ordered for
+  dependency safety (create tables / add columns before altering; drop FKs and
+  indexes before the columns under them; non-FK constraints before FKs; drops
+  last) and each carries a `destructive` flag (DROP table/column/constraint/
+  index and column-type changes) so the UI highlights them red. Like the index
+  assistant, **nothing is executed**: the migration goes to the editor behind
+  the Run button, opened against the connection it targets.
+  - _Deferred:_ diffing a live DB against a `.sql` baseline file (needs a DDL
+    parser), Flyway/Alembic/Knex/Prisma output formats, and cross-schema-name
+    diffs — all noted in the module header.
+
 ## [3.4.0] - 2026-06-23
 
 Phase 3 (part 2) — Postgres-native operations. The EXPLAIN plan visualizer

@@ -5,8 +5,8 @@ import {
 } from '@tanstack/react-router'
 import {
   Activity, Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
-  Lightbulb, MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon,
-  Terminal, Timer,
+  GitCompare, Lightbulb, MoreVertical, Pencil, Plus, Power, Search,
+  Table as TableIcon, Terminal, Timer,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -287,6 +287,17 @@ export function Sidebar() {
           >
             <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
             Query
+          </Link>
+          <Link
+            to="/schema-diff"
+            onClick={() => openTab({ kind: 'schema-diff' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/schema-diff' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <GitCompare className="h-3.5 w-3.5 text-muted-foreground" />
+            Diff &amp; migrate
           </Link>
           <button
             onClick={() => exportMut.mutate(activeConn.id)}

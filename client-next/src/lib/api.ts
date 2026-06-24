@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { downloadBlob } from '@/lib/download'
+
 const ConnectionSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -145,16 +147,28 @@ async function postJson<T>(
   body: unknown,
   schema: z.ZodSchema<T>,
   method: 'POST' | 'PUT' | 'PATCH' = 'POST',
+  connectionId?: string,
 ): Promise<T> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (connectionId) headers['x-connection-id'] = connectionId
   const res = await fetch(path, {
     method,
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
     credentials: 'same-origin',
   })
   const json = await res.json().catch(() => null)
   if (!res.ok) throw parseErrorBody(json, res.status)
   return schema.parse(json)
+}
+
+// DELETE with the standard error envelope. Parses the body only when a schema
+// is given (most deletes return nothing the caller needs).
+async function del<T = void>(path: string, schema?: z.ZodSchema<T>): Promise<T> {
+  const res = await fetch(path, { method: 'DELETE', credentials: 'same-origin' })
+  const json = await res.json().catch(() => null)
+  if (!res.ok) throw parseErrorBody(json, res.status)
+  return (schema ? schema.parse(json) : undefined) as T
 }
 
 export function connect(payload: ConnectPayload) {
@@ -210,24 +224,14 @@ function explainBody(options: RunQueryOptions) {
   return { explain: true, analyze: options.analyze === false ? false : undefined }
 }
 
-export async function runQuery(
+export function runQuery(
   connectionId: string,
   sql: string,
   params?: unknown[],
   options: RunQueryOptions = {},
 ): Promise<QueryResult> {
-  const res = await fetch('/api/query', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-connection-id': connectionId,
-    },
-    body: JSON.stringify({ sql, params, ...explainBody(options) }),
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return QueryResponse.parse(json)
+  return postJson('/api/query', { sql, params, ...explainBody(options) },
+    QueryResponse, 'POST', connectionId)
 }
 
 // ---- Transaction mode (roadmap §5.3) ----------------------------------------
@@ -241,22 +245,15 @@ export type TxQueryResult = z.infer<typeof TxQueryResponse>
  * serves every subsequent statement until commit/rollback. `txOpen` reflects
  * whether the tab still holds a transaction afterward.
  */
-export async function runTxQuery(
+export function runTxQuery(
   connectionId: string,
   tabId: string,
   sql: string,
   params?: unknown[],
   options: RunQueryOptions = {},
 ): Promise<TxQueryResult> {
-  const res = await fetch('/api/tx/query', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
-    body: JSON.stringify({ tabId, sql, params, ...explainBody(options) }),
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return TxQueryResponse.parse(json)
+  return postJson('/api/tx/query', { tabId, sql, params, ...explainBody(options) },
+    TxQueryResponse, 'POST', connectionId)
 }
 
 const TxControlResponse = z.object({
@@ -265,20 +262,12 @@ const TxControlResponse = z.object({
   hadTransaction: z.boolean(),
 })
 
-async function txControl(
+function txControl(
   action: 'commit' | 'rollback',
   connectionId: string,
   tabId: string,
 ) {
-  const res = await fetch(`/api/tx/${action}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
-    body: JSON.stringify({ tabId }),
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return TxControlResponse.parse(json)
+  return postJson(`/api/tx/${action}`, { tabId }, TxControlResponse, 'POST', connectionId)
 }
 
 export function commitTx(connectionId: string, tabId: string) {
@@ -322,19 +311,8 @@ export function patchSchema(connectionId: string, schema: string) {
 
 const DisconnectResponse = z.object({ connected: z.boolean() })
 
-export async function disconnect(connectionId: string) {
-  const res = await fetch('/api/disconnect', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-connection-id': connectionId,
-    },
-    body: JSON.stringify({ connectionId }),
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return DisconnectResponse.parse(json)
+export function disconnect(connectionId: string) {
+  return postJson('/api/disconnect', { connectionId }, DisconnectResponse, 'POST', connectionId)
 }
 
 export interface BackupProgress {
@@ -365,7 +343,7 @@ export async function downloadBackup(
   if (!res.body) {
     // Fallback for environments without ReadableStream.
     const blob = await res.blob()
-    triggerDownload(blob, fileName)
+    downloadBlob(blob, fileName)
     onProgress?.({ bytes: blob.size })
     return
   }
@@ -395,19 +373,8 @@ export async function downloadBackup(
     onProgress?.({ bytes, currentTable })
   }
 
-  triggerDownload(new Blob(chunks, { type: 'application/sql' }), fileName)
+  downloadBlob(new Blob(chunks, { type: 'application/sql' }), fileName)
   onProgress?.({ bytes, currentTable })
-}
-
-function triggerDownload(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
 }
 
 export type ExportFormat = 'csv' | 'json' | 'sql'
@@ -475,7 +442,7 @@ export async function exportTableData(
   if (!res.body) {
     // Fallback for environments without ReadableStream.
     const blob = await res.blob()
-    triggerDownload(blob, fileName)
+    downloadBlob(blob, fileName)
     onProgress?.({ bytes: blob.size })
     return { bytes: blob.size }
   }
@@ -491,7 +458,7 @@ export async function exportTableData(
     onProgress?.({ bytes })
   }
 
-  triggerDownload(new Blob(chunks, { type: contentType }), fileName)
+  downloadBlob(new Blob(chunks, { type: contentType }), fileName)
   onProgress?.({ bytes })
   return { bytes }
 }
@@ -661,41 +628,18 @@ export function listViews(
 }
 
 export async function createView(payload: SaveViewPayload): Promise<SavedView> {
-  const res = await fetch('/api/views', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return ViewEnvelope.parse(json).view
+  return (await postJson('/api/views', payload, ViewEnvelope)).view
 }
 
 export async function updateView(
   id: string,
   patch: Partial<SaveViewPayload>,
 ): Promise<SavedView> {
-  const res = await fetch(`/api/views/${encodeURIComponent(id)}`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return ViewEnvelope.parse(json).view
+  return (await postJson(`/api/views/${encodeURIComponent(id)}`, patch, ViewEnvelope, 'PUT')).view
 }
 
-export async function deleteView(id: string): Promise<void> {
-  const res = await fetch(`/api/views/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    credentials: 'same-origin',
-  })
-  if (!res.ok) {
-    const json = await res.json().catch(() => null)
-    throw parseErrorBody(json, res.status)
-  }
+export function deleteView(id: string): Promise<void> {
+  return del(`/api/views/${encodeURIComponent(id)}`)
 }
 
 // ---- Saved queries (roadmap §5.5) -------------------------------------------
@@ -758,15 +702,8 @@ export async function updateSavedQuery(
   return savedQuery
 }
 
-export async function deleteSavedQuery(id: string): Promise<void> {
-  const res = await fetch(`/api/saved-queries/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    credentials: 'same-origin',
-  })
-  if (!res.ok) {
-    const json = await res.json().catch(() => null)
-    throw parseErrorBody(json, res.status)
-  }
+export function deleteSavedQuery(id: string): Promise<void> {
+  return del(`/api/saved-queries/${encodeURIComponent(id)}`)
 }
 
 export async function importSavedQueries(
@@ -828,26 +765,13 @@ export async function addQueryHistory(payload: AddHistoryPayload): Promise<void>
   })
 }
 
-export async function deleteQueryHistoryEntry(id: string): Promise<void> {
-  const res = await fetch(`/api/query-history/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    credentials: 'same-origin',
-  })
-  if (!res.ok) {
-    const json = await res.json().catch(() => null)
-    throw parseErrorBody(json, res.status)
-  }
+export function deleteQueryHistoryEntry(id: string): Promise<void> {
+  return del(`/api/query-history/${encodeURIComponent(id)}`)
 }
 
 export async function clearQueryHistory(connectionId: string): Promise<number> {
   const qs = new URLSearchParams({ connectionId })
-  const res = await fetch(`/api/query-history?${qs.toString()}`, {
-    method: 'DELETE',
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return ClearHistoryResponse.parse(json).count
+  return (await del(`/api/query-history?${qs.toString()}`, ClearHistoryResponse)).count
 }
 
 // ---- Inline row edit --------------------------------------------------------
@@ -866,21 +790,10 @@ export async function updateRow(
   tableName: string,
   payload: UpdateRowPayload,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(
+  return (await postJson(
     `/api/tables/${encodeURIComponent(tableName)}/rows`,
-    {
-      method: 'PATCH',
-      headers: {
-        'content-type': 'application/json',
-        'x-connection-id': connectionId,
-      },
-      body: JSON.stringify(payload),
-      credentials: 'same-origin',
-    },
-  )
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return UpdateRowResponse.parse(json).row
+    payload, UpdateRowResponse, 'PATCH', connectionId,
+  )).row
 }
 
 // ---- Row insert -------------------------------------------------------------
@@ -900,21 +813,10 @@ export async function insertRow(
   tableName: string,
   payload: InsertRowPayload,
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(
+  return (await postJson(
     `/api/tables/${encodeURIComponent(tableName)}/rows`,
-    {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-connection-id': connectionId,
-      },
-      body: JSON.stringify(payload),
-      credentials: 'same-origin',
-    },
-  )
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return InsertRowResponse.parse(json).row
+    payload, InsertRowResponse, 'POST', connectionId,
+  )).row
 }
 
 // ---- CSV import -------------------------------------------------------------
@@ -946,26 +848,15 @@ const ImportResultResponse = z.object({
 })
 export type ImportResult = z.infer<typeof ImportResultResponse>
 
-export async function importTableData(
+export function importTableData(
   connectionId: string,
   tableName: string,
   payload: ImportPayload,
 ): Promise<ImportResult> {
-  const res = await fetch(
+  return postJson(
     `/api/tables/${encodeURIComponent(tableName)}/import`,
-    {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-connection-id': connectionId,
-      },
-      body: JSON.stringify(payload),
-      credentials: 'same-origin',
-    },
+    payload, ImportResultResponse, 'POST', connectionId,
   )
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return ImportResultResponse.parse(json)
 }
 
 export function getTableData(
@@ -1143,20 +1034,12 @@ const BackendActionResponse = z.object({
   terminated: z.boolean().optional(),
 })
 
-async function backendAction(
+function backendAction(
   action: 'cancel' | 'terminate',
   connectionId: string,
   pid: number,
 ) {
-  const res = await fetch(`/api/operations/${action}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
-    body: JSON.stringify({ pid }),
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return BackendActionResponse.parse(json)
+  return postJson(`/api/operations/${action}`, { pid }, BackendActionResponse, 'POST', connectionId)
 }
 
 /** Cancel the running query on a backend (gentle — keeps the session). */
@@ -1232,15 +1115,9 @@ const StatementActionResponse = z.object({
 })
 export type StatementActionResult = z.infer<typeof StatementActionResponse>
 
-async function statementsAction(action: 'enable' | 'reset', connectionId: string) {
-  const res = await fetch(`/api/operations/statements/${action}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-connection-id': connectionId },
-    credentials: 'same-origin',
-  })
-  const json = await res.json().catch(() => null)
-  if (!res.ok) throw parseErrorBody(json, res.status)
-  return StatementActionResponse.parse(json)
+function statementsAction(action: 'enable' | 'reset', connectionId: string) {
+  return postJson(`/api/operations/statements/${action}`, {},
+    StatementActionResponse, 'POST', connectionId)
 }
 
 /** Create pg_stat_statements (idempotent; needs a privileged role). */
@@ -1303,4 +1180,81 @@ export type IndexAdvice = z.infer<typeof IndexAdviceSchema>
 
 export function getIndexAdvice(connectionId: string, signal?: AbortSignal) {
   return api('/api/operations/indexes', IndexAdviceSchema, { connectionId, signal })
+}
+
+// ---- Schema diff & migration generator (roadmap §7.1) -----------------------
+
+// One generated migration statement. `destructive` (DROP / column-type change)
+// is flagged so the UI can render it red; nothing is run for the user — the SQL
+// goes to the editor behind the Run button, like the index assistant's DDL.
+const MigrationStatementSchema = z.object({
+  sql: z.string(),
+  destructive: z.boolean(),
+  kind: z.string(),
+})
+export type MigrationStatement = z.infer<typeof MigrationStatementSchema>
+
+const MigrationSchema = z.object({
+  statements: z.array(MigrationStatementSchema),
+  hasDestructive: z.boolean(),
+})
+export type Migration = z.infer<typeof MigrationSchema>
+
+const ColumnSnapshotSchema = z.object({
+  name: z.string(),
+  ordinal: z.number(),
+  type: z.string(),
+  notNull: z.boolean(),
+  default: z.string().nullable(),
+})
+export type ColumnSnapshot = z.infer<typeof ColumnSnapshotSchema>
+
+// An added/dropped constraint or index carries its name + Postgres-rendered def.
+const NamedObjectSchema = z.object({
+  name: z.string(),
+  definition: z.string(),
+  contype: z.string().optional(),
+})
+const NamedChangeSchema = z.object({
+  name: z.string(),
+  from: z.object({ definition: z.string(), contype: z.string().optional() }),
+  to: z.object({ definition: z.string(), contype: z.string().optional() }),
+})
+const NamedDiffSchema = z.object({
+  added: z.array(NamedObjectSchema),
+  dropped: z.array(NamedObjectSchema),
+  changed: z.array(NamedChangeSchema),
+})
+
+const TableChangeSchema = z.object({
+  table: z.string(),
+  columns: z.object({
+    added: z.array(ColumnSnapshotSchema),
+    dropped: z.array(ColumnSnapshotSchema),
+    changed: z.array(z.object({
+      name: z.string(),
+      from: ColumnSnapshotSchema,
+      to: ColumnSnapshotSchema,
+    })),
+  }),
+  constraints: NamedDiffSchema,
+  indexes: NamedDiffSchema,
+})
+export type TableChange = z.infer<typeof TableChangeSchema>
+
+const SchemaDiffResponseSchema = z.object({
+  source: z.object({ connectionId: z.string(), schema: z.string() }),
+  target: z.object({ connectionId: z.string(), schema: z.string() }),
+  diff: z.object({
+    tables: z.object({ added: z.array(z.string()), dropped: z.array(z.string()) }),
+    changed: z.array(TableChangeSchema),
+  }),
+  forward: MigrationSchema,
+  backward: MigrationSchema,
+})
+export type SchemaDiffResponse = z.infer<typeof SchemaDiffResponseSchema>
+
+export function getSchemaDiff(source: string, target: string, signal?: AbortSignal) {
+  const qs = new URLSearchParams({ source, target })
+  return api(`/api/schema-diff?${qs.toString()}`, SchemaDiffResponseSchema, { signal })
 }
