@@ -542,7 +542,7 @@ const SchemaColumnSchema = z.object({
   isUnique: z.boolean(),
   isForeignKey: z.boolean(),
   foreignKeyRef: z
-    .object({ table: z.string(), column: z.string() })
+    .object({ table: z.string(), column: z.string(), name: z.string().optional() })
     .nullable(),
 })
 export type SchemaColumn = z.infer<typeof SchemaColumnSchema>
@@ -1257,4 +1257,20 @@ export type SchemaDiffResponse = z.infer<typeof SchemaDiffResponseSchema>
 export function getSchemaDiff(source: string, target: string, signal?: AbortSignal) {
   const qs = new URLSearchParams({ source, target })
   return api(`/api/schema-diff?${qs.toString()}`, SchemaDiffResponseSchema, { signal })
+}
+
+// ---- Visual ERD editor → DDL (roadmap §7.2) ---------------------------------
+// The editor builds a list of structured ops; the server turns them into DDL
+// (escaping identifiers) and flags destructive statements. Nothing runs — the
+// SQL goes to the editor, like the schema-diff generator. `default: null` means
+// DROP DEFAULT; omit it to leave the default alone.
+export type SchemaEditOp =
+  | { op: 'add_column'; table: string; column: { name: string; type: string; notNull?: boolean; default?: string } }
+  | { op: 'alter_column'; table: string; name: string; rename?: string; type?: string; notNull?: boolean; default?: string | null }
+  | { op: 'drop_column'; table: string; name: string }
+  | { op: 'add_foreign_key'; table: string; column: string; refTable: string; refColumn: string; name?: string }
+  | { op: 'drop_foreign_key'; table: string; name: string }
+
+export function generateSchemaDdl(connectionId: string, ops: SchemaEditOp[]) {
+  return postJson('/api/schema/ddl', { ops }, MigrationSchema, 'POST', connectionId)
 }

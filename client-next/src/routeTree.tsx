@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
 import { Home } from './pages/Home'
 import { TableView } from './pages/TableView'
 import { SchemaViz } from './pages/SchemaViz'
+import { ErdEditor } from './pages/ErdEditor'
 import { QueryRunner } from './pages/QueryRunner'
 import { Operations } from './pages/Operations'
 import { SlowQueries } from './pages/SlowQueries'
@@ -67,6 +68,12 @@ const schemaRoute = createRoute({
   component: SchemaViz,
 })
 
+const erdRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/erd',
+  component: ErdEditor,
+})
+
 const queryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/query',
@@ -101,6 +108,7 @@ export const routeTree = rootRoute.addChildren([
   homeRoute,
   tableRoute,
   schemaRoute,
+  erdRoute,
   queryRoute,
   operationsRoute,
   slowQueriesRoute,

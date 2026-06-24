@@ -31,6 +31,26 @@ start of the v3.5.0 set.
     parser), Flyway/Alembic/Knex/Prisma output formats, and cross-schema-name
     diffs — all noted in the module header.
 
+- **Visual ERD editor** (roadmap §7.2). The schema graph is now editable: drag
+  a column's handle onto another column to add a foreign key, click the **+** on
+  a table to add a column, click any column to edit its type / NOT NULL or
+  drop it. Edits accumulate as a **Pending changes** list (each removable) and
+  the canvas reflects them live — added columns tint green, new FKs draw as
+  dashed edges. **Generate SQL** turns the edits into reviewable DDL and
+  **Auto-layout** re-runs the force-directed (dagre) placement. The DDL is built
+  server-side from *structured* ops, never SQL fragments from the UI
+  (`src/db/schemaEdit.js`, `POST /api/schema/ddl`): every identifier is escaped
+  through the canonical escaper, column types and DEFAULT expressions pass a
+  conservative allowlist that blocks statement injection, and each statement
+  carries a `destructive` flag. Like the schema-diff and index-assistant
+  generators, **nothing is executed** — the SQL opens in the editor behind the
+  Run button. Scope is "edit what's in your DB" (roadmap §12): no CREATE TABLE.
+  - _Deferred:_ column rename in the UI (the op/DDL exist server-side, but
+    renaming mutates a column's identity and complicates re-editing), a real
+    type/expression parser (complex DEFAULTs and exotic type spellings are
+    turned away), and adding nodes for tables created in the DB mid-edit — all
+    noted in the source.
+
 ## [3.4.0] - 2026-06-23
 
 Phase 3 (part 2) — Postgres-native operations. The EXPLAIN plan visualizer
