@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/select'
 import type { ColumnMeta, FilterCondition, FilterGroup, FilterOp } from '@/lib/api'
 import {
   OPERATOR_LABELS,
+  PATH_OPERATORS,
   opNeedsValue,
   opTakesArray,
   operatorsForType,
@@ -160,7 +161,11 @@ function ConditionRow({
   condition, columns, columnNames, showCombinator, combinator, onChange, onRemove,
 }: ConditionRowProps) {
   const meta = columns[condition.column]
-  const ops = useMemo(() => operatorsForType(meta?.dataType), [meta?.dataType])
+  const isPath = !!condition.path?.length
+  const ops = useMemo(
+    () => (isPath ? PATH_OPERATORS : operatorsForType(meta?.dataType)),
+    [isPath, meta?.dataType],
+  )
 
   function onColumnChange(name: string) {
     const newOps = operatorsForType(columns[name]?.dataType)
@@ -187,16 +192,26 @@ function ConditionRow({
         </span>
       )}
 
-      <Select
-        value={condition.column}
-        onChange={(e) => onColumnChange(e.target.value)}
-        className="w-40 border-0 border-r border-border"
-        aria-label="Filter column"
-      >
-        {columnNames.map((n) => (
-          <option key={n} value={n}>{n}</option>
-        ))}
-      </Select>
+      {isPath ? (
+        <span
+          className="flex items-center gap-1 border-r border-border px-2 font-mono text-xs"
+          title={`${condition.column} JSONB path`}
+        >
+          <span className="text-muted-foreground">{condition.column}</span>
+          <span className="text-foreground">{condition.path!.join('.')}</span>
+        </span>
+      ) : (
+        <Select
+          value={condition.column}
+          onChange={(e) => onColumnChange(e.target.value)}
+          className="w-40 border-0 border-r border-border"
+          aria-label="Filter column"
+        >
+          {columnNames.map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </Select>
+      )}
 
       <Select
         value={condition.op}

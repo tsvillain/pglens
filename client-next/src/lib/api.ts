@@ -506,12 +506,15 @@ export type FilterOp =
   | 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
   | 'like' | 'ilike' | 'in' | 'nin'
   | 'is_null' | 'is_not_null'
-  | 'jsonb_contains' | 'array_overlaps'
+  | 'jsonb_contains' | 'has_key' | 'array_overlaps'
 
 export interface FilterCondition {
   type: 'condition'
   column: string
   op: FilterOp
+  // JSONB key path (object keys) for path conditions from the explorer; the
+  // server compares the text at `column #>> path`.
+  path?: string[]
   value?: unknown
 }
 
@@ -567,6 +570,7 @@ const FilterConditionApi = z.object({
   type: z.literal('condition'),
   column: z.string(),
   op: z.string(),
+  path: z.array(z.string()).optional(),
   value: z.unknown().optional(),
 })
 type FilterGroupApi = {
@@ -916,6 +920,43 @@ export function getAggregates(
   return api(
     `/api/tables/${encodeURIComponent(tableName)}/aggregate?${qs.toString()}`,
     AggregateResponse,
+    { connectionId, signal },
+  )
+}
+
+// ---- JSONB schema inference (roadmap §7.3) ----------------------------------
+
+const JsonbPathSchema = z.object({
+  path: z.string(),
+  // Object-key chain for the `#>>` accessor; null when the path crosses an
+  // array and so isn't directly filterable.
+  accessor: z.array(z.string()).nullable(),
+  types: z.array(z.string()),
+  occurrences: z.number(),
+  frequency: z.number(),
+  sample: z.unknown(),
+})
+export type JsonbPath = z.infer<typeof JsonbPathSchema>
+
+const JsonbSchemaResponse = z.object({
+  column: z.string(),
+  sampleSize: z.number(),
+  sampledRows: z.number(),
+  paths: z.array(JsonbPathSchema),
+})
+export type JsonbSchema = z.infer<typeof JsonbSchemaResponse>
+
+export function getJsonbSchema(
+  connectionId: string,
+  tableName: string,
+  column: string,
+  sample = 500,
+  signal?: AbortSignal,
+) {
+  const qs = new URLSearchParams({ column, sample: String(sample) })
+  return api(
+    `/api/tables/${encodeURIComponent(tableName)}/jsonb?${qs.toString()}`,
+    JsonbSchemaResponse,
     { connectionId, signal },
   )
 }

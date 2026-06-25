@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { DataGrid, type SortState } from "@/components/DataGrid";
 import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
+import { JsonbExplorer } from "@/components/JsonbExplorer";
 import { SortBar } from "@/components/SortBar";
 import { ViewBar } from "@/components/ViewBar";
 import { InsertRowDialog } from "@/components/InsertRowDialog";
@@ -436,6 +437,23 @@ export function TableView() {
               setSort(next);
             }}
           />
+          {connectionId && (
+            <JsonbExplorer
+              connectionId={connectionId}
+              tableName={tableName}
+              columns={data.columns}
+              onAddPathFilter={(column, path) => {
+                setPage(1);
+                setFilter((prev) => ({
+                  ...prev,
+                  children: [
+                    ...prev.children,
+                    { type: "condition", column, op: "eq", path, value: "" },
+                  ],
+                }));
+              }}
+            />
+          )}
         </>
       )}
 
