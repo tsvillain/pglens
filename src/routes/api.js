@@ -28,6 +28,7 @@ const { extractExplainTiming } = require('../db/explain');
 const operations = require('../db/operations');
 const slowQueries = require('../db/slowQueries');
 const indexAdvisor = require('../db/indexAdvisor');
+const extensions = require('../db/extensions');
 const schemaDiff = require('../db/schemaDiff');
 const schemaEdit = require('../db/schemaEdit');
 const { txManager } = require('../db/tx');
@@ -1606,6 +1607,57 @@ router.get('/operations/indexes', requireConnection, async (req, res) => {
     return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });
+
+// ---- Extensions panel (roadmap §7.4) ---------------------------------------
+//
+// Lists server-available extensions with installed/default versions, and a
+// one-click install that runs CREATE EXTENSION server-side (like the
+// pg_stat_statements enable flow). A privilege failure maps to a readable hint.
+
+router.get('/operations/extensions', requireConnection, async (req, res) => {
+  try {
+    res.json(await extensions.listExtensions(req.pool));
+  } catch (err) {
+    logger.error({ err: err.message }, 'list extensions failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+const ExtensionInstallBody = z.object({ name: z.string().min(1).max(255) });
+
+router.post('/operations/extensions/install',
+  requireConnection,
+  validate({ body: ExtensionInstallBody }),
+  async (req, res) => {
+    try {
+      res.json(await extensions.installExtension(req.pool, req.body.name));
+    } catch (err) {
+      if (err.code === 'NOT_AVAILABLE') {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      logger.warn({ err: err.message }, 'install extension failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message, {
+        hint: 'Installing an extension usually requires a superuser (or a trusted extension on PG13+).',
+      });
+    }
+  });
+
+router.post('/operations/extensions/drop',
+  requireConnection,
+  validate({ body: ExtensionInstallBody }),
+  async (req, res) => {
+    try {
+      res.json(await extensions.dropExtension(req.pool, req.body.name));
+    } catch (err) {
+      if (err.code === 'NOT_AVAILABLE') {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      logger.warn({ err: err.message }, 'drop extension failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message, {
+        hint: 'Dropping fails if other objects depend on the extension — remove those first, or the role may lack privileges.',
+      });
+    }
+  });
 
 // ---- Schema diff & migration generator (roadmap §7.1) ----------------------
 //

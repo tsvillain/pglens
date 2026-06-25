@@ -1223,6 +1223,46 @@ export function getIndexAdvice(connectionId: string, signal?: AbortSignal) {
   return api('/api/operations/indexes', IndexAdviceSchema, { connectionId, signal })
 }
 
+// ---- Extensions panel (roadmap §7.4) ----------------------------------------
+
+const ExtensionSchema = z.object({
+  name: z.string(),
+  installedVersion: z.string().nullable(),
+  defaultVersion: z.string().nullable(),
+  comment: z.string().nullable(),
+  installed: z.boolean(),
+  popular: z.boolean(),
+})
+export type Extension = z.infer<typeof ExtensionSchema>
+
+// `superuser` is advisory — trusted extensions install for non-superusers too.
+const ExtensionsResponse = z.object({
+  superuser: z.boolean(),
+  extensions: z.array(ExtensionSchema),
+})
+export type ExtensionsResult = z.infer<typeof ExtensionsResponse>
+
+export function listExtensions(connectionId: string, signal?: AbortSignal) {
+  return api('/api/operations/extensions', ExtensionsResponse, { connectionId, signal })
+}
+
+const InstallExtensionResponse = z.object({
+  installed: z.boolean(),
+  installedVersion: z.string().nullable(),
+})
+
+/** CREATE EXTENSION IF NOT EXISTS (idempotent; usually needs a privileged role). */
+export function installExtension(connectionId: string, name: string) {
+  return postJson('/api/operations/extensions/install', { name },
+    InstallExtensionResponse, 'POST', connectionId)
+}
+
+/** DROP EXTENSION IF EXISTS (RESTRICT — fails if other objects depend on it). */
+export function dropExtension(connectionId: string, name: string) {
+  return postJson('/api/operations/extensions/drop', { name },
+    InstallExtensionResponse, 'POST', connectionId)
+}
+
 // ---- Schema diff & migration generator (roadmap §7.1) -----------------------
 
 // One generated migration statement. `destructive` (DROP / column-type change)
