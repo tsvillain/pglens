@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Phase 4 (part 1) — Smart features. Schema diff & migration generator: the
-start of the v3.5.0 set.
+## [3.5.0] - 2026-06-25
+
+Smart features. The five no-code "wow": schema diff & migration generator, an editable visual ERD,
+a JSONB explorer, an extensions panel, and a chart panel. Like the Phase 3
+generators, nothing destructive runs without review — generated DDL opens in
+the editor behind the Run button.
 
 ### Added
 
-- **Schema diff & migration generator** (roadmap §7.1). A new "Diff &
+- **Schema diff & migration generator**. A new "Diff &
   migrate" tool (`GET /api/schema-diff?source=<id>&target=<id>`) that
   introspects two connected databases — each at its configured schema — and
   produces a structured diff plus a **forward** (source→target) and
@@ -31,25 +35,54 @@ start of the v3.5.0 set.
     parser), Flyway/Alembic/Knex/Prisma output formats, and cross-schema-name
     diffs — all noted in the module header.
 
-- **Visual ERD editor** (roadmap §7.2). The schema graph is now editable: drag
+- **Visual ERD editor**. The schema graph is now editable: drag
   a column's handle onto another column to add a foreign key, click the **+** on
   a table to add a column, click any column to edit its type / NOT NULL or
   drop it. Edits accumulate as a **Pending changes** list (each removable) and
   the canvas reflects them live — added columns tint green, new FKs draw as
   dashed edges. **Generate SQL** turns the edits into reviewable DDL and
   **Auto-layout** re-runs the force-directed (dagre) placement. The DDL is built
-  server-side from *structured* ops, never SQL fragments from the UI
+  server-side from _structured_ ops, never SQL fragments from the UI
   (`src/db/schemaEdit.js`, `POST /api/schema/ddl`): every identifier is escaped
   through the canonical escaper, column types and DEFAULT expressions pass a
   conservative allowlist that blocks statement injection, and each statement
   carries a `destructive` flag. Like the schema-diff and index-assistant
   generators, **nothing is executed** — the SQL opens in the editor behind the
-  Run button. Scope is "edit what's in your DB" (roadmap §12): no CREATE TABLE.
+  Run button. Scope is "edit what's in your DB": no CREATE TABLE.
   - _Deferred:_ column rename in the UI (the op/DDL exist server-side, but
     renaming mutates a column's identity and complicates re-editing), a real
     type/expression parser (complex DEFAULTs and exotic type spellings are
     turned away), and adding nodes for tables created in the DB mid-edit — all
     noted in the source.
+
+- **JSONB explorer**. For any `jsonb`/`json` column, sample N
+  rows and infer the key set with each key's observed type(s) and how often it
+  appears (`src/db/jsonbSchema.js`, `GET /api/.../jsonb-schema`). The inferred
+  paths render as a tree (`JsonbExplorer.tsx`); clicking a key adds a
+  Postgres-native predicate to the filter bar — `->>'key'` comparisons plus the
+  containment / existence operators (`@>`, `?`, `#>>`). All of it goes through
+  the structured filter spec parsed server-side (`src/db/filter.js`), never SQL
+  fragments from the UI, and every predicate is parameterized.
+
+- **Extensions panel**. A new Operations page listing the
+  server's available extensions (`pg_available_extensions`, popular ones first)
+  with installed vs. default version and superuser status. One-click
+  **CREATE EXTENSION IF NOT EXISTS** install and a confirmed
+  **DROP EXTENSION** uninstall — `RESTRICT`, never `CASCADE`
+  (`src/db/extensions.js`, `GET /operations/extensions`,
+  `POST .../install|drop`). Names are validated against server availability and
+  quoted through the canonical identifier escaper; privilege / dependency
+  failures map to readable hints, and the DDL is shown for review (Copy = "Show
+  SQL").
+
+- **Chart panel**. A **Chart** view on any query result or
+  no-code table page plots the rows already in hand — line, bar, or scatter —
+  with no re-query. Columns are classified numeric / temporal / categorical to
+  auto-suggest 2–3 chart types with sensible default axes
+  (`chartSuggest.ts`); chart type and either axis are overridable. Renders
+  client-side via recharts (`ChartPanel.tsx`).
+  - _Deferred:_ saving a chart as part of a view (views persist widths / filter
+    / sort; no chart-config slot yet).
 
 ## [3.4.0] - 2026-06-23
 
@@ -61,7 +94,7 @@ you.
 
 ### Added
 
-- **EXPLAIN plan visualizer** (roadmap §6.3). A tree view of an
+- **EXPLAIN plan visualizer**. A tree view of an
   `EXPLAIN (FORMAT JSON)` plan with each node's cost, planned vs. actual
   rows, and — under `EXPLAIN (ANALYZE, BUFFERS)` — its real timing. The
   analytical core is a pure, heavily unit-tested parser
@@ -78,7 +111,7 @@ you.
   (c) the slow-query drilldown — each hands the plan to the same parser via
   `ExplainPlanDialog`, with a raw-JSON escape hatch. Unrecognized input
   falls back to the raw view instead of throwing.
-- **Index assistant** (roadmap §6.4). A new Operations sub-panel
+- **Index assistant**. A new Operations sub-panel
   (`GET /api/operations/indexes`) of read-only advice derived from the
   catalogs, assembled in one round trip with each section isolated so a
   role missing one stat view still gets the rest:
@@ -111,7 +144,7 @@ explicit, privileged actions (cancel/terminate a backend, enable/reset
 
 ### Added
 
-- **Live activity dashboard** (roadmap §6.1). `GET /api/operations/overview`
+- **Live activity dashboard**. `GET /api/operations/overview`
   assembles the panel in one round trip, each reader isolated so a section a
   role can't see (e.g. replication) comes back as `{ data: null, error }`
   while the rest renders. Sections: **active sessions** (`pg_stat_activity`,
@@ -125,7 +158,7 @@ explicit, privileged actions (cancel/terminate a backend, enable/reset
   **terminate session** (`pg_terminate_backend`) — via
   `POST /api/operations/cancel` and `/terminate`. The client polls every
   few seconds while the panel is open.
-- **Slow query view** (roadmap §6.2). `GET /api/operations/statements`
+- **Slow query view**. `GET /api/operations/statements`
   surfaces the top `pg_stat_statements` aggregates for the current database,
   sortable by `total_exec_time` / `mean_exec_time` / `calls` (the sort key
   is mapped through a fixed server-side allowlist, never interpolated). The
@@ -154,7 +187,7 @@ positional `$n` binds, and no-code never ships raw SQL.
 
 ### Added
 
-- **Per-tab No-code ⇄ Advanced toggle** (roadmap §5.1). Each table tab
+- **Per-tab No-code ⇄ Advanced toggle**. Each table tab
   carries a `[ No-code | Advanced ]` switch in its header. Flipping to
   Advanced swaps the grid for a Monaco editor pre-seeded with the SELECT
   no-code mode was about to run (filter → `WHERE`, sort → `ORDER BY`,
@@ -167,7 +200,7 @@ positional `$n` binds, and no-code never ships raw SQL.
   is reused by both the toggle and the standalone query runner and follows
   the app light/dark theme.
 - **Monaco SQL editor — schema autocomplete, params, format-on-save**
-  (roadmap §5.2). Schema-aware completion of tables + columns from
+  . Schema-aware completion of tables + columns from
   `/api/schema`, scoped to the query's `FROM`/`JOIN` targets with
   `table.`/`alias.column` lookup; case-sensitive identifiers are inserted
   quoted. A `:name` parameter form below the editor binds values; on run,
@@ -179,7 +212,7 @@ positional `$n` binds, and no-code never ships raw SQL.
   `pg-formatter` so a single `npm install` stays sufficient. Completion
   and format providers register once on the Monaco singleton; the focused
   tab publishes its schema to them.
-- **Transaction mode** (roadmap §5.3). An `[ Auto-commit | Transaction ]`
+- **Transaction mode**. An `[ Auto-commit | Transaction ]`
   toggle per Advanced tab. In Transaction mode the tab holds one dedicated
   Postgres backend (porsager `reserve()`) for the life of the transaction:
   `BEGIN` runs implicitly on the first query, `COMMIT`/`ROLLBACK` run on
@@ -194,20 +227,20 @@ positional `$n` binds, and no-code never ships raw SQL.
   `/tx/status`; commit invalidates cached metadata so committed DDL is
   visible to pooled reads. Pool-close hooks roll back + release reserved
   backends before `pool.end()` on disconnect/update/shutdown.
-- **Query result enhancements** (roadmap §5.4). Multi-statement scripts are
+- **Query result enhancements**. Multi-statement scripts are
   split server-side (`src/db/statements.js`) and each statement runs on one
   reserved backend via the extended protocol, returning one result per
   statement; `/api/query` and `/api/tx/query` now return `{ results[],
-  durationMs, timing? }`. `QueryResults` renders a result-tab bar over the
+durationMs, timing? }`. `QueryResults` renders a result-tab bar over the
   shared no-code `DataGrid` with client-side multi-column sort and CSV/JSON
   export of the rows in hand. An **EXPLAIN** toggle runs `EXPLAIN (ANALYZE,
-  BUFFERS, FORMAT JSON)` and shows planning/execution/total timing plus the
+BUFFERS, FORMAT JSON)` and shows planning/execution/total timing plus the
   raw plan — Auto-commit wraps the probe in `BEGIN..ROLLBACK` so timing a
   write never mutates data, Transaction mode times it inside the open tx.
   Column type OIDs are surfaced and resolved to type names so result cells
   get the right renderer. Params are restricted to single-statement runs
   (positional params can't span statements) with a clear 400 otherwise.
-- **Improved query history & saved queries** (roadmap §5.5). Query
+- **Improved query history & saved queries**. Query
   history is now persisted per connection: the Advanced editor records
   every run (raw SQL, duration, row count, success/error) to
   `~/.pglens/query-history.json` via `GET/POST/DELETE /api/query-history`,
@@ -252,7 +285,7 @@ the wire; the server parses structured specs into parameterized queries.
 - **Saved views** — named bundles of filter + sort scoped to a
   `(connection, table)` pair, persisted to `~/.pglens/views.json` with
   atomic writes and a unique-name guard. `GET/POST/PUT/DELETE
-  /api/views`; listing stays open so the sidebar works with no live
+/api/views`; listing stays open so the sidebar works with no live
   pool. `ViewBar` with picker, dirty indicator, save / save-as /
   rename / delete; the selected view is URL state (`?view=<uuid>`) for
   deep links, and the sidebar nests views under each table with a count
@@ -266,7 +299,7 @@ the wire; the server parses structured specs into parameterized queries.
   per-cell spinner, and auto-dismissing error pill. PK columns are not
   editable.
 - **Schema-generated row insert form** via `POST
-  /api/tables/:tableName/rows` and a parameterized `INSERT` builder
+/api/tables/:tableName/rows` and a parameterized `INSERT` builder
   (`src/db/insert.js`). Each field is tri-state — DEFAULT (omit) / NULL
   / value; an empty payload emits `DEFAULT VALUES`. NOT-NULL-without-
   default columns are required; defaults are ghosted. NOT NULL / CHECK /
@@ -587,7 +620,8 @@ migration 301-redirects to `/` so existing bookmarks keep working.
 - SQL injection prevention via table name sanitization
 - Input validation for pagination parameters
 
-[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/tsvillain/pglens/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/tsvillain/pglens/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/tsvillain/pglens/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/tsvillain/pglens/compare/v3.1.0...v3.2.0
