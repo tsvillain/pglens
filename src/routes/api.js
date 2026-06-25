@@ -18,6 +18,7 @@ const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
 const { buildWhere } = require('../db/filter');
 const { buildOrderBy } = require('../db/sort');
 const { computeAggregates } = require('../db/aggregate');
+const { inferJsonbSchema } = require('../db/jsonbSchema');
 const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
 const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('../db/export');
@@ -512,6 +513,45 @@ router.get('/tables/:tableName/aggregate',
       res.json(result);
     } catch (err) {
       logger.error({ err: err.message, table: tableName }, 'aggregate failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
+// ---- JSONB schema inference (roadmap §7.3) ----------------------------------
+//
+// GET /api/tables/:tableName/jsonb?column=<col>&sample=<n>
+//   Samples up to `sample` non-null rows of a json/jsonb column and returns the
+//   inferred paths, their types, occurrence frequency, and a sample value. The
+//   JSONB explorer turns these into "add filter" / "copy accessor" actions.
+
+const JsonbQuery = z.object({
+  column: z.string().min(1).max(255).refine((s) => !s.includes('\0'), 'null byte'),
+  sample: z.coerce.number().int().min(1).max(5000).default(500),
+});
+
+router.get('/tables/:tableName/jsonb',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    query: JsonbQuery,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+    try {
+      const { columns: columnMetadata } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+      const result = await inferJsonbSchema(
+        pool, qualifiedTable, req.query.column, columnMetadata, req.query.sample,
+      );
+      res.json(result);
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      logger.error({ err: err.message, table: tableName }, 'jsonb inference failed');
       return sendError(res, 500, codes.DB_ERROR, err.message);
     }
   });
