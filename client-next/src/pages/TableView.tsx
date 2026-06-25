@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Gauge, Plus, Upload } from "lucide-react";
+import { BarChart3, ChevronLeft, ChevronRight, Gauge, Plus, Upload } from "lucide-react";
 
 import { Loading, Spinner } from "@/components/ui/spinner";
 
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
+import { ChartPanel } from "@/components/ChartPanel";
 import { Select } from "@/components/ui/select";
 import { DataGrid, type SortState } from "@/components/DataGrid";
 import { EMPTY_FILTER, FilterBar } from "@/components/FilterBar";
@@ -101,6 +103,7 @@ export function TableView() {
   const [insertOpen, setInsertOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
+  const [chartOpen, setChartOpen] = useState(false);
   // The FK cell the user clicked → drives the referenced-row side panel.
   const [fkTarget, setFkTarget] = useState<FkTarget | null>(null);
 
@@ -354,6 +357,14 @@ export function TableView() {
                     title="Visualize the query plan for the current filter & sort (roadmap §6.3)"
                   >
                     <Gauge className="h-4 w-4" /> Explain plan
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setChartOpen(true)}
+                    title="Chart this page of rows (roadmap §7.5)"
+                  >
+                    <BarChart3 className="h-4 w-4" /> Chart
                   </Button>
                 </>
               )}
@@ -611,6 +622,25 @@ export function TableView() {
         sql={generatedSql}
         title={`Query plan · ${tableName}`}
       />
+
+      <Dialog
+        open={chartOpen}
+        onClose={() => setChartOpen(false)}
+        title={`Chart · ${tableName}`}
+        className="max-w-4xl"
+      >
+        <div className="h-[70vh]">
+          {data?.columns && (
+            <ChartPanel
+              rows={data.rows}
+              columns={Object.entries(data.columns).map(([name, m]) => ({
+                name,
+                type: m.dataType,
+              }))}
+            />
+          )}
+        </div>
+      </Dialog>
 
       {fkTarget && (
         <FkPanel
