@@ -115,6 +115,62 @@ test('jsonb_contains rejects non-jsonb columns', () => {
   }, cols), /json\/jsonb/);
 });
 
+test('has_key emits jsonb_exists with the key as a string param', () => {
+  const { sql, params } = buildWhere({
+    type: 'group', combinator: 'and',
+    children: [{ type: 'condition', column: 'payload', op: 'has_key', value: 'sku' }],
+  }, cols);
+  assert.equal(sql, ' WHERE jsonb_exists("payload", $1)');
+  assert.deepEqual(params, ['sku']);
+});
+
+test('has_key rejects non-jsonb columns', () => {
+  assert.throws(() => buildWhere({
+    type: 'group', combinator: 'and',
+    children: [{ type: 'condition', column: 'name', op: 'has_key', value: 'x' }],
+  }, cols), /json\/jsonb/);
+});
+
+test('jsonb path eq binds the path as text[] and compares extracted text', () => {
+  const { sql, params } = buildWhere({
+    type: 'group', combinator: 'and',
+    children: [{ type: 'condition', column: 'payload', op: 'eq', path: ['a', 'b'], value: 'x' }],
+  }, cols);
+  assert.equal(sql, ' WHERE ("payload" #>> $1::text[]) = $2');
+  assert.deepEqual(params, [['a', 'b'], 'x']);
+});
+
+test('jsonb path coerces non-string compare values to text', () => {
+  const { params } = buildWhere({
+    type: 'group', combinator: 'and',
+    children: [{ type: 'condition', column: 'payload', op: 'gt', path: ['n'], value: 5 }],
+  }, cols);
+  assert.deepEqual(params, [['n'], '5']);
+});
+
+test('jsonb path is_null needs no value', () => {
+  const { sql, params } = buildWhere({
+    type: 'group', combinator: 'and',
+    children: [{ type: 'condition', column: 'payload', op: 'is_null', path: ['a'] }],
+  }, cols);
+  assert.equal(sql, ' WHERE ("payload" #>> $1::text[]) IS NULL');
+  assert.deepEqual(params, [['a']]);
+});
+
+test('jsonb path rejects non-json columns', () => {
+  assert.throws(() => buildWhere({
+    type: 'group', combinator: 'and',
+    children: [{ type: 'condition', column: 'name', op: 'eq', path: ['a'], value: 'x' }],
+  }, cols), /json\/jsonb/);
+});
+
+test('jsonb path rejects operators it cannot express', () => {
+  assert.throws(() => buildWhere({
+    type: 'group', combinator: 'and',
+    children: [{ type: 'condition', column: 'payload', op: 'jsonb_contains', path: ['a'], value: {} }],
+  }, cols), /cannot be used with a JSONB path/);
+});
+
 test('array_overlaps emits && with array param', () => {
   const { sql, params } = buildWhere({
     type: 'group', combinator: 'and',

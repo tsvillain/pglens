@@ -2,10 +2,13 @@ import { createRootRoute, createRoute, Outlet } from '@tanstack/react-router'
 import { Home } from './pages/Home'
 import { TableView } from './pages/TableView'
 import { SchemaViz } from './pages/SchemaViz'
+import { ErdEditor } from './pages/ErdEditor'
 import { QueryRunner } from './pages/QueryRunner'
 import { Operations } from './pages/Operations'
 import { SlowQueries } from './pages/SlowQueries'
 import { IndexAssistant } from './pages/IndexAssistant'
+import { SchemaDiff } from './pages/SchemaDiff'
+import { Extensions } from './pages/Extensions'
 import { Sidebar } from './components/Sidebar'
 import { TabBar } from './components/TabBar'
 import { Spotlight } from './components/Spotlight'
@@ -66,6 +69,12 @@ const schemaRoute = createRoute({
   component: SchemaViz,
 })
 
+const erdRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/erd',
+  component: ErdEditor,
+})
+
 const queryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/query',
@@ -90,12 +99,27 @@ const indexAssistantRoute = createRoute({
   component: IndexAssistant,
 })
 
+const schemaDiffRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/schema-diff',
+  component: SchemaDiff,
+})
+
+const extensionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/extensions',
+  component: Extensions,
+})
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   tableRoute,
   schemaRoute,
+  erdRoute,
   queryRoute,
   operationsRoute,
   slowQueriesRoute,
   indexAssistantRoute,
+  schemaDiffRoute,
+  extensionsRoute,
 ])

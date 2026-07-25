@@ -18,6 +18,7 @@ const { quoteIdent, quoteQualifiedIdent } = require('../db/identifier');
 const { buildWhere } = require('../db/filter');
 const { buildOrderBy } = require('../db/sort');
 const { computeAggregates } = require('../db/aggregate');
+const { inferJsonbSchema } = require('../db/jsonbSchema');
 const { buildUpdateRow } = require('../db/update');
 const { buildInsertRow } = require('../db/insert');
 const { EXPORT_FORMATS, FORMAT_META, createSerializer, sqlLiteral } = require('../db/export');
@@ -27,6 +28,9 @@ const { extractExplainTiming } = require('../db/explain');
 const operations = require('../db/operations');
 const slowQueries = require('../db/slowQueries');
 const indexAdvisor = require('../db/indexAdvisor');
+const extensions = require('../db/extensions');
+const schemaDiff = require('../db/schemaDiff');
+const schemaEdit = require('../db/schemaEdit');
 const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const savedQueries = require('../db/savedQueries');
@@ -514,6 +518,45 @@ router.get('/tables/:tableName/aggregate',
     }
   });
 
+// ---- JSONB schema inference (roadmap §7.3) ----------------------------------
+//
+// GET /api/tables/:tableName/jsonb?column=<col>&sample=<n>
+//   Samples up to `sample` non-null rows of a json/jsonb column and returns the
+//   inferred paths, their types, occurrence frequency, and a sample value. The
+//   JSONB explorer turns these into "add filter" / "copy accessor" actions.
+
+const JsonbQuery = z.object({
+  column: z.string().min(1).max(255).refine((s) => !s.includes('\0'), 'null byte'),
+  sample: z.coerce.number().int().min(1).max(5000).default(500),
+});
+
+router.get('/tables/:tableName/jsonb',
+  requireConnection,
+  validate({
+    params: z.object({ tableName: TableNameSchema }),
+    query: JsonbQuery,
+  }),
+  async (req, res) => {
+    const tableName = req.params.tableName;
+    const pool = req.pool;
+    const schema = req.schema;
+    const qualifiedTable = quoteQualifiedIdent(schema, tableName);
+    try {
+      const { columns: columnMetadata } =
+        await getTableMetadata(pool, req.connectionId, schema, tableName);
+      const result = await inferJsonbSchema(
+        pool, qualifiedTable, req.query.column, columnMetadata, req.query.sample,
+      );
+      res.json(result);
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      logger.error({ err: err.message, table: tableName }, 'jsonb inference failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  });
+
 // ---- Per-table data export --------------------------------------------------
 //
 // GET /api/tables/:tableName/export?format=csv|json|sql&filter=<json>&sort=<json>&columns=<json>
@@ -977,7 +1020,7 @@ router.get('/schema', requireConnection, async (req, res) => {
         WHERE tc.table_schema = $1 AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
       `, [schema]),
       pool.query(`
-        SELECT kcu.table_name, kcu.column_name,
+        SELECT kcu.table_name, kcu.column_name, tc.constraint_name,
                ccu.table_name AS foreign_table_name, ccu.column_name AS foreign_column_name
         FROM information_schema.table_constraints AS tc
         JOIN information_schema.key_column_usage AS kcu
@@ -997,6 +1040,7 @@ router.get('/schema', requireConnection, async (req, res) => {
     for (const row of fkResult.rows) {
       (fkMap[row.table_name] ??= {})[row.column_name] = {
         table: row.foreign_table_name, column: row.foreign_column_name,
+        name: row.constraint_name,
       };
     }
     const colsByTable = {};
@@ -1031,6 +1075,55 @@ router.get('/schema', requireConnection, async (req, res) => {
   } catch (err) {
     logger.error({ err: err.message }, 'schema read failed');
     return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// POST /api/schema/ddl — Visual ERD editor (roadmap §7.2).
+//   Takes structured edit ops (never SQL fragments) and returns reviewable DDL.
+//   Nothing is executed: the statements go to the editor's Run button, exactly
+//   like the schema-diff and index-assistant generators. requireConnection only
+//   supplies the schema name the ops are scoped to; no query runs here.
+const IdentName = z.string().min(1).max(255).refine((s) => !s.includes('\0'), 'null byte');
+const SchemaEditOp = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('add_column'),
+    table: IdentName,
+    column: z.object({
+      name: IdentName,
+      type: z.string().min(1).max(100),
+      notNull: z.boolean().optional(),
+      default: z.string().max(200).optional(),
+    }),
+  }),
+  z.object({
+    op: z.literal('alter_column'),
+    table: IdentName,
+    name: IdentName,
+    rename: IdentName.optional(),
+    type: z.string().min(1).max(100).optional(),
+    notNull: z.boolean().optional(),
+    // null = DROP DEFAULT, string = SET DEFAULT, absent = leave default alone.
+    default: z.string().max(200).nullable().optional(),
+  }),
+  z.object({ op: z.literal('drop_column'), table: IdentName, name: IdentName }),
+  z.object({
+    op: z.literal('add_foreign_key'),
+    table: IdentName,
+    column: IdentName,
+    refTable: IdentName,
+    refColumn: IdentName,
+    name: IdentName.optional(),
+  }),
+  z.object({ op: z.literal('drop_foreign_key'), table: IdentName, name: IdentName }),
+]);
+const SchemaDdlBody = z.object({ ops: z.array(SchemaEditOp).min(1).max(200) });
+
+router.post('/schema/ddl', requireConnection, validate({ body: SchemaDdlBody }), (req, res) => {
+  try {
+    res.json(schemaEdit.buildEditDDL(req.schema, req.body.ops));
+  } catch (err) {
+    // buildEditDDL throws on a bad type/default the allowlist rejects.
+    return sendError(res, 400, codes.BAD_REQUEST, err.message);
   }
 });
 
@@ -1511,6 +1604,111 @@ router.get('/operations/indexes', requireConnection, async (req, res) => {
     res.json(advice);
   } catch (err) {
     logger.error({ err: err.message }, 'index assistant failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+// ---- Extensions panel (roadmap §7.4) ---------------------------------------
+//
+// Lists server-available extensions with installed/default versions, and a
+// one-click install that runs CREATE EXTENSION server-side (like the
+// pg_stat_statements enable flow). A privilege failure maps to a readable hint.
+
+router.get('/operations/extensions', requireConnection, async (req, res) => {
+  try {
+    res.json(await extensions.listExtensions(req.pool));
+  } catch (err) {
+    logger.error({ err: err.message }, 'list extensions failed');
+    return sendError(res, 500, codes.DB_ERROR, err.message);
+  }
+});
+
+const ExtensionInstallBody = z.object({ name: z.string().min(1).max(255) });
+
+router.post('/operations/extensions/install',
+  requireConnection,
+  validate({ body: ExtensionInstallBody }),
+  async (req, res) => {
+    try {
+      res.json(await extensions.installExtension(req.pool, req.body.name));
+    } catch (err) {
+      if (err.code === 'NOT_AVAILABLE') {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      logger.warn({ err: err.message }, 'install extension failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message, {
+        hint: 'Installing an extension usually requires a superuser (or a trusted extension on PG13+).',
+      });
+    }
+  });
+
+router.post('/operations/extensions/drop',
+  requireConnection,
+  validate({ body: ExtensionInstallBody }),
+  async (req, res) => {
+    try {
+      res.json(await extensions.dropExtension(req.pool, req.body.name));
+    } catch (err) {
+      if (err.code === 'NOT_AVAILABLE') {
+        return sendError(res, 400, codes.BAD_REQUEST, err.message);
+      }
+      logger.warn({ err: err.message }, 'drop extension failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message, {
+        hint: 'Dropping fails if other objects depend on the extension — remove those first, or the role may lack privileges.',
+      });
+    }
+  });
+
+// ---- Schema diff & migration generator (roadmap §7.1) ----------------------
+//
+// GET /api/schema-diff?source=<connId>&target=<connId>
+//   Diffs two registered connections (each at its own configured schema) and
+//   returns the structured diff plus a forward (source→target) and backward
+//   (target→source) migration. Every generated statement is flagged destructive
+//   or not; nothing is executed — the user runs it from the editor, exactly like
+//   the index assistant's DROP DDL. This route takes two connections, so it
+//   resolves both pools itself rather than using the single-connection
+//   `requireConnection` middleware.
+
+const SchemaDiffQuery = z.object({
+  source: z.string().min(1).max(255),
+  target: z.string().min(1).max(255),
+});
+
+router.get('/schema-diff', validate({ query: SchemaDiffQuery }), async (req, res) => {
+  const { source, target } = req.query;
+  if (source === target) {
+    return sendError(res, 400, codes.BAD_REQUEST, 'Pick two different connections to diff.');
+  }
+  const sourcePool = getPool(source);
+  const targetPool = getPool(target);
+  if (!sourcePool || !targetPool) {
+    return sendError(res, 503, codes.NO_CONNECTION,
+      'One or both connections are not connected', {
+        hint: 'Reconnect both databases, then try again.',
+      });
+  }
+  const sourceSchema = getConnectionSchema(source);
+  const targetSchema = getConnectionSchema(target);
+  if (!sourceSchema || sourceSchema.includes('\0') ||
+      !targetSchema || targetSchema.includes('\0')) {
+    return sendError(res, 400, codes.BAD_REQUEST, 'A connection has an invalid schema name');
+  }
+
+  try {
+    const [sourceSnap, targetSnap] = await Promise.all([
+      schemaDiff.introspectSchema(sourcePool, sourceSchema),
+      schemaDiff.introspectSchema(targetPool, targetSchema),
+    ]);
+    res.json({
+      source: { connectionId: source, schema: sourceSchema },
+      target: { connectionId: target, schema: targetSchema },
+      diff: schemaDiff.diffSchemas(sourceSnap, targetSnap),
+      forward: schemaDiff.buildMigration(sourceSnap, targetSnap),
+      backward: schemaDiff.buildMigration(targetSnap, sourceSnap),
+    });
+  } catch (err) {
+    logger.error({ err: err.message }, 'schema diff failed');
     return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });

@@ -1,6 +1,6 @@
 {
   "name": "pglens",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "description": "A no-code PostgreSQL workstation: browse, filter, edit, and query your databases from a fast local web UI",
   "bin": {
     "pglens": "./bin/pglens"
@@ -24,9 +24,23 @@
   },
   "keywords": [
     "postgresql",
+    "postgres",
     "database",
     "viewer",
-    "cli"
+    "cli",
+    "postgres-gui",
+    "database-gui",
+    "sql-client",
+    "postgres-client",
+    "pgadmin-alternative",
+    "dbeaver-alternative",
+    "tableplus-alternative",
+    "no-code",
+    "sql",
+    "jsonb",
+    "erd",
+    "schema-diff",
+    "query-editor"
   ],
   "author": {
     "name": "Tekeshwar Singh",

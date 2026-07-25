@@ -22,7 +22,9 @@ function renderNode(node: FilterCondition | FilterGroup): string {
 }
 
 function renderCondition(c: FilterCondition): string {
-  const col = quoteIdent(c.column)
+  // Path conditions read the text at `col->'a'->>'b'`; everything else operates
+  // on the bare column. (Display form — the server uses `#>>` with bound params.)
+  const col = c.path && c.path.length ? jsonbAccessor(c.column, c.path) : quoteIdent(c.column)
   switch (c.op) {
     case 'is_null': return `${col} IS NULL`
     case 'is_not_null': return `${col} IS NOT NULL`
@@ -37,12 +39,24 @@ function renderCondition(c: FilterCondition): string {
     case 'in':  return `${col} IN (${arrayLiteral(c.value)})`
     case 'nin': return `${col} NOT IN (${arrayLiteral(c.value)})`
     case 'jsonb_contains': return `${col} @> ${jsonbLiteral(c.value)}`
+    case 'has_key': return `jsonb_exists(${quoteIdent(c.column)}, ${literal(c.value)})`
     case 'array_overlaps': return `${col} && ARRAY[${arrayLiteral(c.value)}]`
   }
 }
 
 function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`
+}
+
+/** `"col"->'a'->>'b'` for a JSONB key path — matches the roadmap's accessor form. */
+export function jsonbAccessor(column: string, path: string[]): string {
+  const col = quoteIdent(column)
+  if (path.length === 0) return col
+  const hops = path.map((k, i) => {
+    const key = `'${k.replaceAll("'", "''")}'`
+    return i === path.length - 1 ? `->>${key}` : `->${key}`
+  })
+  return col + hops.join('')
 }
 
 function literal(v: unknown): string {
@@ -75,6 +89,7 @@ export const OPERATOR_LABELS: Record<FilterOp, string> = {
   is_null: 'IS NULL',
   is_not_null: 'IS NOT NULL',
   jsonb_contains: '@>',
+  has_key: 'has key',
   array_overlaps: '&&',
 }
 
@@ -94,10 +109,15 @@ export function operatorsForType(dataType: string | undefined): FilterOp[] {
   if (isBool) return ['eq', 'neq', 'is_null', 'is_not_null']
   if (isNumeric || isDateish) return ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'nin', 'is_null', 'is_not_null']
   if (isText) return ['eq', 'neq', 'like', 'ilike', 'in', 'nin', 'is_null', 'is_not_null']
-  if (isJson) return ['jsonb_contains', 'is_null', 'is_not_null']
+  if (isJson) return ['jsonb_contains', 'has_key', 'is_null', 'is_not_null']
   if (isArray) return ['array_overlaps', 'is_null', 'is_not_null']
   return [...base, 'gt', 'gte', 'lt', 'lte', 'in', 'nin']
 }
+
+/** Operators a JSONB path condition (text extracted via `#>>`) may use. */
+export const PATH_OPERATORS: FilterOp[] = [
+  'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'like', 'ilike', 'is_null', 'is_not_null',
+]
 
 export function opNeedsValue(op: FilterOp): boolean {
   return op !== 'is_null' && op !== 'is_not_null'

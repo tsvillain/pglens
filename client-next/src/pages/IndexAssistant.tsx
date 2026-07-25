@@ -1,12 +1,12 @@
-import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
-  AlertTriangle, Copy as CopyIcon, Database, FileSearch, Layers,
+  AlertTriangle, Database, FileSearch, Layers,
   Play, RefreshCw, Table as TableIcon, Trash2,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { CopyButton } from '@/components/CopyButton'
 import { Loading, Spinner } from '@/components/ui/spinner'
 import {
   getIndexAdvice,
@@ -99,22 +99,6 @@ function useOpenInEditor() {
   }
 }
 
-function CopyButton({ text, label = 'Copy DDL' }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false)
-  const copy = () => {
-    void navigator.clipboard?.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
-  }
-  return (
-    <Button size="sm" variant="ghost" className="h-7" onClick={copy}>
-      <CopyIcon className="h-3.5 w-3.5" />
-      {copied ? 'Copied' : label}
-    </Button>
-  )
-}
-
 // ---- Panels -----------------------------------------------------------------
 
 function Panel({
@@ -191,7 +175,7 @@ function UnusedPanel({ section }: { section: { data: UnusedIndex[] | null; error
                   <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">
                     {formatBytes(ix.size_bytes)}
                   </span>
-                  <CopyButton text={ix.drop_ddl} />
+                  <CopyButton text={ix.drop_ddl} label="Copy DDL" />
                   <Button
                     size="sm"
                     variant="outline"
@@ -253,7 +237,7 @@ function DuplicatePanel({ section }: { section: { data: DuplicateGroup[] | null;
                       <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">
                         {formatBytes(ix.size_bytes)}
                       </span>
-                      <CopyButton text={ix.drop_ddl} />
+                      <CopyButton text={ix.drop_ddl} label="Copy DDL" />
                       <Button
                         size="sm"
                         variant="outline"

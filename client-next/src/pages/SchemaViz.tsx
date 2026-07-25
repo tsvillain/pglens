@@ -28,6 +28,8 @@ import { Input } from '@/components/ui/input'
 import { Dropdown, DropdownItem } from '@/components/ui/dropdown'
 import { Loading } from '@/components/ui/spinner'
 import { getDatabaseSchema, type SchemaTable } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
+import { downloadBlob } from '@/lib/download'
 import { toMermaidER } from '@/lib/mermaid'
 import { useConnectionStore } from '@/store/connection'
 import { useEffectiveTheme } from '@/store/theme'
@@ -159,28 +161,6 @@ function buildEdges(tables: SchemaTable[]): Edge[] {
   return edges
 }
 
-function downloadBlob(content: string | Blob, fileName: string, mime?: string) {
-  const blob =
-    typeof content === 'string' ? new Blob([content], { type: mime ?? 'text/plain' }) : content
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = fileName
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
-}
-
-async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch {
-    return false
-  }
-}
-
 function SchemaCanvas({ tables }: { tables: SchemaTable[] }) {
   const [filter, setFilter] = useState('')
   const [hoveredId, setHoveredId] = useState<string | null>(null)
@@ -270,7 +250,7 @@ function SchemaCanvas({ tables }: { tables: SchemaTable[] }) {
   const mermaidText = useMemo(() => toMermaidER(filteredTables), [filteredTables])
 
   const copyMermaid = useCallback(async () => {
-    const ok = await copyToClipboard(mermaidText)
+    const ok = await copyText(mermaidText)
     if (ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)

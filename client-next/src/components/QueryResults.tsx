@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
-import { CheckCircle2, Download } from 'lucide-react'
+import { BarChart3, CheckCircle2, Download } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Dialog } from '@/components/ui/dialog'
+import { ChartPanel } from '@/components/ChartPanel'
 import { DataGrid, type SortState } from '@/components/DataGrid'
 import { ExplainPlan } from '@/components/ExplainPlan'
 import {
@@ -77,6 +79,7 @@ function ResultTabs({
   baseName: string
 }) {
   const [active, setActive] = useState(0)
+  const [chartOpen, setChartOpen] = useState(false)
   // Per-tab client-side sort (the result is already in memory — no re-query).
   const [sortByTab, setSortByTab] = useState<Record<number, SortState>>({})
 
@@ -132,6 +135,14 @@ function ResultTabs({
         </span>
         {current.rows.length > 0 && (
           <div className="flex shrink-0 items-center gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setChartOpen(true)}
+              title="Chart this result"
+            >
+              <BarChart3 className="h-3.5 w-3.5" /> Chart
+            </Button>
             <ExportButton
               format="csv"
               onClick={() =>
@@ -168,6 +179,23 @@ function ResultTabs({
           </p>
         )}
       </div>
+
+      <Dialog
+        open={chartOpen}
+        onClose={() => setChartOpen(false)}
+        title="Chart"
+        className="max-w-4xl"
+      >
+        <div className="h-[70vh]">
+          <ChartPanel
+            rows={sortedRows}
+            columns={Object.entries(columns).map(([name, m]) => ({
+              name,
+              type: m.dataType,
+            }))}
+          />
+        </div>
+      </Dialog>
     </div>
   )
 }

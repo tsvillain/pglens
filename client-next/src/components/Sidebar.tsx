@@ -5,8 +5,8 @@ import {
 } from '@tanstack/react-router'
 import {
   Activity, Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
-  Lightbulb, MoreVertical, Pencil, Plus, Power, Search, Table as TableIcon,
-  Terminal, Timer,
+  GitCompare, Lightbulb, MoreVertical, Network, Pencil, Plus, Power, Puzzle,
+  Search, Table as TableIcon, Terminal, Timer,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -278,6 +278,17 @@ export function Sidebar() {
             Visualize
           </Link>
           <Link
+            to="/erd"
+            onClick={() => openTab({ kind: 'erd' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/erd' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <Network className="h-3.5 w-3.5 text-muted-foreground" />
+            ERD editor
+          </Link>
+          <Link
             to="/query"
             onClick={() => openTab({ kind: 'query' })}
             className={cn(
@@ -287,6 +298,17 @@ export function Sidebar() {
           >
             <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
             Query
+          </Link>
+          <Link
+            to="/schema-diff"
+            onClick={() => openTab({ kind: 'schema-diff' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/schema-diff' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <GitCompare className="h-3.5 w-3.5 text-muted-foreground" />
+            Diff &amp; migrate
           </Link>
           <button
             onClick={() => exportMut.mutate(activeConn.id)}
@@ -337,6 +359,17 @@ export function Sidebar() {
           >
             <Lightbulb className="h-3.5 w-3.5 text-muted-foreground" />
             Index assistant
+          </Link>
+          <Link
+            to="/extensions"
+            onClick={() => openTab({ kind: 'extensions' })}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+              !!matchRoute({ to: '/extensions' }) && 'bg-accent text-accent-foreground',
+            )}
+          >
+            <Puzzle className="h-3.5 w-3.5 text-muted-foreground" />
+            Extensions
           </Link>
         </Section>
       )}
