@@ -50,7 +50,7 @@ export function TabBar() {
   const sync = useTabsStore((s) => s.syncFromRoute)
   const close = useTabsStore((s) => s.close)
 
-  // Per-tab open-transaction state (roadmap §5.3): drives the "T" badge and the
+  // Per-tab open-transaction state: drives the "T" badge and the
   // close-confirmation modal.
   const txOpen = useTransactionStore((s) => s.open)
   const txConnId = useTransactionStore((s) => s.connectionId)
@@ -73,7 +73,7 @@ export function TabBar() {
     navigate({ to: next ? tabRoute(next) : '/' })
   }
 
-  // Closing a tab with an open transaction asks first (roadmap §5.3).
+  // Closing a tab with an open transaction asks first.
   const requestClose = (id: string) => {
     if (txOpen[id]) setPendingClose(id)
     else finalizeClose(id)

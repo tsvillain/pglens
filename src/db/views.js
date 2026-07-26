@@ -20,6 +20,7 @@ const { z } = require('zod');
 
 const logger = require('../log');
 const { VIEWS_FILE, ensureLayout } = require('../config/paths');
+const { notify } = require('../extensions/syncAdapter');
 
 const MAX_NAME_LEN = 120;
 const MAX_VIEWS = 1000;
@@ -148,6 +149,7 @@ function createView(body) {
   };
   all.push(view);
   persist();
+  notify('view', view);
   return view;
 }
 
@@ -178,6 +180,7 @@ function updateView(id, patch) {
   const next = { ...cur, ...parsed, id: cur.id, createdAt: cur.createdAt, updatedAt: nowIso() };
   all[idx] = next;
   persist();
+  notify('view', next);
   return next;
 }
 
@@ -187,6 +190,7 @@ function deleteView(id) {
   if (idx < 0) return false;
   all.splice(idx, 1);
   persist();
+  notify('view', { id, deleted: true });
   return true;
 }
 

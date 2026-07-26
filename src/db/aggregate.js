@@ -7,7 +7,7 @@
  * `WHERE` + params as the data read. Counts come back as strings (bigint) and
  * numeric aggregates may come back as strings (numeric); the client formats.
  *
- * Allowed functions by column kind (roadmap §4.7):
+ * Allowed functions by column kind:
  *   numeric      count, count_distinct, sum, avg, min, max, stddev
  *   text/date    count, count_distinct, min, max
  *   boolean      count, count_distinct, count_true, count_false

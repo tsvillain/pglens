@@ -46,7 +46,7 @@ function normalize(s: string): string {
  * CSV import wizard. Parses the file in the browser, auto-maps headers to
  * columns by name, lets the user pick a conflict mode, runs a dry run (counts
  * + rollback), then executes inside a server-side transaction. Honors the
- * roadmap's "Show SQL" principle with a preview of the INSERT the server runs.
+ * the app's "Show SQL" principle with a preview of the INSERT the server runs.
  */
 export function ImportDialog({
   open,

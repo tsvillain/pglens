@@ -2,7 +2,7 @@ import { create } from 'zustand'
 
 /**
  * One-shot hand-off of SQL into the Query editor. The slow-query drilldown's
- * "Explain" action (roadmap §6.2) sets a seed, opens the Query tab, and
+ * "Explain" action sets a seed, opens the Query tab, and
  * navigates there; the QueryRunner applies the seed and clears it. A store
  * (rather than a route search param) keeps a potentially long, multi-line query
  * out of the URL and applies even when the Query tab is already mounted.

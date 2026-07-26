@@ -1,5 +1,5 @@
 /**
- * Advanced-mode transaction sessions (roadmap §5.3).
+ * Advanced-mode transaction sessions.
  *
  * In Transaction mode an Advanced tab holds a single dedicated Postgres backend
  * (porsager's `reserve()`) for the life of the transaction rather than
@@ -9,8 +9,8 @@
  *
  * Sessions are parked in a server-side map keyed by tab id. The auth middleware
  * gates every request behind the single per-install token, so the map is
- * inherently scoped to this install (roadmap §5.3: "keyed by the per-install
- * token + tab id"). A session is bound to the connection it opened against; a
+ * inherently scoped to this install — keyed by the per-install token + tab
+ * id. A session is bound to the connection it opened against; a
  * request for the same tab on a *different* connection is rejected rather than
  * silently orphaning the held backend.
  *
@@ -164,7 +164,7 @@ function createTxManager({ reserveConnection: reserve, idleTimeoutMs = IDLE_TIME
   }
 
   /**
-   * Multi-statement variant of `runQuery` (roadmap §5.4): run each statement of
+   * Multi-statement variant of `runQuery`: run each statement of
    * a script on the tab's backend, in order, within the open transaction, and
    * return one `{ rows, fields, rowCount, command, durationMs }` per statement.
    * A failing statement aborts the run (the transaction enters the failed state;
@@ -192,7 +192,7 @@ function createTxManager({ reserveConnection: reserve, idleTimeoutMs = IDLE_TIME
   /**
    * EXPLAIN one statement inside the tab's open transaction. With `analyze`
    * (the default), runs `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` — the
-   * statement executes within the user's transaction (roadmap §5.4), which
+   * statement executes within the user's transaction, which
    * they commit or roll back themselves, so unlike Auto-commit mode it is NOT
    * self-rolled-back. With `analyze: false`, runs plain `EXPLAIN (FORMAT JSON)`
    * — estimates only, nothing executes (the §6.3 toggle). Returns the raw

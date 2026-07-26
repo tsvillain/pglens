@@ -9,8 +9,8 @@ const OPTIONS: Array<{ value: TabMode; label: string; Icon: typeof TableIcon }> 
 ]
 
 /**
- * `[ No-code | Advanced ]` segmented switch shown in a table tab's header
- * (roadmap §5.1). Per-tab, so a no-code view and a hand-written query can be
+ * `[ No-code | Advanced ]` segmented switch shown in a table tab's header.
+ * Per-tab, so a no-code view and a hand-written query can be
  * held open side by side.
  */
 export function ModeToggle({

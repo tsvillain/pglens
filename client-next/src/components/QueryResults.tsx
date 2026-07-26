@@ -51,7 +51,7 @@ function resultLabel(result: StatementResult): string {
 }
 
 /**
- * Renders the outcome of a query run (roadmap §5.4):
+ * Renders the outcome of a query run:
  *   - one result tab per statement of a multi-statement script
  *   - each result in the shared no-code DataGrid (sorting, JSON cells), with
  *     CSV / JSON export of the rows in hand

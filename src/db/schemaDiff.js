@@ -1,5 +1,5 @@
 /**
- * Schema diff & migration generator (roadmap §7.1).
+ * Schema diff & migration generator.
  *
  * Introspect two schemas into normalized snapshots, diff them, and generate an
  * idempotent-ish migration that transforms one into the other (plus its
@@ -16,8 +16,8 @@
  *     `destructive` flag per statement) to turn `from` into `to`. The reverse
  *     migration is just buildMigration(to, from) — same code, args swapped.
  *
- * ponytail: the .sql-baseline-file side of the roadmap (diff a live DB against a
- * dump) is skipped — it needs a real DDL parser to build a snapshot from text.
+ * ponytail: diffing a live DB against a .sql-baseline dump is skipped — it
+ * needs a real DDL parser to build a snapshot from text.
  * Both sides here are live connections (prod-vs-staging, the common case). Add
  * the file baseline when a parser is on hand. The migration also assumes both
  * sides use the same schema *name* (so pg_get_*def() output lines up); cross-

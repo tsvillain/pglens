@@ -15,7 +15,8 @@ const net = require('net');
 const pkg = require('../package.json');
 const logger = require('./log');
 const { PORT_FILE } = require('./config/paths');
-const { tokenMiddleware, loadOrCreateToken } = require('./auth');
+const { loadOrCreateToken } = require('./auth');
+const { getAuthProvider } = require('./extensions/authProvider');
 const { sendError, codes } = require('./http/errors');
 const { closePool, restoreConnections } = require('./db/connection');
 const apiRoutes = require('./routes/api');
@@ -68,8 +69,9 @@ async function startServer({ standalone = true } = {}) {
     res.json({ ok: true, version: pkg.version });
   });
 
-  // All other routes require the per-install token.
-  app.use(tokenMiddleware);
+  // All other routes require auth — per-install token by default, or
+  // whatever was registered via setAuthProvider() (extensions/authProvider.js).
+  app.use(getAuthProvider().middleware);
 
   app.use('/api', apiRoutes);
 

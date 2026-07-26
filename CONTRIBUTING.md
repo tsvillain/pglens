@@ -5,6 +5,7 @@ Thank you for your interest in contributing to pglens! This document provides gu
 ## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
+- [Developer Certificate of Origin (DCO)](#developer-certificate-of-origin-dco)
 - [How to Contribute](#how-to-contribute)
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
@@ -22,6 +23,24 @@ By participating in this project, you agree to:
 - Welcome newcomers and help them learn
 - Focus on constructive feedback
 - Respect different viewpoints and experiences
+
+## Developer Certificate of Origin (DCO)
+
+Every commit must be signed off, certifying you wrote it or otherwise have the right to submit it under the project's [MIT license](LICENSE) (per the [Developer Certificate of Origin](https://developercertificate.org/)).
+
+Sign off by adding `-s` to your commit:
+
+```bash
+git commit -s -m "feat: Add SSL mode configuration flag"
+```
+
+This appends a `Signed-off-by: Your Name <your.email@example.com>` trailer using your configured `git config user.name` / `user.email`. PRs with unsigned commits fail the DCO check — fix existing commits with:
+
+```bash
+git rebase --signoff origin/dev   # sign every commit on your branch
+# or, for just the last commit:
+git commit --amend -s
+```
 
 ## How to Contribute
 
@@ -46,12 +65,14 @@ There are many ways to contribute to pglens:
 1. **Fork the repository** on GitHub
 
 2. **Clone your fork**:
+
    ```bash
    git clone https://github.com/YOUR_USERNAME/pglens.git
    cd pglens
    ```
 
 3. **Install dependencies**:
+
    ```bash
    npm install
    ```
@@ -61,6 +82,7 @@ There are many ways to contribute to pglens:
    - Note the connection string for testing
 
 5. **Test the installation**:
+
    ```bash
    node bin/pglens --url postgresql://user:password@localhost:5432/testdb --port 54321
    ```
@@ -124,9 +146,9 @@ pglens/
  */
 async function fetchTableData(tableName, limit = 100) {
   if (!tableName) {
-    throw new Error('Table name is required');
+    throw new Error("Table name is required");
   }
-  
+
   const pool = getPool();
   const query = `SELECT * FROM "${tableName}" LIMIT $1`;
   const result = await pool.query(query, [limit]);
@@ -152,7 +174,7 @@ try {
   const result = await someAsyncOperation();
   return result;
 } catch (error) {
-  console.error('Operation failed:', error);
+  console.error("Operation failed:", error);
   throw new Error(`Failed to complete operation: ${error.message}`);
 }
 ```
@@ -185,6 +207,7 @@ try {
 ### PR Submission Steps
 
 1. **Push your branch**:
+
    ```bash
    git push origin feature/your-feature-name
    ```
@@ -196,10 +219,11 @@ try {
    - Describe what changes you made and why
 
 3. **PR Title Format**:
+
    ```
    type: Brief description
    ```
-   
+
    Examples:
    - `feat: Add SSL mode configuration`
    - `fix: Resolve connection timeout issue`
@@ -207,22 +231,27 @@ try {
    - `refactor: Clean up connection error handling`
 
 4. **PR Description Template**:
+
    ```markdown
    ## Description
+
    Brief description of what this PR does.
 
    ## Type of Change
+
    - [ ] Bug fix
    - [ ] New feature
    - [ ] Documentation update
    - [ ] Code refactoring
 
    ## Testing
+
    - [ ] Tested locally with PostgreSQL
    - [ ] Verified error handling
    - [ ] Checked for console errors
 
    ## Checklist
+
    - [ ] Code follows style guidelines
    - [ ] Documentation updated
    - [ ] CHANGELOG.md updated
@@ -259,6 +288,7 @@ A clear and concise description of what the bug is.
 
 **To Reproduce**
 Steps to reproduce the behavior:
+
 1. Run command: `pglens --url ...`
 2. Click on '...'
 3. See error
@@ -268,7 +298,9 @@ A clear description of what you expected to happen.
 
 **Error Message**
 ```
+
 Paste the full error message here
+
 ```
 
 **Environment:**
@@ -388,4 +420,3 @@ If you have questions about contributing:
 - Review the codebase to understand patterns
 
 Thank you for contributing to pglens! 🙏
-

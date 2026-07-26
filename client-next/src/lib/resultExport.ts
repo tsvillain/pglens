@@ -1,6 +1,6 @@
 /**
- * Client-side export of a query result set (roadmap §5.4 — the result grid
- * "inherits export"). Unlike the no-code table export, which streams a whole
+ * Client-side export of a query result set — the result grid "inherits
+ * export". Unlike the no-code table export, which streams a whole
  * table server-side, an Advanced-mode result is already fully in memory (it's
  * exactly what the editor fetched), so serializing in the browser is the right
  * fit and needs no extra round-trip.

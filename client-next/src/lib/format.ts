@@ -1,5 +1,5 @@
 /**
- * Display formatters for the Operations surfaces (roadmap §6.1, §6.2).
+ * Display formatters for the Operations surfaces.
  *
  * Postgres bigint/numeric values arrive as strings through the driver while
  * int4/float8 arrive as numbers; every formatter accepts either and renders an

@@ -39,7 +39,7 @@ const MonacoEditor = lazy(() =>
 
 export interface SqlConsoleProps {
   connectionId: string
-  /** Tab id — keys the per-tab transaction session (roadmap §5.3). */
+  /** Tab id — keys the per-tab transaction session. */
   tabId: string
   /** Controlled SQL text. */
   value: string
@@ -53,8 +53,7 @@ export interface SqlConsoleProps {
 /**
  * Monaco SQL editor over a results grid, with Run (Cmd/Ctrl+Enter), schema-aware
  * autocomplete, format-on-save (Cmd/Ctrl+S), and a `:name` parameter form
- * (roadmap §5.2). Shared by the standalone Query tab and a table tab's Advanced
- * mode (§5.1).
+ * Shared by the standalone Query tab and a table tab's Advanced mode.
  */
 export function SqlConsole({
   connectionId,
@@ -96,7 +95,7 @@ export function SqlConsole({
   const [explain, setExplain] = useState(false)
   const [analyze, setAnalyze] = useState(true)
 
-  // Per-tab transaction state (roadmap §5.3). `txMode` is the Auto-commit ⇄
+  // Per-tab transaction state. `txMode` is the Auto-commit ⇄
   // Transaction toggle; `txOpen` tracks whether a transaction is currently open
   // (drives Commit/Rollback enablement and the tab's "T" badge).
   const txMode = useTransactionStore((s) => s.mode[tabId] ?? 'autocommit')
@@ -118,7 +117,7 @@ export function SqlConsole({
   const analyzeRef = useRef(analyze)
   analyzeRef.current = analyze
 
-  // Record each run to per-connection query history (roadmap §5.5). Stores the
+  // Record each run to per-connection query history. Stores the
   // raw editor text (with any `:name` / `{{var}}` placeholders) so a restored
   // entry reproduces what the user typed, not a rewritten form. Fire-and-forget:
   // a history write failure never blocks the run.
@@ -286,7 +285,7 @@ export function SqlConsole({
             variant={explain ? 'default' : 'outline'}
             aria-pressed={explain}
             onClick={() => setExplain((v) => !v)}
-            title="EXPLAIN the statement and visualize the plan (roadmap §6.3)"
+            title="EXPLAIN the statement and visualize the plan"
           >
             <Gauge className="h-3.5 w-3.5" /> Explain
           </Button>
@@ -397,7 +396,7 @@ export function SqlConsole({
 }
 
 /**
- * `[ Auto-commit | Transaction ]` segmented switch (roadmap §5.3). Switching
+ * `[ Auto-commit | Transaction ]` segmented switch. Switching
  * back to Auto-commit is disabled while a transaction is open so the user can't
  * strand a held backend — they must Commit or Rollback first.
  */
@@ -448,7 +447,7 @@ function TxToggle({
 }
 
 /**
- * `[ Plan | Analyze ]` segmented switch shown when Explain is on (roadmap §6.3).
+ * `[ Plan | Analyze ]` segmented switch shown when Explain is on.
  * "Plan" is a plain EXPLAIN — estimates only, the statement is not executed
  * (safe for writes / expensive queries). "Analyze" is EXPLAIN ANALYZE — actually
  * runs the statement for real timings.

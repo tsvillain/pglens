@@ -1,6 +1,6 @@
 /**
- * Client-side multi-column sort for an in-memory query result set (roadmap
- * §5.4 — the result grid reuses the no-code DataGrid, "inherits sorting").
+ * Client-side multi-column sort for an in-memory query result set — the
+ * result grid reuses the no-code DataGrid, "inherits sorting".
  *
  * No-code table sorting is done server-side (it re-queries with ORDER BY), but
  * an Advanced-mode result is an arbitrary, already-fetched set with no table to

@@ -1,6 +1,6 @@
 /**
  * Build the SQL handed to the Query editor by the slow-query drilldown's
- * "Explain in editor" action (roadmap §6.2).
+ * "Explain in editor" action.
  *
  * pg_stat_statements stores *normalized* query text — every literal is replaced
  * by a placeholder (`$1`, `$2`, …). A plain `EXPLAIN` on that fails with

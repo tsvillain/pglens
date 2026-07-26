@@ -1,5 +1,5 @@
 /**
- * SQL script splitting for Advanced-mode multi-statement results (roadmap §5.4).
+ * SQL script splitting for Advanced-mode multi-statement results.
  *
  * Postgres' extended query protocol — the one that carries bound parameters —
  * runs exactly one statement per round-trip. To return "multiple result tabs

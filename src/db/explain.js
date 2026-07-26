@@ -1,6 +1,6 @@
 /**
- * EXPLAIN ANALYZE timing extraction for the query result timing breakdown
- * (roadmap §5.4: "Query timing breakdown: parse, plan, execute").
+ * EXPLAIN ANALYZE timing extraction for the query result timing breakdown:
+ * parse, plan, execute.
  *
  * `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) <sql>` returns a single row whose
  * `QUERY PLAN` column is a JSON document carrying `Planning Time` and

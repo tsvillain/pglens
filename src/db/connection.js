@@ -22,6 +22,8 @@ const {
   getPassword,
   deletePassword,
 } = require('./secrets');
+const { listExternalConnections } = require('../extensions/connectionSource');
+const { notify } = require('../extensions/syncAdapter');
 
 // In-memory: id -> { pool, name, meta, sslMode, schema }
 //   meta = { protocol, username, host, port, database, params, password? (in mem only) }
@@ -56,7 +58,7 @@ function createPoolWrapper(sqlClient) {
       return { rows: result, fields: result.columns || [], rowCount: result.count, command: result.command };
     },
     /**
-     * Run a list of statements from one SQL script (roadmap §5.4) sequentially
+     * Run a list of statements from one SQL script sequentially
      * on a single reserved backend, returning one result per statement. Sharing
      * one backend means session state (temp tables, SET, etc.) carries across
      * statements within the run, mirroring how a psql script behaves. Bound
@@ -87,8 +89,8 @@ function createPoolWrapper(sqlClient) {
       }
     },
     /**
-     * Time a single statement with `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`
-     * (roadmap §5.4 timing breakdown). EXPLAIN ANALYZE *executes* the statement,
+     * Time a single statement with `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` for
+     * the timing breakdown. EXPLAIN ANALYZE *executes* the statement,
      * so the whole probe runs inside a transaction we always roll back — for a
      * write (INSERT/UPDATE/DELETE) this means the timing is measured without
      * persisting any change. Returns the raw `EXPLAIN` rows for the caller to
@@ -298,7 +300,7 @@ function getPool(connectionId) {
 
 /**
  * Check out a single dedicated backend from the connection's pool for the life
- * of a transaction (roadmap §5.3). Unlike the pooled `query()`, every statement
+ * of a transaction. Unlike the pooled `query()`, every statement
  * on the returned handle runs on the *same* Postgres backend, so BEGIN, the
  * user's statements, and COMMIT/ROLLBACK all share one transaction. The caller
  * MUST `release()` it (commit, rollback, idle timeout, or pool close) — a held
@@ -317,7 +319,7 @@ async function reserveConnection(connectionId) {
   };
 }
 
-function getConnections() {
+async function getConnections() {
   const result = [];
   for (const [id, conn] of connections.entries()) {
     result.push({
@@ -333,6 +335,9 @@ function getConnections() {
       schema: conn.schema || 'public',
     });
   }
+  // Connections from a registered external source (extensions/connectionSource.js).
+  // Empty by default — behavior is unchanged unless something registers one.
+  result.push(...(await listExternalConnections()));
   return result;
 }
 
@@ -368,6 +373,7 @@ function saveConnectionsToFile() {
       });
     }
     fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
+    notify('connection', data);
   } catch (err) {
     logger.error({ err: err.message }, 'failed to save connections file');
   }

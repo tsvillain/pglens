@@ -25,7 +25,7 @@ import { formatCount, formatMs } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 /**
- * EXPLAIN plan visualizer (roadmap §6.3). Renders the parsed `EXPLAIN (FORMAT
+ * EXPLAIN plan visualizer. Renders the parsed `EXPLAIN (FORMAT
  * JSON)` tree top-down (final node at the root, its inputs nested beneath),
  * with a heatmap over the chosen metric, actual-vs-estimated rows, plain-English
  * node tooltips, and an EXPLAIN vs EXPLAIN ANALYZE indication.

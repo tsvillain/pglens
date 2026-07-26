@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 /**
- * Per-tab transaction state (roadmap §5.3). The `[ Auto-commit | Transaction ]`
+ * Per-tab transaction state. The `[ Auto-commit | Transaction ]`
  * toggle and whether a transaction is currently open both live keyed by tab id,
  * mirroring the server-side session map. The "T" badge in the tab and the
  * close-confirmation modal read `open[tabId]`. Cleared when the tab closes.

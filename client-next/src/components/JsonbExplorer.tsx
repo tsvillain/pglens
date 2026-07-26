@@ -12,7 +12,7 @@ import { jsonbAccessor } from '@/lib/filterSql'
 const SAMPLE_SIZE = 500
 
 /**
- * JSONB explorer (roadmap §7.3). Samples a json/jsonb column, infers its paths,
+ * JSONB explorer. Samples a json/jsonb column, infers its paths,
  * and turns each into a one-click filter or a copyable `col->'a'->>'b'`
  * accessor. Renders nothing when the table has no json/jsonb columns, so it
  * degrades cleanly for other column types.

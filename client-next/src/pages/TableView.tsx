@@ -111,7 +111,7 @@ export function TableView() {
   // The URL is the source of truth so the picker is deep-linkable.
   const selectedViewId = search.view ?? null;
 
-  // Per-tab Advanced toggle (roadmap §5.1). Mode + edited SQL are keyed by tab
+  // Per-tab Advanced toggle. Mode + edited SQL are keyed by tab
   // id so flipping back to No-code preserves the query the user was writing.
   const tid = tabId({ kind: "table", tableName });
   const mode = useTabModeStore((s) => s.mode[tid] ?? "nocode");
@@ -354,7 +354,7 @@ export function TableView() {
                     size="sm"
                     variant="outline"
                     onClick={() => setExplainOpen(true)}
-                    title="Visualize the query plan for the current filter & sort (roadmap §6.3)"
+                    title="Visualize the query plan for the current filter & sort"
                   >
                     <Gauge className="h-4 w-4" /> Explain plan
                   </Button>
@@ -362,7 +362,7 @@ export function TableView() {
                     size="sm"
                     variant="outline"
                     onClick={() => setChartOpen(true)}
-                    title="Chart this page of rows (roadmap §7.5)"
+                    title="Chart this page of rows"
                   >
                     <BarChart3 className="h-4 w-4" /> Chart
                   </Button>

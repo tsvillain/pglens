@@ -10,7 +10,7 @@
  *   ON CONFLICT (...) DO UPDATE SET ...
  *   RETURNING (xmax = 0) AS pglens_inserted
  *
- * Three conflict modes mirror the roadmap's import wizard:
+ * Three conflict modes, matching the import wizard's options:
  *   - `insert` : plain INSERT. Any unique/PK collision aborts the statement
  *                (and, in the route, the surrounding transaction).
  *   - `skip`   : INSERT ... ON CONFLICT DO NOTHING. Colliding rows are dropped.

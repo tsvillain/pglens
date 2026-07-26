@@ -1,6 +1,6 @@
 /**
  * Build the SELECT the no-code grid is about to run, used to seed the
- * Advanced-mode editor (roadmap §5.1). Mirrors the server read: filter →
+ * Advanced-mode editor. Mirrors the server read: filter →
  * WHERE, sort → ORDER BY, page/limit → LIMIT/OFFSET. Display-only — the
  * server re-parameterizes on execute, never string-interpolates.
  */
