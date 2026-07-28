@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const PID_FILE = path.join(os.homedir(), '.pglens.pid');
 const PORT_FILE = path.join(os.homedir(), '.pglens.port');
@@ -213,6 +213,32 @@ program
   });
 
 program
+  .command('status')
+  .description('Show whether the pglens server is running')
+  .action(() => {
+    if (!fs.existsSync(PID_FILE)) {
+      console.log('pglens is not running');
+      process.exitCode = 1;
+      return;
+    }
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'));
+    try {
+      process.kill(pid, 0);
+    } catch {
+      console.log('pglens is not running (stale PID file)');
+      fs.unlinkSync(PID_FILE);
+      if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
+      process.exitCode = 1;
+      return;
+    }
+    const port = getRunningPort();
+    console.log('pglens is running');
+    console.log(`  PID     : ${pid}`);
+    if (port) console.log(`  Port    : ${port}`);
+    console.log(`  Version : ${CURRENT_VERSION}`);
+  });
+
+program
   .command('logs')
   .description('Tail the pglens log file')
   .option('-f, --follow', 'Follow the log (like tail -f)')
@@ -296,6 +322,166 @@ program
       for (const cmd of plan) console.log(`  ${cmd}`);
     }
     console.log(`\nYour data is kept: connections.json, queries.json, logs/, token.\n`);
+    process.exitCode = 1;
+  });
+
+function autostartLabel() {
+  return 'org.pglens.autostart';
+}
+
+function launchdPlistPath() {
+  return path.join(os.homedir(), 'Library', 'LaunchAgents', `${autostartLabel()}.plist`);
+}
+
+function systemdUnitPath() {
+  return path.join(os.homedir(), '.config', 'systemd', 'user', 'pglens.service');
+}
+
+function selfRealPath() {
+  try { return fs.realpathSync(__filename); } catch { return __filename; }
+}
+
+program
+  .command('autostart')
+  .description('Enable/disable starting pglens automatically at login')
+  .argument('<action>', 'enable | disable | status')
+  .action((action) => {
+    if (!['enable', 'disable', 'status'].includes(action)) {
+      console.log('Usage: pglens autostart <enable|disable|status>');
+      process.exitCode = 1;
+      return;
+    }
+
+    if (process.platform === 'darwin') {
+      const plistPath = launchdPlistPath();
+
+      if (action === 'status') {
+        console.log(fs.existsSync(plistPath) ? `enabled (${plistPath})` : 'disabled');
+        return;
+      }
+
+      if (action === 'enable') {
+        const logDir = path.dirname(LOG_FILE);
+        fs.mkdirSync(logDir, { recursive: true });
+        fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+        const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${autostartLabel()}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${process.execPath}</string>
+    <string>${selfRealPath()}</string>
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${path.join(logDir, 'autostart.out.log')}</string>
+  <key>StandardErrorPath</key><string>${path.join(logDir, 'autostart.err.log')}</string>
+</dict>
+</plist>
+`;
+        fs.writeFileSync(plistPath, plist);
+        try {
+          execFileSync('launchctl', ['load', '-w', plistPath]);
+          console.log(`✓ pglens will start automatically at login (${plistPath})`);
+        } catch (e) {
+          console.error(`launchctl load failed: ${e.message}`);
+          process.exitCode = 1;
+        }
+        return;
+      }
+
+      if (action === 'disable') {
+        if (!fs.existsSync(plistPath)) { console.log('Autostart is not enabled'); return; }
+        try { execFileSync('launchctl', ['unload', '-w', plistPath]); } catch { /* already unloaded */ }
+        fs.unlinkSync(plistPath);
+        console.log('✓ Autostart disabled');
+        return;
+      }
+    }
+
+    if (process.platform === 'linux') {
+      const unitPath = systemdUnitPath();
+
+      if (action === 'status') {
+        console.log(fs.existsSync(unitPath) ? `enabled (${unitPath})` : 'disabled');
+        return;
+      }
+
+      if (action === 'enable') {
+        fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+        const unit = `[Unit]
+Description=pglens server
+
+[Service]
+ExecStart=${process.execPath} ${selfRealPath()} serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+`;
+        fs.writeFileSync(unitPath, unit);
+        try {
+          execFileSync('systemctl', ['--user', 'daemon-reload']);
+          execFileSync('systemctl', ['--user', 'enable', '--now', 'pglens.service']);
+          console.log(`✓ pglens will start automatically at login (${unitPath})`);
+        } catch (e) {
+          console.error(`systemctl failed: ${e.message}`);
+          process.exitCode = 1;
+        }
+        return;
+      }
+
+      if (action === 'disable') {
+        if (!fs.existsSync(unitPath)) { console.log('Autostart is not enabled'); return; }
+        try { execFileSync('systemctl', ['--user', 'disable', '--now', 'pglens.service']); } catch { /* already disabled */ }
+        fs.unlinkSync(unitPath);
+        console.log('✓ Autostart disabled');
+        return;
+      }
+    }
+
+    if (process.platform === 'win32') {
+      const taskName = 'pglens-autostart';
+
+      if (action === 'status') {
+        try {
+          execFileSync('schtasks', ['/query', '/tn', taskName], { stdio: 'ignore' });
+          console.log('enabled');
+        } catch {
+          console.log('disabled');
+        }
+        return;
+      }
+
+      if (action === 'enable') {
+        const cmd = `"${process.execPath}" "${selfRealPath()}" serve`;
+        try {
+          execFileSync('schtasks', [
+            '/create', '/tn', taskName, '/tr', cmd, '/sc', 'onlogon', '/rl', 'limited', '/f',
+          ]);
+          console.log(`✓ pglens will start automatically at login (Task Scheduler: ${taskName})`);
+        } catch (e) {
+          console.error(`schtasks failed: ${e.message}`);
+          process.exitCode = 1;
+        }
+        return;
+      }
+
+      if (action === 'disable') {
+        try {
+          execFileSync('schtasks', ['/delete', '/tn', taskName, '/f']);
+          console.log('✓ Autostart disabled');
+        } catch {
+          console.log('Autostart is not enabled');
+        }
+        return;
+      }
+    }
+
+    console.log(`Autostart is not supported on ${process.platform}`);
     process.exitCode = 1;
   });
 
