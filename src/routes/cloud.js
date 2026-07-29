@@ -155,4 +155,25 @@ router.post('/workspaces/:id/invites', validate({ params: z.object({ id: z.strin
   }
 });
 
+// Metadata-only audit log (statement kind + table, never raw SQL/row data —
+// see pglens-cloud's db/schema.sql note on audit_log). Views/saved queries
+// need no equivalent read route here: they merge automatically into the
+// existing /api/views and /api/saved-queries via the M1 source extension
+// points (src/cloud/sync.js), same as connections already do.
+router.get(
+  '/workspaces/:id/audit',
+  validate({
+    params: z.object({ id: z.string().uuid() }),
+    query: z.object({ limit: z.coerce.number().int().positive().optional() }),
+  }),
+  async (req, res) => {
+    try {
+      const qs = req.query.limit ? `?limit=${req.query.limit}` : '';
+      res.json(await client.request(`/workspaces/${req.params.id}/audit${qs}`));
+    } catch (err) {
+      handleCloudError(res, err);
+    }
+  },
+);
+
 module.exports = { router, handleCallback };

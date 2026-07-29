@@ -29,6 +29,7 @@ const operations = require('../db/operations');
 const slowQueries = require('../db/slowQueries');
 const indexAdvisor = require('../db/indexAdvisor');
 const roleProvisioning = require('../db/roleProvisioning');
+const { reportEvent, classifyStatement } = require('../cloud/audit');
 const extensions = require('../db/extensions');
 const schemaDiff = require('../db/schemaDiff');
 const schemaEdit = require('../db/schemaEdit');
@@ -863,6 +864,7 @@ router.patch('/tables/:tableName/rows',
             hint: 'Refresh the table and try again.',
           });
       }
+      reportEvent({ connectionId: req.connectionId, statementKind: 'update', tableName });
       res.json({ row: result.rows[0] });
     } catch (err) {
       logger.warn({ err: err.message, table: tableName }, 'row update failed');
@@ -907,6 +909,7 @@ router.post('/tables/:tableName/rows',
       }
 
       const result = await pool.query(built.sql, built.params);
+      reportEvent({ connectionId: req.connectionId, statementKind: 'insert', tableName });
       res.status(201).json({ row: result.rows[0] });
     } catch (err) {
       logger.warn({ err: err.message, table: tableName }, 'row insert failed');
@@ -1144,8 +1147,8 @@ const ViewListQuery = z.object({
 
 const ViewIdParam = z.object({ id: z.string().uuid() });
 
-router.get('/views', validate({ query: ViewListQuery }), (req, res) => {
-  res.json({ views: views.listViews(req.query) });
+router.get('/views', validate({ query: ViewListQuery }), async (req, res) => {
+  res.json({ views: await views.listViews(req.query) });
 });
 
 router.post('/views', validate({ body: views.ViewBodySchema }), (req, res) => {
@@ -1195,8 +1198,8 @@ const SavedQueryImportSchema = z.object({
   savedQueries: z.array(savedQueries.ImportItemSchema).min(1).max(2000),
 });
 
-router.get('/saved-queries', validate({ query: SavedQueryListQuery }), (req, res) => {
-  res.json({ savedQueries: savedQueries.listSavedQueries(req.query) });
+router.get('/saved-queries', validate({ query: SavedQueryListQuery }), async (req, res) => {
+  res.json({ savedQueries: await savedQueries.listSavedQueries(req.query) });
 });
 
 router.post('/saved-queries', validate({ body: savedQueries.SavedQueryBodySchema }), (req, res) => {
@@ -1343,6 +1346,9 @@ router.post('/query',
       const results = await pool.runStatements(schema, statements, params);
       // Raw SQL may include DDL — drop cached metadata for this connection.
       invalidateMetadata(req.connectionId);
+      for (const statement of statements) {
+        reportEvent({ connectionId: req.connectionId, ...classifyStatement(statement) });
+      }
       res.json({
         results: results.map(toResultDto),
         durationMs: Date.now() - started,
@@ -1428,6 +1434,13 @@ router.post('/tx/query',
         statements,
         params,
       });
+      // Reported at execution time, same as auto-commit — a later ROLLBACK
+      // on this tab doesn't retract it. Matches how Postgres's own statement
+      // logging works; tracking final commit/rollback outcome is real added
+      // complexity for a narrow gap (add it if it turns out to matter).
+      for (const statement of statements) {
+        reportEvent({ connectionId: req.connectionId, ...classifyStatement(statement) });
+      }
       res.json({
         results: results.map(toResultDto),
         durationMs: Date.now() - started,

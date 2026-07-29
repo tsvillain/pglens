@@ -24,6 +24,8 @@ const { z } = require('zod');
 
 const logger = require('../log');
 const { SAVED_QUERIES_FILE, ensureLayout } = require('../config/paths');
+const { notify } = require('../extensions/syncAdapter');
+const { listExternalSavedQueries } = require('../extensions/savedQuerySource');
 
 const MAX_NAME_LEN = 120;
 const MAX_SQL_LEN = 100_000;
@@ -105,9 +107,18 @@ function normalize(parsed, { id, createdAt } = {}) {
   };
 }
 
-function listSavedQueries({ connectionId } = {}) {
+async function listSavedQueries({ connectionId } = {}) {
   const all = load().savedQueries;
-  return all.filter((q) => !connectionId || q.connectionId === connectionId);
+  const local = all.filter((q) => !connectionId || q.connectionId === connectionId);
+  // Shared saved queries from a registered source (extensions/savedQuerySource.js).
+  // Empty by default — behavior is unchanged unless something registers one.
+  const shared = (await listExternalSavedQueries()).filter(
+    (q) => !connectionId || q.connectionId === connectionId,
+  );
+  // De-duped by id: whoever shared a saved query has it both locally and as
+  // its own cloud echo — local wins.
+  const localIds = new Set(local.map((q) => q.id));
+  return [...local, ...shared.filter((q) => !localIds.has(q.id))];
 }
 
 function getSavedQuery(id) {
@@ -129,6 +140,7 @@ function createSavedQuery(body) {
   const query = normalize(parsed);
   all.push(query);
   persist();
+  notify('savedQuery', query);
   return query;
 }
 
@@ -154,6 +166,7 @@ function updateSavedQuery(id, patch) {
   const next = { ...cur, ...parsed, id: cur.id, createdAt: cur.createdAt, updatedAt: nowIso() };
   all[idx] = next;
   persist();
+  notify('savedQuery', next);
   return next;
 }
 
@@ -163,6 +176,7 @@ function deleteSavedQuery(id) {
   if (idx < 0) return false;
   all.splice(idx, 1);
   persist();
+  notify('savedQuery', { id, deleted: true });
   return true;
 }
 

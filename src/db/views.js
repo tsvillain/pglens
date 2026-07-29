@@ -21,6 +21,7 @@ const { z } = require('zod');
 const logger = require('../log');
 const { VIEWS_FILE, ensureLayout } = require('../config/paths');
 const { notify } = require('../extensions/syncAdapter');
+const { listExternalViews } = require('../extensions/viewSource');
 
 const MAX_NAME_LEN = 120;
 const MAX_VIEWS = 1000;
@@ -106,13 +107,24 @@ function persist() {
   writeAtomic(cache);
 }
 
-function listViews({ connectionId, tableName } = {}) {
+async function listViews({ connectionId, tableName } = {}) {
   const all = load().views;
-  return all.filter(
+  const local = all.filter(
     (v) =>
       (!connectionId || v.connectionId === connectionId) &&
       (!tableName || v.tableName === tableName),
   );
+  // Shared views from a registered source (extensions/viewSource.js). Empty
+  // by default — behavior is unchanged unless something registers one.
+  const shared = (await listExternalViews()).filter(
+    (v) =>
+      (!connectionId || v.connectionId === connectionId) &&
+      (!tableName || v.tableName === tableName),
+  );
+  // De-duped by id: whoever shared a view has it both locally and as its
+  // own cloud echo — local wins.
+  const localIds = new Set(local.map((v) => v.id));
+  return [...local, ...shared.filter((v) => !localIds.has(v.id))];
 }
 
 function getView(id) {

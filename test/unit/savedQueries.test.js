@@ -16,13 +16,14 @@ function sandbox() {
 function freshStore() {
   delete require.cache[require.resolve('../../src/config/paths')];
   delete require.cache[require.resolve('../../src/db/savedQueries')];
+  delete require.cache[require.resolve('../../src/extensions/savedQuerySource')];
   return require('../../src/db/savedQueries');
 }
 
-test('listSavedQueries returns empty when no file exists', () => {
+test('listSavedQueries returns empty when no file exists', async () => {
   sandbox();
   const sq = freshStore();
-  assert.deepEqual(sq.listSavedQueries(), []);
+  assert.deepEqual(await sq.listSavedQueries(), []);
 });
 
 test('createSavedQuery assigns id + timestamps and persists', () => {
@@ -71,15 +72,15 @@ test('createSavedQuery blocks duplicate name within a connection', () => {
   );
 });
 
-test('listSavedQueries filters by connectionId', () => {
+test('listSavedQueries filters by connectionId', async () => {
   sandbox();
   const sq = freshStore();
   sq.createSavedQuery({ connectionId: 'c1', name: 'a', sql: 'SELECT 1' });
   sq.createSavedQuery({ connectionId: 'c1', name: 'b', sql: 'SELECT 2' });
   sq.createSavedQuery({ connectionId: 'c2', name: 'c', sql: 'SELECT 3' });
-  assert.equal(sq.listSavedQueries({ connectionId: 'c1' }).length, 2);
-  assert.equal(sq.listSavedQueries({ connectionId: 'c2' }).length, 1);
-  assert.equal(sq.listSavedQueries().length, 3);
+  assert.equal((await sq.listSavedQueries({ connectionId: 'c1' })).length, 2);
+  assert.equal((await sq.listSavedQueries({ connectionId: 'c2' })).length, 1);
+  assert.equal((await sq.listSavedQueries()).length, 3);
 });
 
 test('updateSavedQuery rewrites disk and bumps updatedAt', async () => {
@@ -111,17 +112,17 @@ test('updateSavedQuery returns null for unknown id', () => {
   );
 });
 
-test('deleteSavedQuery removes from store and disk', () => {
+test('deleteSavedQuery removes from store and disk', async () => {
   const dir = sandbox();
   const sq = freshStore();
   const q = sq.createSavedQuery({ connectionId: 'c', name: 'A', sql: 'SELECT 1' });
   assert.equal(sq.deleteSavedQuery(q.id), true);
-  assert.equal(sq.listSavedQueries().length, 0);
+  assert.equal((await sq.listSavedQueries()).length, 0);
   const raw = JSON.parse(fs.readFileSync(path.join(dir, '.pglens/saved-queries.json'), 'utf8'));
   assert.equal(raw.savedQueries.length, 0);
 });
 
-test('importMany auto-suffixes names that collide within the connection', () => {
+test('importMany auto-suffixes names that collide within the connection', async () => {
   sandbox();
   const sq = freshStore();
   sq.createSavedQuery({ connectionId: 'c', name: 'Report', sql: 'SELECT 1' });
@@ -131,7 +132,7 @@ test('importMany auto-suffixes names that collide within the connection', () => 
     { name: 'Fresh', sql: 'SELECT 4' },
   ]);
   assert.deepEqual(created.map((q) => q.name), ['Report (2)', 'Report (3)', 'Fresh']);
-  assert.equal(sq.listSavedQueries({ connectionId: 'c' }).length, 4);
+  assert.equal((await sq.listSavedQueries({ connectionId: 'c' })).length, 4);
   // Imported records are bound to the target connection regardless of source.
   assert.ok(created.every((q) => q.connectionId === 'c'));
 });
@@ -149,10 +150,30 @@ test('createSavedQuery rejects empty name and empty sql', () => {
   assert.throws(() => sq.createSavedQuery({ connectionId: 'c', name: 'A', sql: '' }));
 });
 
-test('store survives a corrupt saved-queries.json (resets to empty)', () => {
+test('store survives a corrupt saved-queries.json (resets to empty)', async () => {
   const dir = sandbox();
   fs.mkdirSync(path.join(dir, '.pglens'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.pglens/saved-queries.json'), '{ not json');
   const sq = freshStore();
-  assert.deepEqual(sq.listSavedQueries(), []);
+  assert.deepEqual(await sq.listSavedQueries(), []);
+});
+
+test('listSavedQueries de-dupes a shared query that is also the local copy — local wins', async () => {
+  sandbox();
+  const sq = freshStore();
+  const { registerSavedQuerySource } = require('../../src/extensions/savedQuerySource');
+
+  const local = sq.createSavedQuery({ connectionId: 'c', name: 'Mine', sql: 'SELECT 1' });
+  registerSavedQuerySource({
+    name: 'fake-cloud',
+    listExternal: async () => [
+      { ...local }, // the cloud's echo of the same query the creator already has locally
+      { id: 'other-users-query', connectionId: 'c', name: 'Theirs', sql: 'SELECT 2' },
+    ],
+  });
+
+  const all = await sq.listSavedQueries();
+  assert.equal(all.length, 2, 'the shared echo of the local query should be dropped, not duplicated');
+  assert.ok(all.some((q) => q.id === local.id));
+  assert.ok(all.some((q) => q.id === 'other-users-query'));
 });

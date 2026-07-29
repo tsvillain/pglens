@@ -337,7 +337,13 @@ async function getConnections() {
   }
   // Connections from a registered external source (extensions/connectionSource.js).
   // Empty by default — behavior is unchanged unless something registers one.
-  result.push(...(await listExternalConnections()));
+  // De-duped by id: whoever shared a connection has it both locally and as
+  // its own cloud echo — local wins (it has the real connectionString, not
+  // the cloud's masked-on-arrival copy).
+  const localIds = new Set(result.map((c) => c.id));
+  for (const shared of await listExternalConnections()) {
+    if (!localIds.has(shared.id)) result.push(shared);
+  }
   return result;
 }
 

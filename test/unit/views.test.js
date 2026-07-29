@@ -18,13 +18,14 @@ function freshStore() {
   // in-memory cache is empty.
   delete require.cache[require.resolve('../../src/config/paths')];
   delete require.cache[require.resolve('../../src/db/views')];
+  delete require.cache[require.resolve('../../src/extensions/viewSource')];
   return require('../../src/db/views');
 }
 
-test('listViews returns empty when no file exists', () => {
+test('listViews returns empty when no file exists', async () => {
   sandbox();
   const views = freshStore();
-  assert.deepEqual(views.listViews(), []);
+  assert.deepEqual(await views.listViews(), []);
 });
 
 test('createView assigns id + timestamps and persists', () => {
@@ -65,15 +66,15 @@ test('createView blocks duplicate name within (connection, table)', () => {
   );
 });
 
-test('listViews filters by connectionId + tableName', () => {
+test('listViews filters by connectionId + tableName', async () => {
   sandbox();
   const views = freshStore();
   views.createView({ connectionId: 'c1', tableName: 't1', name: 'a' });
   views.createView({ connectionId: 'c1', tableName: 't2', name: 'b' });
   views.createView({ connectionId: 'c2', tableName: 't1', name: 'c' });
-  assert.equal(views.listViews({ connectionId: 'c1' }).length, 2);
-  assert.equal(views.listViews({ connectionId: 'c1', tableName: 't1' }).length, 1);
-  assert.equal(views.listViews({}).length, 3);
+  assert.equal((await views.listViews({ connectionId: 'c1' })).length, 2);
+  assert.equal((await views.listViews({ connectionId: 'c1', tableName: 't1' })).length, 1);
+  assert.equal((await views.listViews({})).length, 3);
 });
 
 test('updateView rewrites the on-disk file and bumps updatedAt', async () => {
@@ -105,12 +106,12 @@ test('updateView returns null for unknown id', () => {
   );
 });
 
-test('deleteView removes from store and disk', () => {
+test('deleteView removes from store and disk', async () => {
   const dir = sandbox();
   const views = freshStore();
   const v = views.createView({ connectionId: 'c', tableName: 't', name: 'A' });
   assert.equal(views.deleteView(v.id), true);
-  assert.equal(views.listViews().length, 0);
+  assert.equal((await views.listViews()).length, 0);
   const raw = JSON.parse(fs.readFileSync(path.join(dir, '.pglens/views.json'), 'utf8'));
   assert.equal(raw.views.length, 0);
 });
@@ -145,10 +146,30 @@ test('createView rejects malformed filter', () => {
   );
 });
 
-test('store survives a corrupt views.json (resets to empty)', () => {
+test('store survives a corrupt views.json (resets to empty)', async () => {
   const dir = sandbox();
   fs.mkdirSync(path.join(dir, '.pglens'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.pglens/views.json'), '{ not json');
   const views = freshStore();
-  assert.deepEqual(views.listViews(), []);
+  assert.deepEqual(await views.listViews(), []);
+});
+
+test('listViews de-dupes a shared view that is also the local copy — local wins, no double-listing', async () => {
+  sandbox();
+  const views = freshStore();
+  const { registerViewSource } = require('../../src/extensions/viewSource');
+
+  const local = views.createView({ connectionId: 'c', tableName: 't', name: 'Mine' });
+  registerViewSource({
+    name: 'fake-cloud',
+    listExternal: async () => [
+      { ...local }, // the cloud's echo of the same view the creator already has locally
+      { id: 'other-users-view', connectionId: 'c', tableName: 't', name: 'Theirs' },
+    ],
+  });
+
+  const all = await views.listViews();
+  assert.equal(all.length, 2, 'the shared echo of the local view should be dropped, not duplicated');
+  assert.ok(all.some((v) => v.id === local.id));
+  assert.ok(all.some((v) => v.id === 'other-users-view'));
 });
