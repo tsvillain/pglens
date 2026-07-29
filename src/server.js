@@ -20,6 +20,8 @@ const { getAuthProvider } = require('./extensions/authProvider');
 const { sendError, codes } = require('./http/errors');
 const { closePool, restoreConnections } = require('./db/connection');
 const apiRoutes = require('./routes/api');
+const { handleCallback: handleCloudCallback } = require('./routes/cloud');
+const { register: registerCloudSync } = require('./cloud/sync');
 
 const DEFAULT_PORT = 54321;
 const BIND_HOST = process.env.PGLENS_BIND || '127.0.0.1';
@@ -37,6 +39,7 @@ async function startServer({ standalone = true } = {}) {
   const token = loadOrCreateToken();
 
   await restoreConnections();
+  registerCloudSync();
 
   const app = express();
   let port = DEFAULT_PORT;
@@ -68,6 +71,12 @@ async function startServer({ standalone = true } = {}) {
   app.get('/api/v3/health', (_req, res) => {
     res.json({ ok: true, version: pkg.version });
   });
+
+  // Cloud's redirect back to us after login is a cross-site top-level
+  // navigation — the SameSite=Strict pglens_token cookie won't ride along,
+  // so this can't sit behind the normal auth middleware. Its own `state`
+  // check (routes/cloud.js) is what authorizes it instead.
+  app.get('/api/cloud/callback', handleCloudCallback);
 
   // All other routes require auth — per-install token by default, or
   // whatever was registered via setAuthProvider() (extensions/authProvider.js).

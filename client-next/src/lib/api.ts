@@ -95,7 +95,7 @@ interface FetchOptions {
   signal?: AbortSignal
 }
 
-async function api<T>(
+export async function api<T>(
   path: string,
   schema: z.ZodSchema<T>,
   opts: FetchOptions = {},
@@ -142,7 +142,7 @@ export interface ConnectPayload {
   schema?: string
 }
 
-async function postJson<T>(
+export async function postJson<T>(
   path: string,
   body: unknown,
   schema: z.ZodSchema<T>,
@@ -164,7 +164,7 @@ async function postJson<T>(
 
 // DELETE with the standard error envelope. Parses the body only when a schema
 // is given (most deletes return nothing the caller needs).
-async function del<T = void>(path: string, schema?: z.ZodSchema<T>): Promise<T> {
+export async function del<T = void>(path: string, schema?: z.ZodSchema<T>): Promise<T> {
   const res = await fetch(path, { method: 'DELETE', credentials: 'same-origin' })
   const json = await res.json().catch(() => null)
   if (!res.ok) throw parseErrorBody(json, res.status)
@@ -1221,6 +1221,32 @@ export type IndexAdvice = z.infer<typeof IndexAdviceSchema>
 
 export function getIndexAdvice(connectionId: string, signal?: AbortSignal) {
   return api('/api/operations/indexes', IndexAdviceSchema, { connectionId, signal })
+}
+
+// ---- Role provisioning ------------------------------------------------------
+
+// The generated statements go to the Query editor for review and Run, same
+// as everywhere else — this call only ever generates, never executes.
+// `password` is returned once, for the admin to hand off to the teammate.
+const ProvisionRoleResponseSchema = z.object({
+  statements: z.array(z.string()),
+  destructive: z.boolean(),
+  password: z.string(),
+})
+export type ProvisionRoleResponse = z.infer<typeof ProvisionRoleResponseSchema>
+
+export function provisionRole(
+  connectionId: string,
+  roleName: string,
+  accessLevel: 'read' | 'write' | 'admin',
+) {
+  return postJson(
+    '/api/operations/provision-role',
+    { roleName, accessLevel },
+    ProvisionRoleResponseSchema,
+    'POST',
+    connectionId,
+  )
 }
 
 // ---- Extensions panel -----------------------------------------------------------

@@ -9,6 +9,7 @@ import { SlowQueries } from './pages/SlowQueries'
 import { IndexAssistant } from './pages/IndexAssistant'
 import { SchemaDiff } from './pages/SchemaDiff'
 import { Extensions } from './pages/Extensions'
+import { Cloud } from './pages/Cloud'
 import { Sidebar } from './components/Sidebar'
 import { TabBar } from './components/TabBar'
 import { Spotlight } from './components/Spotlight'
@@ -111,6 +112,12 @@ const extensionsRoute = createRoute({
   component: Extensions,
 })
 
+const cloudRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/cloud',
+  component: Cloud,
+})
+
 export const routeTree = rootRoute.addChildren([
   homeRoute,
   tableRoute,
@@ -122,4 +129,5 @@ export const routeTree = rootRoute.addChildren([
   indexAssistantRoute,
   schemaDiffRoute,
   extensionsRoute,
+  cloudRoute,
 ])

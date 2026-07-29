@@ -28,6 +28,7 @@ const { extractExplainTiming } = require('../db/explain');
 const operations = require('../db/operations');
 const slowQueries = require('../db/slowQueries');
 const indexAdvisor = require('../db/indexAdvisor');
+const roleProvisioning = require('../db/roleProvisioning');
 const extensions = require('../db/extensions');
 const schemaDiff = require('../db/schemaDiff');
 const schemaEdit = require('../db/schemaEdit');
@@ -41,6 +42,8 @@ const logger = require('../log');
 const { format: formatPgSql } = require('sql-formatter');
 
 const router = express.Router();
+
+router.use('/cloud', require('./cloud').router);
 
 // ---- Shared schemas --------------------------------------------------------
 
@@ -1607,6 +1610,50 @@ router.get('/operations/indexes', requireConnection, async (req, res) => {
     return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });
+
+// ---- Role provisioning -------------------------------------------------------
+//
+// Gives a team member their own real Postgres login at a chosen access
+// level, instead of everyone sharing one credential. Nothing here executes:
+// the generated statements go to the editor for review and Run, same as
+// the index assistant's DROP DDL and the schema-diff/ERD migrations. The
+// generated password is returned once for the admin to hand off to the
+// teammate directly — it is never stored or transmitted anywhere else.
+
+const RoleProvisioningBody = z.object({
+  roleName: z.string().min(1).max(63),
+  accessLevel: z.enum(roleProvisioning.LEVELS),
+});
+
+router.post(
+  '/operations/provision-role',
+  requireConnection,
+  validate({ body: RoleProvisioningBody }),
+  async (req, res) => {
+    try {
+      const { rows } = await req.pool.query('SELECT current_database() AS database');
+      const database = rows[0].database;
+      const { roleName, accessLevel } = req.body;
+
+      let ownerRole;
+      if (accessLevel === 'admin') {
+        ownerRole = await roleProvisioning.getSchemaOwner(req.pool, req.schema);
+        if (!ownerRole) {
+          return sendError(res, 404, codes.NOT_FOUND, `Schema "${req.schema}" not found`);
+        }
+      }
+
+      const password = roleProvisioning.generateRolePassword();
+      const ddl = roleProvisioning.buildProvisioningDdl({
+        schema: req.schema, database, roleName, accessLevel, ownerRole, password,
+      });
+      res.json({ ...ddl, password });
+    } catch (err) {
+      logger.error({ err: err.message }, 'role provisioning failed');
+      return sendError(res, 500, codes.DB_ERROR, err.message);
+    }
+  },
+);
 
 // ---- Extensions panel -------------------------------------------------------
 //

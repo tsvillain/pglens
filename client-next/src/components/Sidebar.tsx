@@ -4,7 +4,7 @@ import {
   Link, useMatchRoute, useNavigate, useRouterState,
 } from '@tanstack/react-router'
 import {
-  Activity, Bookmark, ChevronDown, ChevronRight, Download, Eye, GitBranch,
+  Activity, Bookmark, ChevronDown, ChevronRight, Cloud as CloudIcon, Download, Eye, GitBranch,
   GitCompare, Lightbulb, MoreVertical, Network, Pencil, Plus, Power, Puzzle,
   Search, Table as TableIcon, Terminal, Timer,
 } from 'lucide-react'
@@ -250,6 +250,20 @@ export function Sidebar() {
             </li>
           ))}
         </ul>
+      </Section>
+
+      <Section title="Account">
+        <Link
+          to="/cloud"
+          onClick={() => openTab({ kind: 'cloud' })}
+          className={cn(
+            'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent',
+            !!matchRoute({ to: '/cloud' }) && 'bg-accent text-accent-foreground',
+          )}
+        >
+          <CloudIcon className="h-3.5 w-3.5 text-muted-foreground" />
+          Cloud
+        </Link>
       </Section>
 
       {activeConn && (

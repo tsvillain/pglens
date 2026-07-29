@@ -14,6 +14,9 @@ const CONNECTIONS_FILE = path.join(PGLENS_DIR, 'connections.json');
 const VIEWS_FILE = path.join(PGLENS_DIR, 'views.json');
 const SAVED_QUERIES_FILE = path.join(PGLENS_DIR, 'saved-queries.json');
 const QUERY_HISTORY_FILE = path.join(PGLENS_DIR, 'query-history.json');
+// Non-secret cloud-account state (email, selected workspace). Tokens live in
+// the keychain (src/cloud/session.js), never here.
+const CLOUD_FILE = path.join(PGLENS_DIR, 'cloud.json');
 // Only used by the file-based secret store (PGLENS_SECRET_STORE=file); the
 // keychain backend stores nothing here.
 const SECRETS_FILE = path.join(PGLENS_DIR, 'secrets.json');
@@ -40,6 +43,7 @@ module.exports = {
   VIEWS_FILE,
   SAVED_QUERIES_FILE,
   QUERY_HISTORY_FILE,
+  CLOUD_FILE,
   SECRETS_FILE,
   PID_FILE,
   PORT_FILE,
