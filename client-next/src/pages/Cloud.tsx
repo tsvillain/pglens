@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Cloud as CloudIcon, CreditCard, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
+import { ArrowLeft, Cloud as CloudIcon, CreditCard, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -11,7 +11,7 @@ import { Loading, Spinner } from '@/components/ui/spinner'
 import { CopyButton } from '@/components/CopyButton'
 import {
   getCloudStatus, signIn, signOut, listCloudWorkspaces, createCloudWorkspace,
-  selectCloudWorkspace, listCloudMembers, setCloudMemberLevel, createCloudInvite,
+  selectCloudWorkspace, deselectCloudWorkspace, listCloudMembers, setCloudMemberLevel, createCloudInvite,
   getCloudMe, startCheckout, openBillingPortal, setWorkspaceSeats,
   type AccessLevel, type CloudMember, type PlanKey,
 } from '@/lib/cloudApi'
@@ -114,31 +114,38 @@ function PersonalPlanPanel({ checkoutPending }: { checkoutPending: boolean }) {
   if (!user) return null
 
   return (
-    <div className="flex items-center gap-3 border-b border-border bg-muted/30 px-6 py-2 text-xs">
-      <span className="font-medium">{user.plan === 'pro' ? 'Pro plan' : 'Free plan'}</span>
-      {user.plan !== 'free' && user.billing_status !== 'active' && (
-        <span className="text-destructive">({user.billing_status})</span>
-      )}
-      <div className="ml-auto flex items-center gap-2">
-        {user.plan === 'free' ? (
-          <>
-            <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate('pro_monthly')} disabled={checkout.isPending}>
-              {checkout.isPending && <Spinner aria-label="Starting checkout" />}
-              Upgrade to Pro — $9/mo
-            </Button>
-            <Button size="sm" variant="ghost" className="h-7" onClick={() => checkout.mutate('pro_yearly')} disabled={checkout.isPending}>
-              $90/yr
-            </Button>
-          </>
-        ) : (
-          <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
-            {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
-            Manage billing
-          </Button>
+    <div className="border-b border-border bg-muted/30 px-6 py-2">
+      <div className="flex items-center gap-3 text-xs">
+        <span className="text-muted-foreground">Your plan</span>
+        <span className="font-medium">{user.plan === 'pro' ? 'Pro' : 'Free'}</span>
+        {user.plan !== 'free' && user.billing_status !== 'active' && (
+          <span className="text-destructive">({user.billing_status})</span>
         )}
+        <div className="ml-auto flex items-center gap-2">
+          {user.plan === 'free' ? (
+            <>
+              <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate('pro_monthly')} disabled={checkout.isPending}>
+                {checkout.isPending && <Spinner aria-label="Starting checkout" />}
+                Upgrade to Pro — $9/mo
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7" onClick={() => checkout.mutate('pro_yearly')} disabled={checkout.isPending}>
+                $90/yr
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
+              {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
+              Manage billing
+            </Button>
+          )}
+        </div>
       </div>
-      {checkout.error && <p className="text-destructive">{(checkout.error as Error).message}</p>}
-      {portal.error && <p className="text-destructive">{(portal.error as Error).message}</p>}
+      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+        Personal — cross-device sync &amp; hosted AI credits for you. Independent of any workspace's own
+        plan below.
+      </p>
+      {checkout.error && <p className="mt-1 text-xs text-destructive">{(checkout.error as Error).message}</p>}
+      {portal.error && <p className="mt-1 text-xs text-destructive">{(portal.error as Error).message}</p>}
     </div>
   )
 }
@@ -221,8 +228,17 @@ function WorkspaceDetail({ workspaceId, myEmail, checkoutPending }: { workspaceI
 
   const invite = useMutation({ mutationFn: () => createCloudInvite(workspaceId) })
 
+  const deselect = useMutation({
+    mutationFn: deselectCloudWorkspace,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cloud-status'] }),
+  })
+
   return (
     <div className="space-y-4">
+      <Button size="sm" variant="ghost" className="-ml-2 h-7" onClick={() => deselect.mutate()} disabled={deselect.isPending}>
+        {deselect.isPending ? <Spinner aria-label="Leaving workspace" /> : <ArrowLeft className="h-3.5 w-3.5" />}
+        All workspaces
+      </Button>
       <WorkspaceBillingPanel workspaceId={workspaceId} canManage={canManage} checkoutPending={checkoutPending} />
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-muted-foreground">Members</h2>
@@ -286,32 +302,42 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
   if (!workspace) return null
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-4 py-2.5 text-xs">
-      <span className="font-medium">{workspace.plan === 'team' ? 'Team plan' : 'Free workspace'}</span>
-      {workspace.plan === 'team' && <span className="text-muted-foreground">{workspace.seat_count} seats</span>}
-      {workspace.plan !== 'free' && workspace.billing_status !== 'active' && (
-        <span className="text-destructive">({workspace.billing_status})</span>
-      )}
-      {canManage && (
-        <div className="ml-auto flex items-center gap-2">
-          {workspace.plan === 'free' ? (
-            <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
-              {checkout.isPending && <Spinner aria-label="Starting checkout" />}
-              Upgrade to Team — $49/mo
-            </Button>
-          ) : (
-            <>
-              <SeatEditor workspaceId={workspaceId} seatCount={workspace.seat_count} />
-              <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
-                {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
-                Manage billing
+    <div className="rounded-lg border border-border bg-muted/30 px-4 py-2.5">
+      <div className="flex items-center gap-3 text-xs">
+        <span className="text-muted-foreground">This workspace's plan</span>
+        <span className="font-medium">{workspace.plan === 'team' ? 'Team' : 'Free'}</span>
+        {workspace.plan === 'team' && <span className="text-muted-foreground">· {workspace.seat_count} seats</span>}
+        {workspace.plan !== 'free' && workspace.billing_status !== 'active' && (
+          <span className="text-destructive">({workspace.billing_status})</span>
+        )}
+        {canManage && (
+          <div className="ml-auto flex items-center gap-2">
+            {workspace.plan === 'free' ? (
+              <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
+                {checkout.isPending && <Spinner aria-label="Starting checkout" />}
+                Upgrade this workspace to Team — $49/mo
               </Button>
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                <SeatEditor workspaceId={workspaceId} seatCount={workspace.seat_count} />
+                <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
+                  {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
+                  Manage billing
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+        Shared by everyone here — connections, access levels, audit log. Independent of your personal plan
+        above; upgrading one doesn't change the other.
+      </p>
+      {!canManage && (
+        <p className="mt-1 text-[11px] text-muted-foreground">Only an owner or admin can change this workspace's plan.</p>
       )}
-      {checkout.error && <p className="text-destructive">{(checkout.error as Error).message}</p>}
-      {portal.error && <p className="text-destructive">{(portal.error as Error).message}</p>}
+      {checkout.error && <p className="mt-1 text-xs text-destructive">{(checkout.error as Error).message}</p>}
+      {portal.error && <p className="mt-1 text-xs text-destructive">{(portal.error as Error).message}</p>}
     </div>
   )
 }

@@ -146,6 +146,15 @@ router.post('/workspaces/:id/select', validate({ params: z.object({ id: z.string
   res.json({ ok: true });
 });
 
+// Back out of a selected workspace to the picker — there was previously no
+// way to do this once a workspace was opened (found live: a workspace
+// created before upgrading to Pro had no path back to see other workspaces
+// or re-check personal-plan status against the list).
+router.post('/workspaces/deselect', (req, res) => {
+  session.setWorkspaceId(null);
+  res.json({ ok: true });
+});
+
 router.get('/workspaces/:id/members', validate({ params: z.object({ id: z.string().uuid() }) }), async (req, res) => {
   try {
     res.json(await client.request(`/workspaces/${req.params.id}/members`));

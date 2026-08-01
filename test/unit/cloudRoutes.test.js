@@ -181,6 +181,16 @@ test('workspaces/members/invites all proxy through to the cloud once signed in',
   assert.match((await inviteRes.json()).inviteUrl, /invite/);
 });
 
+test('deselecting a workspace goes back to the picker, with no way back was the bug found live', async () => {
+  const deselectRes = await core('/api/cloud/workspaces/deselect', { method: 'POST' });
+  assert.equal(deselectRes.status, 200);
+  assert.equal((await (await core('/api/cloud/status')).json()).workspaceId, null);
+
+  // Restore selection so later tests relying on a selected workspace are unaffected.
+  await core('/api/cloud/workspaces/11111111-1111-1111-1111-111111111111/select', { method: 'POST' });
+  assert.equal((await (await core('/api/cloud/status')).json()).workspaceId, '11111111-1111-1111-1111-111111111111');
+});
+
 test('the real connectionSource is consulted by the core connections list once signed in', async () => {
   const res = await core('/api/connections');
   assert.equal(res.status, 200);

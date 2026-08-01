@@ -69,6 +69,10 @@ export function selectCloudWorkspace(workspaceId: string) {
   return postJson(`/api/cloud/workspaces/${workspaceId}/select`, {}, z.object({ ok: z.boolean() }))
 }
 
+export function deselectCloudWorkspace() {
+  return postJson('/api/cloud/workspaces/deselect', {}, z.object({ ok: z.boolean() }))
+}
+
 export const AccessLevel = z.enum(['read', 'write', 'admin', 'owner'])
 export type AccessLevel = z.infer<typeof AccessLevel>
 
