@@ -90,6 +90,20 @@ export function listCloudMembers(workspaceId: string, signal?: AbortSignal) {
   return api(`/api/cloud/workspaces/${workspaceId}/members`, MembersResponse, { signal })
 }
 
+const SharedConnectionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  host: z.string(),
+  port: z.number(),
+  database: z.string(),
+  username: z.string(),
+})
+const SharedConnectionsResponse = z.object({ connections: z.array(SharedConnectionSchema) })
+
+export function listCloudConnections(workspaceId: string, signal?: AbortSignal) {
+  return api(`/api/cloud/workspaces/${workspaceId}/connections`, SharedConnectionsResponse, { signal })
+}
+
 export function setCloudMemberLevel(workspaceId: string, userId: string, accessLevel: AccessLevel) {
   return postJson(
     `/api/cloud/workspaces/${workspaceId}/members/${userId}`,

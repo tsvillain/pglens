@@ -61,7 +61,9 @@ test.before(async () => {
         return respondJson(res, 201, { inviteUrl: 'http://fake-cloud/invite/some-token' });
       }
       if (req.method === 'GET' && url === '/workspaces/11111111-1111-1111-1111-111111111111/connections') {
-        return respondJson(res, 200, { connections: [] });
+        return respondJson(res, 200, {
+          connections: [{ id: 'conn-1', name: 'prod', host: 'db.internal', port: 5432, database: 'app', username: 'app_ro' }],
+        });
       }
       if (req.method === 'POST' && url === '/billing/checkout') {
         lastCheckoutBody = body;
@@ -194,10 +196,21 @@ test('deselecting a workspace goes back to the picker, with no way back was the 
 test('the real connectionSource is consulted by the core connections list once signed in', async () => {
   const res = await core('/api/connections');
   assert.equal(res.status, 200);
-  // Empty from the fake cloud, but the important thing is the call reached
-  // it without error — proves the M1 extension point is actually wired now,
-  // not just registered with a no-op.
-  assert.deepEqual((await res.json()).connections, []);
+  // The one connection the fake cloud reports for this workspace, merged
+  // in — proves the M1 extension point is actually wired now, not just
+  // registered with a no-op.
+  const { connections } = await res.json();
+  assert.equal(connections.length, 1);
+  assert.equal(connections[0].name, 'prod');
+});
+
+test('GET /api/cloud/workspaces/:id/connections proxies the shared-connections list (previously not exposed at all)', async () => {
+  const res = await core('/api/cloud/workspaces/11111111-1111-1111-1111-111111111111/connections');
+  assert.equal(res.status, 200);
+  const { connections } = await res.json();
+  assert.equal(connections.length, 1);
+  assert.equal(connections[0].name, 'prod');
+  assert.equal(connections[0].host, 'db.internal');
 });
 
 test('billing checkout/portal/seats all proxy through to the cloud once signed in', async () => {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Cloud as CloudIcon, CreditCard, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
+import { ArrowLeft, Cloud as CloudIcon, CreditCard, Database, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -12,7 +12,7 @@ import { CopyButton } from '@/components/CopyButton'
 import {
   getCloudStatus, signIn, signOut, listCloudWorkspaces, createCloudWorkspace,
   selectCloudWorkspace, deselectCloudWorkspace, listCloudMembers, setCloudMemberLevel, createCloudInvite,
-  getCloudMe, startCheckout, openBillingPortal, setWorkspaceSeats,
+  getCloudMe, startCheckout, openBillingPortal, setWorkspaceSeats, listCloudConnections,
   type AccessLevel, type CloudMember, type PlanKey,
 } from '@/lib/cloudApi'
 import { listConnections, provisionRole } from '@/lib/api'
@@ -240,6 +240,7 @@ function WorkspaceDetail({ workspaceId, myEmail, checkoutPending }: { workspaceI
         All workspaces
       </Button>
       <WorkspaceBillingPanel workspaceId={workspaceId} canManage={canManage} checkoutPending={checkoutPending} />
+      <SharedConnections workspaceId={workspaceId} />
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-muted-foreground">Members</h2>
         <Button size="sm" variant="outline" onClick={() => invite.mutate()} disabled={invite.isPending}>
@@ -283,6 +284,47 @@ function WorkspaceDetail({ workspaceId, myEmail, checkoutPending }: { workspaceI
 
       {provisioningFor && (
         <ProvisionDialog member={provisioningFor} onClose={() => setProvisioningFor(null)} />
+      )}
+    </div>
+  )
+}
+
+// Sharing a connection into a workspace is implicit, not a button anywhere:
+// whichever workspace is selected when you create/edit a connection gets it
+// pushed automatically (src/cloud/sync.js's syncAdapter). This list is the
+// missing other half — actually seeing the result of that, which previously
+// had no UI at all even though pglens-cloud has had the endpoint since M3.
+function SharedConnections({ workspaceId }: { workspaceId: string }) {
+  const connections = useQuery({
+    queryKey: ['cloud-connections', workspaceId],
+    queryFn: ({ signal }) => listCloudConnections(workspaceId, signal),
+  })
+
+  return (
+    <div>
+      <h2 className="text-sm font-medium text-muted-foreground">Connections</h2>
+      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+        Shared automatically — whichever connection is active when you create or edit it, while this
+        workspace is open, gets pushed here for every member.
+      </p>
+      {connections.isLoading && <Loading>Loading connections…</Loading>}
+      {connections.data && connections.data.connections.length === 0 && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          None yet. Open a connection while this workspace is selected to share it.
+        </p>
+      )}
+      {!!connections.data?.connections.length && (
+        <ul className="mt-2 divide-y divide-border/50 overflow-hidden rounded-lg border border-border bg-card">
+          {connections.data.connections.map((c) => (
+            <li key={c.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+              <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{c.name}</span>
+              <span className="shrink-0 truncate text-xs text-muted-foreground">
+                {c.username}@{c.host}:{c.port}/{c.database}
+              </span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )

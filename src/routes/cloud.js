@@ -155,6 +155,19 @@ router.post('/workspaces/deselect', (req, res) => {
   res.json({ ok: true });
 });
 
+// Which connections are actually shared into this workspace. Sharing itself
+// is implicit — whatever workspace is selected when a connection is
+// created/edited gets it pushed automatically (src/cloud/sync.js) — but
+// nothing previously let you see the *result* of that from the Cloud tab.
+// pglens-cloud has had this endpoint since M3; it just was never proxied.
+router.get('/workspaces/:id/connections', validate({ params: z.object({ id: z.string().uuid() }) }), async (req, res) => {
+  try {
+    res.json(await client.request(`/workspaces/${req.params.id}/connections`));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
 router.get('/workspaces/:id/members', validate({ params: z.object({ id: z.string().uuid() }) }), async (req, res) => {
   try {
     res.json(await client.request(`/workspaces/${req.params.id}/members`));
