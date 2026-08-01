@@ -25,6 +25,8 @@ let fakeCloud;
 let coreBase;
 let token;
 let jar = '';
+let lastCheckoutBody;
+let lastPortalBody;
 
 function respondJson(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -62,9 +64,11 @@ test.before(async () => {
         return respondJson(res, 200, { connections: [] });
       }
       if (req.method === 'POST' && url === '/billing/checkout') {
+        lastCheckoutBody = body;
         return respondJson(res, 200, { checkoutUrl: `https://test.checkout.dodopayments.com/session/fake?key=${body.key}` });
       }
       if (req.method === 'POST' && url === '/billing/portal') {
+        lastPortalBody = body;
         return respondJson(res, 200, { portalUrl: 'https://portal.dodopayments.com/fake' });
       }
       if (req.method === 'PATCH' && url === '/billing/workspaces/11111111-1111-1111-1111-111111111111/seats') {
@@ -187,21 +191,31 @@ test('the real connectionSource is consulted by the core connections list once s
 });
 
 test('billing checkout/portal/seats all proxy through to the cloud once signed in', async () => {
+  // Neither request sends a returnUrl — the client no longer builds one (it
+  // can't: the per-install token lives in an HttpOnly cookie). The server
+  // must construct it, embedding the token, so Dodo's cross-site redirect
+  // back can re-authenticate the same way the CLI's own printed URL does.
   const checkoutRes = await core('/api/cloud/billing/checkout', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ key: 'pro_monthly', returnUrl: 'http://127.0.0.1:9999/done' }),
+    body: JSON.stringify({ key: 'pro_monthly' }),
   });
   assert.equal(checkoutRes.status, 200);
   assert.match((await checkoutRes.json()).checkoutUrl, /pro_monthly/);
+  const checkoutReturn = new URL(lastCheckoutBody.returnUrl);
+  assert.equal(checkoutReturn.pathname, '/cloud');
+  assert.equal(checkoutReturn.searchParams.get('token'), token);
+  assert.equal(checkoutReturn.searchParams.get('checkout'), 'return');
 
   const portalRes = await core('/api/cloud/billing/portal', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ returnUrl: 'http://127.0.0.1:9999/done' }),
+    body: JSON.stringify({}),
   });
   assert.equal(portalRes.status, 200);
   assert.match((await portalRes.json()).portalUrl, /portal\.dodopayments\.com/);
+  const portalReturn = new URL(lastPortalBody.returnUrl);
+  assert.equal(portalReturn.searchParams.get('token'), token);
 
   const seatsRes = await core('/api/cloud/workspaces/11111111-1111-1111-1111-111111111111/seats', {
     method: 'PATCH',
@@ -210,6 +224,20 @@ test('billing checkout/portal/seats all proxy through to the cloud once signed i
   });
   assert.equal(seatsRes.status, 200);
   assert.equal((await seatsRes.json()).seatCount, 8);
+});
+
+test('the billing return URL actually re-authenticates a fresh, cookie-less request (the cross-site-redirect case)', async () => {
+  // Simulates exactly what broke live: Dodo's redirect back is a brand new
+  // top-level navigation with no pglens_token cookie attached. Fetch the
+  // returnUrl with no cookie jar and confirm the token-middleware's
+  // query-string path picks it up instead of 401ing.
+  const res = await fetch(coreBase + new URL(lastCheckoutBody.returnUrl).pathname + new URL(lastCheckoutBody.returnUrl).search, {
+    redirect: 'manual',
+  });
+  assert.equal(res.status, 302, 'should redirect (cookie set, token stripped from URL) rather than 401');
+  const location = new URL(res.headers.get('location'), coreBase);
+  assert.equal(location.searchParams.get('token'), null, 'token must not survive into the visible URL');
+  assert.equal(location.searchParams.get('checkout'), 'return', 'checkout=return must survive the strip');
 });
 
 test('POST /api/cloud/signout clears the session', async () => {

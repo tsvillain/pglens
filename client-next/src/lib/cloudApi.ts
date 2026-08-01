@@ -106,10 +106,15 @@ export type PlanKey = z.infer<typeof PlanKey>
 
 const CheckoutResponse = z.object({ checkoutUrl: z.string() })
 
-/** Opens Dodo's hosted checkout in the current window — this navigates away from the app. */
+/**
+ * Opens Dodo's hosted checkout in the current window — this navigates away
+ * from the app. The local server builds returnUrl itself (routes/cloud.js),
+ * embedding the per-install token: Dodo's redirect back is a cross-site
+ * top-level navigation, so the SameSite=Strict pglens_token cookie won't
+ * ride along on its own, same as the OAuth callback had to account for.
+ */
 export async function startCheckout(params: { key: PlanKey; workspaceId?: string; seatCount?: number }) {
-  const returnUrl = `${window.location.origin}/cloud?checkout=return`
-  const { checkoutUrl } = await postJson('/api/cloud/billing/checkout', { ...params, returnUrl }, CheckoutResponse)
+  const { checkoutUrl } = await postJson('/api/cloud/billing/checkout', params, CheckoutResponse)
   window.location.href = checkoutUrl
 }
 
@@ -117,8 +122,7 @@ const PortalResponse = z.object({ portalUrl: z.string() })
 
 /** Opens Dodo's hosted customer portal (manage payment method / cancel) in the current window. */
 export async function openBillingPortal(workspaceId?: string) {
-  const returnUrl = `${window.location.origin}/cloud?checkout=return`
-  const { portalUrl } = await postJson('/api/cloud/billing/portal', { workspaceId, returnUrl }, PortalResponse)
+  const { portalUrl } = await postJson('/api/cloud/billing/portal', { workspaceId }, PortalResponse)
   window.location.href = portalUrl
 }
 

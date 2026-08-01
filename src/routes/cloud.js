@@ -21,6 +21,7 @@ const client = require('../cloud/client');
 const { validate } = require('../http/validate');
 const { sendError } = require('../http/errors');
 const logger = require('../log');
+const { getToken } = require('../auth');
 
 const router = express.Router();
 router.use(express.json());
@@ -32,6 +33,21 @@ const pendingStates = new Map();
 
 function callbackUrl(req) {
   return `${req.protocol}://${req.get('host')}/api/cloud/callback`;
+}
+
+// Dodo's redirect back to us after checkout/portal is, same as the OAuth
+// callback above, a cross-site top-level navigation — the SameSite=Strict
+// pglens_token cookie won't ride along. Unlike the OAuth callback, /cloud
+// itself can't be pulled out from behind the auth middleware (it's the
+// normal app route, not a one-off endpoint), so the token rides in the URL
+// instead — the same mechanism the CLI's own printed URL uses. The auth
+// middleware sets the cookie and strips `token` from the URL on arrival,
+// leaving `checkout=return` intact for the app to notice.
+function billingReturnUrl(req) {
+  const url = new URL('/cloud', `${req.protocol}://${req.get('host')}`);
+  url.searchParams.set('token', getToken());
+  url.searchParams.set('checkout', 'return');
+  return url.toString();
 }
 
 router.post('/signin', (req, res) => {
@@ -195,22 +211,23 @@ const CheckoutBody = z.object({
   key: z.enum(['pro_monthly', 'pro_yearly', 'team']),
   workspaceId: z.string().uuid().optional(),
   seatCount: z.number().int().positive().optional(),
-  returnUrl: z.string().url(),
 });
 
 router.post('/billing/checkout', validate({ body: CheckoutBody }), async (req, res) => {
   try {
-    res.json(await client.request('/billing/checkout', { method: 'POST', body: req.body }));
+    const body = { ...req.body, returnUrl: billingReturnUrl(req) };
+    res.json(await client.request('/billing/checkout', { method: 'POST', body }));
   } catch (err) {
     handleCloudError(res, err);
   }
 });
 
-const PortalBody = z.object({ workspaceId: z.string().uuid().optional(), returnUrl: z.string().url() });
+const PortalBody = z.object({ workspaceId: z.string().uuid().optional() });
 
 router.post('/billing/portal', validate({ body: PortalBody }), async (req, res) => {
   try {
-    res.json(await client.request('/billing/portal', { method: 'POST', body: req.body }));
+    const body = { ...req.body, returnUrl: billingReturnUrl(req) };
+    res.json(await client.request('/billing/portal', { method: 'POST', body }));
   } catch (err) {
     handleCloudError(res, err);
   }
