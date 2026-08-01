@@ -12,7 +12,7 @@ import { CopyButton } from '@/components/CopyButton'
 import {
   getCloudStatus, signIn, signOut, listCloudWorkspaces, createCloudWorkspace,
   selectCloudWorkspace, deselectCloudWorkspace, listCloudMembers, setCloudMemberLevel, createCloudInvite,
-  getCloudMe, startCheckout, openBillingPortal, setWorkspaceSeats, listCloudConnections,
+  startCheckout, openBillingPortal, setWorkspaceSeats, listCloudConnections,
   type AccessLevel, type CloudMember, type PlanKey,
 } from '@/lib/cloudApi'
 import { listConnections, provisionRole } from '@/lib/api'
@@ -91,61 +91,11 @@ export function Cloud() {
           Sign out
         </Button>
       </header>
-      <PersonalPlanPanel checkoutPending={checkoutPending} />
       <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
         {status.data.workspaceId
           ? <WorkspaceDetail workspaceId={status.data.workspaceId} myEmail={status.data.email!} checkoutPending={checkoutPending} />
           : <WorkspacePicker />}
       </div>
-    </div>
-  )
-}
-
-function PersonalPlanPanel({ checkoutPending }: { checkoutPending: boolean }) {
-  const me = useQuery({
-    queryKey: ['cloud-me'],
-    queryFn: ({ signal }) => getCloudMe(signal),
-    refetchInterval: checkoutPending ? 1500 : false,
-  })
-  const checkout = useMutation({ mutationFn: (key: PlanKey) => startCheckout({ key }) })
-  const portal = useMutation({ mutationFn: () => openBillingPortal() })
-
-  const user = me.data?.user
-  if (!user) return null
-
-  return (
-    <div className="border-b border-border bg-muted/30 px-6 py-2">
-      <div className="flex items-center gap-3 text-xs">
-        <span className="text-muted-foreground">Your plan</span>
-        <span className="font-medium">{user.plan === 'pro' ? 'Pro' : 'Free'}</span>
-        {user.plan !== 'free' && user.billing_status !== 'active' && (
-          <span className="text-destructive">({user.billing_status})</span>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          {user.plan === 'free' ? (
-            <>
-              <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate('pro_monthly')} disabled={checkout.isPending}>
-                {checkout.isPending && <Spinner aria-label="Starting checkout" />}
-                Upgrade to Pro — $9/mo
-              </Button>
-              <Button size="sm" variant="ghost" className="h-7" onClick={() => checkout.mutate('pro_yearly')} disabled={checkout.isPending}>
-                $90/yr
-              </Button>
-            </>
-          ) : (
-            <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
-              {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
-              Manage billing
-            </Button>
-          )}
-        </div>
-      </div>
-      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-        Personal — cross-device sync &amp; hosted AI credits for you. Independent of any workspace's own
-        plan below.
-      </p>
-      {checkout.error && <p className="mt-1 text-xs text-destructive">{(checkout.error as Error).message}</p>}
-      {portal.error && <p className="mt-1 text-xs text-destructive">{(portal.error as Error).message}</p>}
     </div>
   )
 }
@@ -174,7 +124,7 @@ function WorkspacePicker() {
   })
 
   return (
-    <div className="max-w-sm space-y-4">
+    <div className="max-w-md space-y-4">
       <div className="flex gap-2">
         <Input
           value={name}
@@ -192,11 +142,18 @@ function WorkspacePicker() {
       {!!workspaces.data?.workspaces.length && (
         <ul className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border bg-card">
           {workspaces.data.workspaces.map((w) => (
-            <li key={w.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
-              {w.name}
-              <Button size="sm" variant="outline" onClick={() => select.mutate(w.id)} disabled={select.isPending}>
-                Open
-              </Button>
+            <li key={w.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
+              <span className="min-w-0 truncate">{w.name}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                  w.plan === 'pro' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+                }`}>
+                  {w.plan === 'pro' ? `Pro · ${w.seat_count} ${w.seat_count === 1 ? 'seat' : 'seats'}` : 'Free'}
+                </span>
+                <Button size="sm" variant="outline" onClick={() => select.mutate(w.id)} disabled={select.isPending}>
+                  Open
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
@@ -330,6 +287,8 @@ function SharedConnections({ workspaceId }: { workspaceId: string }) {
   )
 }
 
+// The workspace is the only thing that has a plan — one line, no separate
+// "your plan" concept anywhere. Solo users are just a one-seat workspace.
 function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { workspaceId: string; canManage: boolean; checkoutPending: boolean }) {
   const workspaces = useQuery({
     queryKey: ['cloud-workspaces'],
@@ -337,9 +296,11 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
     refetchInterval: checkoutPending ? 1500 : false,
   })
   const workspace = workspaces.data?.workspaces.find((w) => w.id === workspaceId)
-  const [newSeatCount, setNewSeatCount] = useState(5)
+  const [newSeatCount, setNewSeatCount] = useState(1)
 
-  const checkout = useMutation({ mutationFn: () => startCheckout({ key: 'team', workspaceId, seatCount: newSeatCount }) })
+  const checkout = useMutation({
+    mutationFn: (key: PlanKey) => startCheckout({ key, workspaceId, seatCount: newSeatCount }),
+  })
   const portal = useMutation({ mutationFn: () => openBillingPortal(workspaceId) })
 
   if (!workspace) return null
@@ -347,9 +308,13 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
   return (
     <div className="rounded-lg border border-border bg-muted/30 px-4 py-2.5">
       <div className="flex items-center gap-3 text-xs">
-        <span className="text-muted-foreground">This workspace's plan</span>
-        <span className="font-medium">{workspace.plan === 'team' ? 'Team' : 'Free'}</span>
-        {workspace.plan === 'team' && <span className="text-muted-foreground">· {workspace.seat_count} seats</span>}
+        <span className="text-muted-foreground">Plan</span>
+        <span className="font-medium">{workspace.plan === 'pro' ? 'Pro' : 'Free'}</span>
+        {workspace.plan === 'pro' && (
+          <span className="text-muted-foreground">
+            · {workspace.seat_count} {workspace.seat_count === 1 ? 'seat' : 'seats'}
+          </span>
+        )}
         {workspace.plan !== 'free' && workspace.billing_status !== 'active' && (
           <span className="text-destructive">({workspace.billing_status})</span>
         )}
@@ -365,10 +330,13 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
                   className="h-7 w-14 text-xs"
                   aria-label="Seats to purchase"
                 />
-                <span className="text-muted-foreground">seats</span>
-                <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
+                <span className="text-muted-foreground">{newSeatCount === 1 ? 'seat' : 'seats'}</span>
+                <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate('pro_monthly')} disabled={checkout.isPending}>
                   {checkout.isPending && <Spinner aria-label="Starting checkout" />}
-                  Upgrade to Team — ${newSeatCount * 9}/mo
+                  Upgrade to Pro — ${newSeatCount * 9}/mo
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7" onClick={() => checkout.mutate('pro_yearly')} disabled={checkout.isPending}>
+                  ${newSeatCount * 90}/yr
                 </Button>
               </>
             ) : (
@@ -384,11 +352,12 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
         )}
       </div>
       <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-        Shared by everyone here — connections, access levels, audit log. Independent of your personal plan
-        above; upgrading one doesn't change the other.
+        {workspace.plan === 'pro'
+          ? 'Unlimited connections, cross-device sync, shared access with real Postgres roles, 90-day audit log.'
+          : 'Free: 1 member, 1 synced connection. Pro adds unlimited connections, sync, teammates (one seat each), access levels, and the audit log.'}
       </p>
       {!canManage && (
-        <p className="mt-1 text-[11px] text-muted-foreground">Only an owner or admin can change this workspace's plan.</p>
+        <p className="mt-1 text-[11px] text-muted-foreground">Only an owner or admin can change the plan.</p>
       )}
       {checkout.error && <p className="mt-1 text-xs text-destructive">{(checkout.error as Error).message}</p>}
       {portal.error && <p className="mt-1 text-xs text-destructive">{(portal.error as Error).message}</p>}

@@ -31,25 +31,14 @@ export function signOut() {
 
 const BillingStatus = z.enum(['active', 'on_hold', 'cancelled'])
 
-const CloudUserSchema = z.object({
-  id: z.string(),
-  email: z.string(),
-  created_at: z.string(),
-  plan: z.enum(['free', 'pro']),
-  billing_status: BillingStatus,
-})
-export type CloudUser = z.infer<typeof CloudUserSchema>
-
-export function getCloudMe(signal?: AbortSignal) {
-  return api('/api/cloud/me', z.object({ user: CloudUserSchema }), { signal })
-}
-
+// The workspace is the only billing subject — users have no plan of their
+// own. A solo user is a one-member workspace on the paid plan.
 const WorkspaceSchema = z.object({
   id: z.string(),
   name: z.string(),
   owner_user_id: z.string(),
   created_at: z.string(),
-  plan: z.enum(['free', 'team']),
+  plan: z.enum(['free', 'pro']),
   billing_status: BillingStatus,
   seat_count: z.number(),
 })
@@ -119,7 +108,7 @@ export function createCloudInvite(workspaceId: string) {
   return postJson(`/api/cloud/workspaces/${workspaceId}/invites`, {}, InviteResponse)
 }
 
-export const PlanKey = z.enum(['pro_monthly', 'pro_yearly', 'team'])
+export const PlanKey = z.enum(['pro_monthly', 'pro_yearly'])
 export type PlanKey = z.infer<typeof PlanKey>
 
 const CheckoutResponse = z.object({ checkoutUrl: z.string() })
@@ -131,7 +120,7 @@ const CheckoutResponse = z.object({ checkoutUrl: z.string() })
  * top-level navigation, so the SameSite=Strict pglens_token cookie won't
  * ride along on its own, same as the OAuth callback had to account for.
  */
-export async function startCheckout(params: { key: PlanKey; workspaceId?: string; seatCount?: number }) {
+export async function startCheckout(params: { key: PlanKey; workspaceId: string; seatCount?: number }) {
   const { checkoutUrl } = await postJson('/api/cloud/billing/checkout', params, CheckoutResponse)
   window.location.href = checkoutUrl
 }
@@ -139,7 +128,7 @@ export async function startCheckout(params: { key: PlanKey; workspaceId?: string
 const PortalResponse = z.object({ portalUrl: z.string() })
 
 /** Opens Dodo's hosted customer portal (manage payment method / cancel) in the current window. */
-export async function openBillingPortal(workspaceId?: string) {
+export async function openBillingPortal(workspaceId: string) {
   const { portalUrl } = await postJson('/api/cloud/billing/portal', { workspaceId }, PortalResponse)
   window.location.href = portalUrl
 }

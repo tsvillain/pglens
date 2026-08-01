@@ -218,10 +218,11 @@ test('billing checkout/portal/seats all proxy through to the cloud once signed i
   // can't: the per-install token lives in an HttpOnly cookie). The server
   // must construct it, embedding the token, so Dodo's cross-site redirect
   // back can re-authenticate the same way the CLI's own printed URL does.
+  // The workspace is the only billing subject, so workspaceId is required.
   const checkoutRes = await core('/api/cloud/billing/checkout', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ key: 'pro_monthly' }),
+    body: JSON.stringify({ key: 'pro_monthly', workspaceId: '11111111-1111-1111-1111-111111111111' }),
   });
   assert.equal(checkoutRes.status, 200);
   assert.match((await checkoutRes.json()).checkoutUrl, /pro_monthly/);
@@ -233,7 +234,7 @@ test('billing checkout/portal/seats all proxy through to the cloud once signed i
   const portalRes = await core('/api/cloud/billing/portal', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ workspaceId: '11111111-1111-1111-1111-111111111111' }),
   });
   assert.equal(portalRes.status, 200);
   assert.match((await portalRes.json()).portalUrl, /portal\.dodopayments\.com/);

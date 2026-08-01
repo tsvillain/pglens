@@ -113,17 +113,6 @@ function handleCloudError(res, err) {
   throw err;
 }
 
-// The signed-in user's cloud profile (plan/billing_status) — separate from
-// GET /status above, which only reflects local session state and never
-// calls the cloud.
-router.get('/me', async (req, res) => {
-  try {
-    res.json(await client.request('/auth/me'));
-  } catch (err) {
-    handleCloudError(res, err);
-  }
-});
-
 router.get('/workspaces', async (req, res) => {
   try {
     res.json(await client.request('/workspaces'));
@@ -229,9 +218,11 @@ router.get(
 // everything else in this file. checkout/portal return a hosted URL for the
 // renderer to navigate to; pglens core never touches card data or Dodo
 // credentials directly.
+// The workspace is the only billing subject (one plan ladder, per-seat) —
+// checkout and portal are always against a specific workspace.
 const CheckoutBody = z.object({
-  key: z.enum(['pro_monthly', 'pro_yearly', 'team']),
-  workspaceId: z.string().uuid().optional(),
+  key: z.enum(['pro_monthly', 'pro_yearly']),
+  workspaceId: z.string().uuid(),
   seatCount: z.number().int().positive().optional(),
 });
 
@@ -244,7 +235,7 @@ router.post('/billing/checkout', validate({ body: CheckoutBody }), async (req, r
   }
 });
 
-const PortalBody = z.object({ workspaceId: z.string().uuid().optional() });
+const PortalBody = z.object({ workspaceId: z.string().uuid() });
 
 router.post('/billing/portal', validate({ body: PortalBody }), async (req, res) => {
   try {
