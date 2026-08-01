@@ -24,6 +24,13 @@ const {
 } = require('./secrets');
 const { listExternalConnections } = require('../extensions/connectionSource');
 const { notify } = require('../extensions/syncAdapter');
+const { openTunnel } = require('./sshTunnel');
+const { generateRdsAuthToken } = require('./rdsIam');
+
+// SSH key/passphrase live in the keychain like the DB password, just under
+// a distinct account key — secrets.js is keyed by an opaque string, and
+// nothing requires that string to be the bare connection id.
+const sshSecretAccount = (id) => `${id}:ssh`;
 
 // In-memory: id -> { pool, name, meta, sslMode, schema }
 //   meta = { protocol, username, host, port, database, params, password? (in mem only) }
@@ -211,16 +218,59 @@ function getSslModeRecommendation(error, currentSslMode) {
 }
 
 /**
- * Test + open a postgres pool against the given metadata.
+ * Test + open a postgres pool against the given metadata. When `sshTunnel`
+ * is given ({host, port, username, privateKey, passphrase}), opens that
+ * first and connects the pool through it instead of directly —
+ * the target only needs to be reachable *from the bastion*, never from this
+ * machine. Returns the tunnel handle too, so the caller can close it
+ * alongside the pool.
+ *
+ * When `iamAuth` is given ({region?, profile?}), a short-lived AWS RDS IAM
+ * token replaces the password — generated against the *real* RDS endpoint
+ * (meta.host/meta.port), since the token is bound to the address AWS
+ * actually sees the connection arrive at, before any tunnel substitutes a
+ * local address for the actual TCP connection.
  */
-async function openPool(meta, password, sslMode) {
-  const url = buildConnectionUrl(meta, password);
-  const sql = postgres(url, poolConfig(sslMode));
-  await sql`SELECT NOW()`;
-  return sql;
+async function openPool(meta, password, sslMode, sshTunnel, iamAuth) {
+  let tunnel = null;
+  let connectMeta = meta;
+  let connectPassword = password;
+
+  if (iamAuth) {
+    connectPassword = await generateRdsAuthToken({
+      hostname: meta.host,
+      port: meta.port,
+      username: meta.username,
+      region: iamAuth.region,
+      profile: iamAuth.profile,
+    });
+  }
+
+  if (sshTunnel) {
+    tunnel = await openTunnel({
+      host: sshTunnel.host,
+      port: sshTunnel.port || 22,
+      username: sshTunnel.username,
+      privateKey: sshTunnel.privateKey,
+      passphrase: sshTunnel.passphrase,
+      dstHost: meta.host,
+      dstPort: meta.port,
+    });
+    connectMeta = { ...meta, host: '127.0.0.1', port: tunnel.localPort };
+  }
+
+  try {
+    const url = buildConnectionUrl(connectMeta, connectPassword);
+    const sql = postgres(url, poolConfig(sslMode));
+    await sql`SELECT NOW()`;
+    return { sql, tunnel };
+  } catch (err) {
+    tunnel?.close();
+    throw err;
+  }
 }
 
-async function createPool(connectionString, sslMode = 'prefer', customName = null, schema = 'public') {
+async function createPool(connectionString, sslMode = 'prefer', customName = null, schema = 'public', sshTunnel = null, iamAuth = null) {
   const meta = parseConnectionUrl(connectionString);
   if (!meta) {
     throw new Error('Could not parse connection string');
@@ -228,8 +278,14 @@ async function createPool(connectionString, sslMode = 'prefer', customName = nul
   const password = meta.password;
   delete meta.password;
 
+  // AWS enforces SSL on IAM-authenticated connections — catch it here with
+  // a clear message rather than a confusing failure from Postgres/RDS.
+  if (iamAuth && sslMode === 'disable') {
+    throw new Error("RDS IAM authentication requires SSL — set sslMode to 'require' or stronger");
+  }
+
   try {
-    const sql = await openPool(meta, password, sslMode);
+    const { sql, tunnel } = await openPool(meta, password, sslMode, sshTunnel, iamAuth);
     logger.info({ host: meta.host, database: meta.database }, 'connected');
 
     // Deduplicate against existing connections by (host, port, database, username).
@@ -238,6 +294,7 @@ async function createPool(connectionString, sslMode = 'prefer', customName = nul
       if (m.host === meta.host && m.port === meta.port &&
           m.database === meta.database && m.username === meta.username) {
         if (customName && customName !== existingConn.name) existingConn.name = customName;
+        tunnel?.close();
         sql.end();
         return { id: existingId, name: existingConn.name, reused: true };
       }
@@ -245,9 +302,21 @@ async function createPool(connectionString, sslMode = 'prefer', customName = nul
 
     const id = crypto.randomUUID();
     const name = customName || meta.database || 'postgres';
-    connections.set(id, { pool: sql, name, meta, sslMode, schema: schema || 'public' });
+    const sshMeta = sshTunnel ? { host: sshTunnel.host, port: sshTunnel.port || 22, username: sshTunnel.username } : null;
+    connections.set(id, {
+      pool: sql, tunnel, name, meta, sslMode, schema: schema || 'public',
+      sshTunnel: sshMeta, iamAuth: iamAuth || null,
+    });
 
-    await setPassword(id, password);
+    // IAM tokens are 15-minute-lived and regenerated fresh on every connect/
+    // restore (openPool, above) — nothing meaningful to store as a password.
+    if (!iamAuth) await setPassword(id, password);
+    if (sshTunnel) {
+      await setPassword(sshSecretAccount(id), JSON.stringify({
+        privateKey: sshTunnel.privateKey,
+        passphrase: sshTunnel.passphrase,
+      }));
+    }
     saveConnectionsToFile();
     return { id, name };
   } catch (err) {
@@ -258,7 +327,7 @@ async function createPool(connectionString, sslMode = 'prefer', customName = nul
   }
 }
 
-async function updateConnection(id, connectionString, sslMode, name, schema = 'public') {
+async function updateConnection(id, connectionString, sslMode, name, schema = 'public', sshTunnel = null, iamAuth = null) {
   const existing = connections.get(id);
   if (!existing) throw new Error('Connection not found');
 
@@ -267,21 +336,43 @@ async function updateConnection(id, connectionString, sslMode, name, schema = 'p
   let password = meta.password;
   delete meta.password;
 
+  if (iamAuth && sslMode === 'disable') {
+    throw new Error("RDS IAM authentication requires SSL — set sslMode to 'require' or stronger");
+  }
+
   // "***" is the masked-password sentinel surfaced by maskedConnectionUrl().
   // When the client submits an unmodified URL/Params edit, swap it for the
-  // real keychain entry so the connection re-opens successfully.
-  if (password === '***') {
+  // real keychain entry so the connection re-opens successfully. Meaningless
+  // (and skipped) when IAM auth generates the password fresh instead.
+  if (password === '***' && !iamAuth) {
     password = await getPassword(id);
   }
 
-  const sql = await openPool(meta, password, sslMode);
+  const { sql, tunnel } = await openPool(meta, password, sslMode, sshTunnel, iamAuth);
   // Tear down transaction sessions on the old backend before swapping pools.
   await notifyClosing(id);
   await existing.pool.end();
+  existing.tunnel?.close();
 
   const finalName = name || meta.database || existing.name;
-  connections.set(id, { pool: sql, name: finalName, meta, sslMode, schema: schema || 'public' });
-  await setPassword(id, password);
+  const sshMeta = sshTunnel ? { host: sshTunnel.host, port: sshTunnel.port || 22, username: sshTunnel.username } : null;
+  connections.set(id, {
+    pool: sql, tunnel, name: finalName, meta, sslMode, schema: schema || 'public',
+    sshTunnel: sshMeta, iamAuth: iamAuth || null,
+  });
+  if (iamAuth) {
+    await deletePassword(id);
+  } else {
+    await setPassword(id, password);
+  }
+  if (sshTunnel) {
+    await setPassword(sshSecretAccount(id), JSON.stringify({
+      privateKey: sshTunnel.privateKey,
+      passphrase: sshTunnel.passphrase,
+    }));
+  } else {
+    await deletePassword(sshSecretAccount(id));
+  }
   saveConnectionsToFile();
   logger.info({ id, host: meta.host, database: meta.database }, 'connection updated');
   return { id, name: finalName };
@@ -333,6 +424,9 @@ async function getConnections() {
       connectionString: maskedConnectionUrl({ ...conn.meta, password: true }),
       sslMode: conn.sslMode,
       schema: conn.schema || 'public',
+      // Host/username only — never the key/passphrase, which stay in the keychain.
+      sshTunnel: conn.sshTunnel || null,
+      iamAuth: conn.iamAuth || null,
     });
   }
   // Connections from a registered external source (extensions/connectionSource.js).
@@ -354,13 +448,16 @@ async function closePool(connectionId) {
       // Roll back + release any reserved backends first, or pool.end() blocks.
       await notifyClosing(connectionId);
       await conn.pool.end();
+      conn.tunnel?.close();
       connections.delete(connectionId);
       await deletePassword(connectionId);
+      await deletePassword(sshSecretAccount(connectionId));
       saveConnectionsToFile();
     }
   } else {
     await notifyClosing(null);
-    await Promise.all([...connections.values()].map(c => c.pool.end()));
+    await Promise.all([...connections.values()].map((c) => c.pool.end()));
+    for (const c of connections.values()) c.tunnel?.close();
     connections.clear();
   }
 }
@@ -376,6 +473,8 @@ function saveConnectionsToFile() {
         meta: conn.meta,
         sslMode: conn.sslMode,
         schema: conn.schema || 'public',
+        sshTunnel: conn.sshTunnel || undefined,
+        iamAuth: conn.iamAuth || undefined,
       });
     }
     fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
@@ -440,13 +539,25 @@ async function restoreConnections() {
   for (const rec of migrated) {
     try {
       const password = await getPassword(rec.id);
-      const sql = await openPool(rec.meta, password, rec.sslMode);
+      let sshTunnel = null;
+      if (rec.sshTunnel) {
+        const secret = await getPassword(sshSecretAccount(rec.id));
+        const { privateKey, passphrase } = secret ? JSON.parse(secret) : {};
+        sshTunnel = { ...rec.sshTunnel, privateKey, passphrase };
+      }
+      // No stored secret to fetch for IAM auth — openPool regenerates a
+      // fresh token every time (the old one would be expired anyway; RDS
+      // IAM tokens are 15-minute-lived).
+      const { sql, tunnel } = await openPool(rec.meta, password, rec.sslMode, sshTunnel, rec.iamAuth);
       connections.set(rec.id, {
         pool: sql,
+        tunnel,
         name: rec.name,
         meta: rec.meta,
         sslMode: rec.sslMode,
         schema: rec.schema || 'public',
+        sshTunnel: rec.sshTunnel || null,
+        iamAuth: rec.iamAuth || null,
       });
       logger.info({ id: rec.id, name: rec.name }, 'restored connection');
     } catch (err) {

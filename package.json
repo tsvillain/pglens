@@ -57,6 +57,7 @@
   "homepage": "https://github.com/tsvillain/pglens#readme",
   "license": "MIT",
   "dependencies": {
+    "@aws-sdk/rds-signer": "^3.1098.0",
     "commander": "^11.1.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -66,6 +67,7 @@
     "pino-roll": "^3.1.0",
     "postgres": "^3.4.3",
     "sql-formatter": "^15.8.0",
+    "ssh2": "^1.17.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

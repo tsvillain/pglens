@@ -52,11 +52,33 @@ const SslModeSchema = z.enum(['prefer', 'require', 'disable', 'verify-ca', 'veri
 const SchemaNameSchema = z.string().min(1).max(255).refine(s => !s.includes('\0'), 'null byte');
 const TableNameSchema = z.string().min(1).max(255).refine(s => !s.includes('\0'), 'null byte');
 
+// Connect through a bastion host instead of directly.
+// privateKey/passphrase are write-only — never echoed back (see
+// getConnections(), which only ever returns host/port/username).
+const SshTunnelSchema = z.object({
+  host: z.string().min(1),
+  port: z.number().int().positive().optional(),
+  username: z.string().min(1),
+  privateKey: z.string().min(1),
+  passphrase: z.string().optional(),
+});
+
+// AWS RDS IAM auth — a short-lived signed token replaces the password.
+// `region`/`profile` aren't secret, just AWS SDK config; the actual
+// credentials come from the AWS SDK's own credential chain, never from
+// pglens. UNVERIFIED LIVE — see src/db/rdsIam.js's module comment.
+const IamAuthSchema = z.object({
+  region: z.string().min(1).optional(),
+  profile: z.string().min(1).optional(),
+});
+
 const ConnectBodySchema = z.object({
   url: z.string().min(1),
   sslMode: SslModeSchema.optional(),
   name: z.string().optional(),
   schema: SchemaNameSchema.optional(),
+  sshTunnel: SshTunnelSchema.optional(),
+  iamAuth: IamAuthSchema.optional(),
 });
 
 const ConnectionIdParam = z.object({ id: z.string().min(1) });
@@ -117,9 +139,9 @@ const requireConnection = (req, res, next) => {
 // ---- Connect / disconnect / status -----------------------------------------
 
 router.post('/connect', validate({ body: ConnectBodySchema }), async (req, res) => {
-  const { url, sslMode, name, schema } = req.body;
+  const { url, sslMode, name, schema, sshTunnel, iamAuth } = req.body;
   try {
-    const result = await createPool(url, sslMode || 'prefer', name, schema || 'public');
+    const result = await createPool(url, sslMode || 'prefer', name, schema || 'public', sshTunnel, iamAuth);
     res.json({ connected: true, connectionId: result.id, name: result.name });
   } catch (err) {
     return sendError(res, 400, codes.DB_ERROR, err.message, { hint: err.sslHint });
@@ -133,7 +155,7 @@ router.put('/connections/:id',
       const result = await updateConnection(
         req.params.id, req.body.url,
         req.body.sslMode || 'prefer', req.body.name,
-        req.body.schema || 'public',
+        req.body.schema || 'public', req.body.sshTunnel, req.body.iamAuth,
       );
       res.json({ updated: true, connectionId: req.params.id, name: result.name });
     } catch (err) {

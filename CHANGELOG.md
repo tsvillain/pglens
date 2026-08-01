@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SSH tunnel connections.** Connect to a Postgres instance only reachable through a
+  bastion/jump host — host, port, username, and a private key (with optional passphrase).
+  pglens opens a real SSH session and forwards a local port through it; the target database
+  only needs to be reachable from the bastion, never directly. Single-hop, key-based auth only.
+  Key material is stored in the OS keychain, same as a connection password (`src/db/sshTunnel.js`).
+- **AWS RDS IAM authentication** _(unverified live — see note below)_. For RDS instances using
+  IAM database auth instead of a password, pglens generates a short-lived (15 min) signed token
+  and uses it as the password on each connection attempt, deferring entirely to the AWS SDK's own
+  credential provider chain. pglens never handles or stores AWS credentials (`src/db/rdsIam.js`).
+  - _Not yet exercised against a real RDS instance_ — built against the real, installed
+    `@aws-sdk/rds-signer` types and confirmed correct delegation to the AWS credential chain, but
+    without an AWS account available to test against live. Test it against a non-production
+    instance before relying on it.
+
 ## [3.5.0] - 2026-06-25
 
 Smart features. The five no-code "wow": schema diff & migration generator, an editable visual ERD,
