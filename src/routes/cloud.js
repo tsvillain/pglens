@@ -97,6 +97,17 @@ function handleCloudError(res, err) {
   throw err;
 }
 
+// The signed-in user's cloud profile (plan/billing_status) — separate from
+// GET /status above, which only reflects local session state and never
+// calls the cloud.
+router.get('/me', async (req, res) => {
+  try {
+    res.json(await client.request('/auth/me'));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
 router.get('/workspaces', async (req, res) => {
   try {
     res.json(await client.request('/workspaces'));
@@ -170,6 +181,54 @@ router.get(
     try {
       const qs = req.query.limit ? `?limit=${req.query.limit}` : '';
       res.json(await client.request(`/workspaces/${req.params.id}/audit${qs}`));
+    } catch (err) {
+      handleCloudError(res, err);
+    }
+  },
+);
+
+// Billing — thin proxy over pglens-cloud's /billing routes, same as
+// everything else in this file. checkout/portal return a hosted URL for the
+// renderer to navigate to; pglens core never touches card data or Dodo
+// credentials directly.
+const CheckoutBody = z.object({
+  key: z.enum(['pro_monthly', 'pro_yearly', 'team']),
+  workspaceId: z.string().uuid().optional(),
+  seatCount: z.number().int().positive().optional(),
+  returnUrl: z.string().url(),
+});
+
+router.post('/billing/checkout', validate({ body: CheckoutBody }), async (req, res) => {
+  try {
+    res.json(await client.request('/billing/checkout', { method: 'POST', body: req.body }));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
+const PortalBody = z.object({ workspaceId: z.string().uuid().optional(), returnUrl: z.string().url() });
+
+router.post('/billing/portal', validate({ body: PortalBody }), async (req, res) => {
+  try {
+    res.json(await client.request('/billing/portal', { method: 'POST', body: req.body }));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
+router.patch(
+  '/workspaces/:id/seats',
+  validate({
+    params: z.object({ id: z.string().uuid() }),
+    body: z.object({ seatCount: z.number().int().min(1) }),
+  }),
+  async (req, res) => {
+    try {
+      const result = await client.request(`/billing/workspaces/${req.params.id}/seats`, {
+        method: 'PATCH',
+        body: { seatCount: req.body.seatCount },
+      });
+      res.json(result);
     } catch (err) {
       handleCloudError(res, err);
     }

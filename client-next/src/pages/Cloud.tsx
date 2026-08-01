@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Cloud as CloudIcon, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
+import { Cloud as CloudIcon, CreditCard, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -12,7 +12,8 @@ import { CopyButton } from '@/components/CopyButton'
 import {
   getCloudStatus, signIn, signOut, listCloudWorkspaces, createCloudWorkspace,
   selectCloudWorkspace, listCloudMembers, setCloudMemberLevel, createCloudInvite,
-  type AccessLevel, type CloudMember,
+  getCloudMe, startCheckout, openBillingPortal, setWorkspaceSeats,
+  type AccessLevel, type CloudMember, type PlanKey,
 } from '@/lib/cloudApi'
 import { listConnections, provisionRole } from '@/lib/api'
 import { useQuerySeedStore } from '@/store/querySeed'
@@ -20,8 +21,25 @@ import { useTabsStore } from '@/store/tabs'
 
 const LEVELS: AccessLevel[] = ['read', 'write', 'admin', 'owner']
 
+// Dodo redirects the browser back to returnUrl (?checkout=return) once a
+// hosted checkout/portal session finishes — win or lose, cancel or confirm.
+// The actual plan change only lands once the webhook does (async, usually
+// within a couple seconds), so a short poll window beats a single refetch
+// racing the webhook. Same "dumb and reliable" call as the sign-in poll below.
+function useCheckoutReturn() {
+  const [pending, setPending] = useState(() => new URLSearchParams(window.location.search).get('checkout') === 'return')
+  useEffect(() => {
+    if (!pending) return
+    window.history.replaceState({}, '', '/cloud')
+    const timeout = setTimeout(() => setPending(false), 20000)
+    return () => clearTimeout(timeout)
+  }, [pending])
+  return pending
+}
+
 export function Cloud() {
   const qc = useQueryClient()
+  const checkoutPending = useCheckoutReturn()
 
   const status = useQuery({
     queryKey: ['cloud-status'],
@@ -73,11 +91,54 @@ export function Cloud() {
           Sign out
         </Button>
       </header>
+      <PersonalPlanPanel checkoutPending={checkoutPending} />
       <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
         {status.data.workspaceId
-          ? <WorkspaceDetail workspaceId={status.data.workspaceId} myEmail={status.data.email!} />
+          ? <WorkspaceDetail workspaceId={status.data.workspaceId} myEmail={status.data.email!} checkoutPending={checkoutPending} />
           : <WorkspacePicker />}
       </div>
+    </div>
+  )
+}
+
+function PersonalPlanPanel({ checkoutPending }: { checkoutPending: boolean }) {
+  const me = useQuery({
+    queryKey: ['cloud-me'],
+    queryFn: ({ signal }) => getCloudMe(signal),
+    refetchInterval: checkoutPending ? 1500 : false,
+  })
+  const checkout = useMutation({ mutationFn: (key: PlanKey) => startCheckout({ key }) })
+  const portal = useMutation({ mutationFn: () => openBillingPortal() })
+
+  const user = me.data?.user
+  if (!user) return null
+
+  return (
+    <div className="flex items-center gap-3 border-b border-border bg-muted/30 px-6 py-2 text-xs">
+      <span className="font-medium">{user.plan === 'pro' ? 'Pro plan' : 'Free plan'}</span>
+      {user.plan !== 'free' && user.billing_status !== 'active' && (
+        <span className="text-destructive">({user.billing_status})</span>
+      )}
+      <div className="ml-auto flex items-center gap-2">
+        {user.plan === 'free' ? (
+          <>
+            <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate('pro_monthly')} disabled={checkout.isPending}>
+              {checkout.isPending && <Spinner aria-label="Starting checkout" />}
+              Upgrade to Pro — $9/mo
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7" onClick={() => checkout.mutate('pro_yearly')} disabled={checkout.isPending}>
+              $90/yr
+            </Button>
+          </>
+        ) : (
+          <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
+            {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
+            Manage billing
+          </Button>
+        )}
+      </div>
+      {checkout.error && <p className="text-destructive">{(checkout.error as Error).message}</p>}
+      {portal.error && <p className="text-destructive">{(portal.error as Error).message}</p>}
     </div>
   )
 }
@@ -137,7 +198,7 @@ function WorkspacePicker() {
   )
 }
 
-function WorkspaceDetail({ workspaceId, myEmail }: { workspaceId: string; myEmail: string }) {
+function WorkspaceDetail({ workspaceId, myEmail, checkoutPending }: { workspaceId: string; myEmail: string; checkoutPending: boolean }) {
   const qc = useQueryClient()
   const [provisioningFor, setProvisioningFor] = useState<CloudMember | null>(null)
 
@@ -162,6 +223,7 @@ function WorkspaceDetail({ workspaceId, myEmail }: { workspaceId: string; myEmai
 
   return (
     <div className="space-y-4">
+      <WorkspaceBillingPanel workspaceId={workspaceId} canManage={canManage} checkoutPending={checkoutPending} />
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-muted-foreground">Members</h2>
         <Button size="sm" variant="outline" onClick={() => invite.mutate()} disabled={invite.isPending}>
@@ -206,6 +268,81 @@ function WorkspaceDetail({ workspaceId, myEmail }: { workspaceId: string; myEmai
       {provisioningFor && (
         <ProvisionDialog member={provisioningFor} onClose={() => setProvisioningFor(null)} />
       )}
+    </div>
+  )
+}
+
+function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { workspaceId: string; canManage: boolean; checkoutPending: boolean }) {
+  const workspaces = useQuery({
+    queryKey: ['cloud-workspaces'],
+    queryFn: ({ signal }) => listCloudWorkspaces(signal),
+    refetchInterval: checkoutPending ? 1500 : false,
+  })
+  const workspace = workspaces.data?.workspaces.find((w) => w.id === workspaceId)
+
+  const checkout = useMutation({ mutationFn: () => startCheckout({ key: 'team', workspaceId }) })
+  const portal = useMutation({ mutationFn: () => openBillingPortal(workspaceId) })
+
+  if (!workspace) return null
+
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 px-4 py-2.5 text-xs">
+      <span className="font-medium">{workspace.plan === 'team' ? 'Team plan' : 'Free workspace'}</span>
+      {workspace.plan === 'team' && <span className="text-muted-foreground">{workspace.seat_count} seats</span>}
+      {workspace.plan !== 'free' && workspace.billing_status !== 'active' && (
+        <span className="text-destructive">({workspace.billing_status})</span>
+      )}
+      {canManage && (
+        <div className="ml-auto flex items-center gap-2">
+          {workspace.plan === 'free' ? (
+            <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
+              {checkout.isPending && <Spinner aria-label="Starting checkout" />}
+              Upgrade to Team — $49/mo
+            </Button>
+          ) : (
+            <>
+              <SeatEditor workspaceId={workspaceId} seatCount={workspace.seat_count} />
+              <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
+                {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
+                Manage billing
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+      {checkout.error && <p className="text-destructive">{(checkout.error as Error).message}</p>}
+      {portal.error && <p className="text-destructive">{(portal.error as Error).message}</p>}
+    </div>
+  )
+}
+
+function SeatEditor({ workspaceId, seatCount }: { workspaceId: string; seatCount: number }) {
+  const qc = useQueryClient()
+  const [value, setValue] = useState(seatCount)
+
+  const update = useMutation({
+    mutationFn: () => setWorkspaceSeats(workspaceId, value),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cloud-workspaces'] }),
+  })
+
+  return (
+    <div className="flex items-center gap-1">
+      <Input
+        type="number"
+        min={1}
+        value={value}
+        onChange={(e) => setValue(Math.max(1, Number(e.target.value) || 1))}
+        className="h-7 w-14 text-xs"
+      />
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7"
+        onClick={() => update.mutate()}
+        disabled={update.isPending || value === seatCount}
+      >
+        {update.isPending ? <Spinner aria-label="Updating seats" /> : 'Update seats'}
+      </Button>
     </div>
   )
 }

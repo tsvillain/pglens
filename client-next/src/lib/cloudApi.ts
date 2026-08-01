@@ -29,11 +29,29 @@ export function signOut() {
   return postJson('/api/cloud/signout', {}, z.object({ ok: z.boolean() }))
 }
 
+const BillingStatus = z.enum(['active', 'on_hold', 'cancelled'])
+
+const CloudUserSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  created_at: z.string(),
+  plan: z.enum(['free', 'pro']),
+  billing_status: BillingStatus,
+})
+export type CloudUser = z.infer<typeof CloudUserSchema>
+
+export function getCloudMe(signal?: AbortSignal) {
+  return api('/api/cloud/me', z.object({ user: CloudUserSchema }), { signal })
+}
+
 const WorkspaceSchema = z.object({
   id: z.string(),
   name: z.string(),
   owner_user_id: z.string(),
   created_at: z.string(),
+  plan: z.enum(['free', 'team']),
+  billing_status: BillingStatus,
+  seat_count: z.number(),
 })
 export type CloudWorkspace = z.infer<typeof WorkspaceSchema>
 
@@ -81,4 +99,29 @@ const InviteResponse = z.object({ inviteUrl: z.string() })
 
 export function createCloudInvite(workspaceId: string) {
   return postJson(`/api/cloud/workspaces/${workspaceId}/invites`, {}, InviteResponse)
+}
+
+export const PlanKey = z.enum(['pro_monthly', 'pro_yearly', 'team'])
+export type PlanKey = z.infer<typeof PlanKey>
+
+const CheckoutResponse = z.object({ checkoutUrl: z.string() })
+
+/** Opens Dodo's hosted checkout in the current window — this navigates away from the app. */
+export async function startCheckout(params: { key: PlanKey; workspaceId?: string; seatCount?: number }) {
+  const returnUrl = `${window.location.origin}/cloud?checkout=return`
+  const { checkoutUrl } = await postJson('/api/cloud/billing/checkout', { ...params, returnUrl }, CheckoutResponse)
+  window.location.href = checkoutUrl
+}
+
+const PortalResponse = z.object({ portalUrl: z.string() })
+
+/** Opens Dodo's hosted customer portal (manage payment method / cancel) in the current window. */
+export async function openBillingPortal(workspaceId?: string) {
+  const returnUrl = `${window.location.origin}/cloud?checkout=return`
+  const { portalUrl } = await postJson('/api/cloud/billing/portal', { workspaceId, returnUrl }, PortalResponse)
+  window.location.href = portalUrl
+}
+
+export function setWorkspaceSeats(workspaceId: string, seatCount: number) {
+  return postJson(`/api/cloud/workspaces/${workspaceId}/seats`, { seatCount }, z.object({ ok: z.boolean() }), 'PATCH')
 }

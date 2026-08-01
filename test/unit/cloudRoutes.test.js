@@ -61,6 +61,15 @@ test.before(async () => {
       if (req.method === 'GET' && url === '/workspaces/11111111-1111-1111-1111-111111111111/connections') {
         return respondJson(res, 200, { connections: [] });
       }
+      if (req.method === 'POST' && url === '/billing/checkout') {
+        return respondJson(res, 200, { checkoutUrl: `https://test.checkout.dodopayments.com/session/fake?key=${body.key}` });
+      }
+      if (req.method === 'POST' && url === '/billing/portal') {
+        return respondJson(res, 200, { portalUrl: 'https://portal.dodopayments.com/fake' });
+      }
+      if (req.method === 'PATCH' && url === '/billing/workspaces/11111111-1111-1111-1111-111111111111/seats') {
+        return respondJson(res, 200, { ok: true, seatCount: body.seatCount });
+      }
       return respondJson(res, 404, { error: { code: 'NOT_FOUND', message: `no fake route for ${req.method} ${url}` } });
     });
   });
@@ -175,6 +184,32 @@ test('the real connectionSource is consulted by the core connections list once s
   // it without error — proves the M1 extension point is actually wired now,
   // not just registered with a no-op.
   assert.deepEqual((await res.json()).connections, []);
+});
+
+test('billing checkout/portal/seats all proxy through to the cloud once signed in', async () => {
+  const checkoutRes = await core('/api/cloud/billing/checkout', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key: 'pro_monthly', returnUrl: 'http://127.0.0.1:9999/done' }),
+  });
+  assert.equal(checkoutRes.status, 200);
+  assert.match((await checkoutRes.json()).checkoutUrl, /pro_monthly/);
+
+  const portalRes = await core('/api/cloud/billing/portal', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ returnUrl: 'http://127.0.0.1:9999/done' }),
+  });
+  assert.equal(portalRes.status, 200);
+  assert.match((await portalRes.json()).portalUrl, /portal\.dodopayments\.com/);
+
+  const seatsRes = await core('/api/cloud/workspaces/11111111-1111-1111-1111-111111111111/seats', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ seatCount: 8 }),
+  });
+  assert.equal(seatsRes.status, 200);
+  assert.equal((await seatsRes.json()).seatCount, 8);
 });
 
 test('POST /api/cloud/signout clears the session', async () => {
