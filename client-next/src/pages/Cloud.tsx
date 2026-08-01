@@ -295,8 +295,9 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
     refetchInterval: checkoutPending ? 1500 : false,
   })
   const workspace = workspaces.data?.workspaces.find((w) => w.id === workspaceId)
+  const [newSeatCount, setNewSeatCount] = useState(5)
 
-  const checkout = useMutation({ mutationFn: () => startCheckout({ key: 'team', workspaceId }) })
+  const checkout = useMutation({ mutationFn: () => startCheckout({ key: 'team', workspaceId, seatCount: newSeatCount }) })
   const portal = useMutation({ mutationFn: () => openBillingPortal(workspaceId) })
 
   if (!workspace) return null
@@ -313,10 +314,21 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
         {canManage && (
           <div className="ml-auto flex items-center gap-2">
             {workspace.plan === 'free' ? (
-              <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
-                {checkout.isPending && <Spinner aria-label="Starting checkout" />}
-                Upgrade this workspace to Team — $49/mo
-              </Button>
+              <>
+                <Input
+                  type="number"
+                  min={1}
+                  value={newSeatCount}
+                  onChange={(e) => setNewSeatCount(Math.max(1, Number(e.target.value) || 1))}
+                  className="h-7 w-14 text-xs"
+                  aria-label="Seats to purchase"
+                />
+                <span className="text-muted-foreground">seats</span>
+                <Button size="sm" variant="outline" className="h-7" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
+                  {checkout.isPending && <Spinner aria-label="Starting checkout" />}
+                  Upgrade to Team — ${newSeatCount * 9}/mo
+                </Button>
+              </>
             ) : (
               <>
                 <SeatEditor workspaceId={workspaceId} seatCount={workspace.seat_count} />
