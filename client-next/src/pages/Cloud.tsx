@@ -13,6 +13,7 @@ import {
   getCloudStatus, signIn, signOut, listCloudWorkspaces, createCloudWorkspace,
   selectCloudWorkspace, deselectCloudWorkspace, listCloudMembers, setCloudMemberLevel, createCloudInvite,
   startCheckout, openBillingPortal, setWorkspaceSeats, listCloudConnections,
+  getAiCredits, startAiCreditsCheckout,
   type AccessLevel, type CloudMember, type PlanKey,
 } from '@/lib/cloudApi'
 import { listConnections, provisionRole } from '@/lib/api'
@@ -197,6 +198,7 @@ function WorkspaceDetail({ workspaceId, myEmail, checkoutPending }: { workspaceI
         All workspaces
       </Button>
       <WorkspaceBillingPanel workspaceId={workspaceId} canManage={canManage} checkoutPending={checkoutPending} />
+      <AiCreditsPanel workspaceId={workspaceId} checkoutPending={checkoutPending} />
       <SharedConnections workspaceId={workspaceId} />
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-muted-foreground">Members</h2>
@@ -392,6 +394,43 @@ function SeatEditor({ workspaceId, seatCount }: { workspaceId: string; seatCount
       >
         {update.isPending ? <Spinner aria-label="Updating seats" /> : 'Update seats'}
       </Button>
+    </div>
+  )
+}
+
+// Hosted AI mode is metered against pglens's own key — separate from BYOK
+// AI mode (the user's own key), which is unaffected, always free, and
+// never touches this at all. Renders nothing for a workspace with no
+// hosted-AI access (Free plan, or Pro but no credits ever granted yet).
+function AiCreditsPanel({ workspaceId, checkoutPending }: { workspaceId: string; checkoutPending: boolean }) {
+  const credits = useQuery({
+    queryKey: ['ai-credits', workspaceId],
+    queryFn: ({ signal }) => getAiCredits(workspaceId, signal),
+    refetchInterval: checkoutPending ? 1500 : false,
+  })
+  const buyMore = useMutation({ mutationFn: () => startAiCreditsCheckout(workspaceId) })
+
+  if (!credits.data?.hasAccess) return null
+  const low = credits.data.balance <= 0
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/30 px-4 py-2.5">
+      <div className="flex items-center gap-3 text-xs">
+        <span className="text-muted-foreground">Hosted AI credits</span>
+        <span className={low ? 'font-medium text-destructive' : 'font-medium'}>{credits.data.balance}</span>
+        <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" variant="outline" className="h-7" onClick={() => buyMore.mutate()} disabled={buyMore.isPending}>
+            {buyMore.isPending ? <Spinner aria-label="Starting checkout" /> : <CreditCard className="h-3.5 w-3.5" />}
+            Buy 500 more — $5
+          </Button>
+        </div>
+      </div>
+      <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+        {low
+          ? "Out of hosted credits — buy more, or switch to BYOK AI mode (your own key, free and unlimited)."
+          : "Metered NL→SQL against pglens's hosted model. BYOK AI mode is separate and always free."}
+      </p>
+      {buyMore.error && <p className="mt-1 text-xs text-destructive">{(buyMore.error as Error).message}</p>}
     </div>
   )
 }
