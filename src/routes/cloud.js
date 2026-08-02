@@ -265,6 +265,41 @@ router.patch(
   },
 );
 
+// In-app subscription dashboard — read status, cancel, or resume without
+// ever leaving pglens. "Manage billing" (the Dodo portal above) is kept
+// only for updating a payment method, which stays on Dodo's hosted page on
+// purpose (collecting card details ourselves would be a PCI problem with
+// no upside).
+router.get(
+  '/billing/subscription',
+  validate({ query: z.object({ workspaceId: z.string().uuid() }) }),
+  async (req, res) => {
+    try {
+      res.json(await client.request(`/billing/subscription?workspaceId=${req.query.workspaceId}`));
+    } catch (err) {
+      handleCloudError(res, err);
+    }
+  },
+);
+
+const WorkspaceIdBody = z.object({ workspaceId: z.string().uuid() });
+
+router.post('/billing/cancel', validate({ body: WorkspaceIdBody }), async (req, res) => {
+  try {
+    res.json(await client.request('/billing/cancel', { method: 'POST', body: req.body }));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
+router.post('/billing/resume', validate({ body: WorkspaceIdBody }), async (req, res) => {
+  try {
+    res.json(await client.request('/billing/resume', { method: 'POST', body: req.body }));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
 // Hosted AI mode — metered NL→SQL against pglens's own key. BYOK AI never
 // touches this proxy or pglens-cloud at all; it talks to the user's chosen
 // provider directly with the user's own key. This path only exists for the
@@ -289,6 +324,19 @@ router.get(
   async (req, res) => {
     try {
       res.json(await client.request(`/ai/credits?workspaceId=${req.query.workspaceId}`));
+    } catch (err) {
+      handleCloudError(res, err);
+    }
+  },
+);
+
+router.get(
+  '/ai/credits/history',
+  validate({ query: z.object({ workspaceId: z.string().uuid(), limit: z.coerce.number().int().positive().optional() }) }),
+  async (req, res) => {
+    try {
+      const qs = req.query.limit ? `&limit=${req.query.limit}` : '';
+      res.json(await client.request(`/ai/credits/history?workspaceId=${req.query.workspaceId}${qs}`));
     } catch (err) {
       handleCloudError(res, err);
     }

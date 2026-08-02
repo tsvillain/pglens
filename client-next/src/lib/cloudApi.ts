@@ -137,6 +137,36 @@ export function setWorkspaceSeats(workspaceId: string, seatCount: number) {
   return postJson(`/api/cloud/workspaces/${workspaceId}/seats`, { seatCount }, z.object({ ok: z.boolean() }), 'PATCH')
 }
 
+// In-app subscription dashboard — cancel/resume/status without leaving
+// pglens. "Manage billing" (Dodo's hosted portal) stays around only for
+// updating a payment method.
+const SubscriptionDetailsResponse = z.object({
+  plan: z.enum(['free', 'pro']),
+  seatCount: z.number(),
+  billingStatus: z.enum(['active', 'on_hold', 'cancelled']),
+  subscription: z.object({
+    status: z.string(),
+    nextBillingDate: z.string(),
+    cancelAtNextBillingDate: z.boolean(),
+    quantity: z.number(),
+    pricePerSeat: z.number(),
+    currency: z.string(),
+  }).nullable(),
+})
+export type SubscriptionDetails = z.infer<typeof SubscriptionDetailsResponse>
+
+export function getSubscriptionDetails(workspaceId: string, signal?: AbortSignal) {
+  return api(`/api/cloud/billing/subscription?workspaceId=${workspaceId}`, SubscriptionDetailsResponse, { signal })
+}
+
+export function cancelSubscription(workspaceId: string) {
+  return postJson('/api/cloud/billing/cancel', { workspaceId }, z.object({ ok: z.boolean() }))
+}
+
+export function resumeSubscription(workspaceId: string) {
+  return postJson('/api/cloud/billing/resume', { workspaceId }, z.object({ ok: z.boolean() }))
+}
+
 // Hosted AI mode — the metered, Pro-only alternative to BYOK. BYOK AI never
 // calls any of this; it talks to the user's own provider directly with the
 // user's own key.
@@ -145,6 +175,23 @@ export type AiCredits = z.infer<typeof AiCreditsResponse>
 
 export function getAiCredits(workspaceId: string, signal?: AbortSignal) {
   return api(`/api/cloud/ai/credits?workspaceId=${workspaceId}`, AiCreditsResponse, { signal })
+}
+
+const AiUsageEntrySchema = z.object({
+  type: z.string(),
+  amount: z.number(),
+  balanceAfter: z.number(),
+  reason: z.string().nullable(),
+  createdAt: z.string(),
+})
+export type AiUsageEntry = z.infer<typeof AiUsageEntrySchema>
+
+export function getAiCreditsHistory(workspaceId: string, signal?: AbortSignal) {
+  return api(
+    `/api/cloud/ai/credits/history?workspaceId=${workspaceId}`,
+    z.object({ entries: z.array(AiUsageEntrySchema) }),
+    { signal },
+  )
 }
 
 const AiCompleteResponse = z.object({ sql: z.string() })

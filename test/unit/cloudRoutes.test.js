@@ -28,6 +28,8 @@ let jar = '';
 let lastCheckoutBody;
 let lastPortalBody;
 let lastAiCheckoutBody;
+let lastCancelBody;
+let lastResumeBody;
 
 function respondJson(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -86,6 +88,26 @@ test.before(async () => {
       if (req.method === 'POST' && url === '/ai/credits/checkout') {
         lastAiCheckoutBody = body;
         return respondJson(res, 200, { checkoutUrl: 'https://test.checkout.dodopayments.com/session/ai-credits' });
+      }
+      if (req.method === 'GET' && url === '/ai/credits/history?workspaceId=11111111-1111-1111-1111-111111111111') {
+        return respondJson(res, 200, { entries: [{ type: 'credit_deducted', amount: 1, balanceAfter: 41, reason: null, createdAt: '2026-08-02T00:00:00Z' }] });
+      }
+      if (req.method === 'GET' && url === '/billing/subscription?workspaceId=11111111-1111-1111-1111-111111111111') {
+        return respondJson(res, 200, {
+          plan: 'pro', seatCount: 3, billingStatus: 'active',
+          subscription: {
+            status: 'active', nextBillingDate: '2026-09-01T00:00:00Z', cancelAtNextBillingDate: false,
+            quantity: 3, pricePerSeat: 900, currency: 'USD',
+          },
+        });
+      }
+      if (req.method === 'POST' && url === '/billing/cancel') {
+        lastCancelBody = body;
+        return respondJson(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && url === '/billing/resume') {
+        lastResumeBody = body;
+        return respondJson(res, 200, { ok: true });
       }
       return respondJson(res, 404, { error: { code: 'NOT_FOUND', message: `no fake route for ${req.method} ${url}` } });
     });
@@ -288,6 +310,38 @@ test('hosted AI complete/credits/checkout all proxy through to the cloud once si
   const aiReturn = new URL(lastAiCheckoutBody.returnUrl);
   assert.equal(aiReturn.searchParams.get('token'), token);
   assert.equal(aiReturn.searchParams.get('checkout'), 'return');
+});
+
+test('AI credit usage history proxies through to the cloud', async () => {
+  const res = await core('/api/cloud/ai/credits/history?workspaceId=11111111-1111-1111-1111-111111111111');
+  assert.equal(res.status, 200);
+  const { entries } = await res.json();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].type, 'credit_deducted');
+});
+
+test('subscription dashboard: status, cancel, resume all proxy through to the cloud', async () => {
+  const statusRes = await core('/api/cloud/billing/subscription?workspaceId=11111111-1111-1111-1111-111111111111');
+  assert.equal(statusRes.status, 200);
+  const status = await statusRes.json();
+  assert.equal(status.plan, 'pro');
+  assert.equal(status.subscription.cancelAtNextBillingDate, false);
+
+  const cancelRes = await core('/api/cloud/billing/cancel', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workspaceId: '11111111-1111-1111-1111-111111111111' }),
+  });
+  assert.equal(cancelRes.status, 200);
+  assert.equal(lastCancelBody.workspaceId, '11111111-1111-1111-1111-111111111111');
+
+  const resumeRes = await core('/api/cloud/billing/resume', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workspaceId: '11111111-1111-1111-1111-111111111111' }),
+  });
+  assert.equal(resumeRes.status, 200);
+  assert.equal(lastResumeBody.workspaceId, '11111111-1111-1111-1111-111111111111');
 });
 
 test('the billing return URL actually re-authenticates a fresh, cookie-less request (the cross-site-redirect case)', async () => {

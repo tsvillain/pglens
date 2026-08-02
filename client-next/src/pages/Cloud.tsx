@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Cloud as CloudIcon, CreditCard, Database, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
+import { ArrowLeft, Cloud as CloudIcon, CreditCard, Database, LogOut, Plus, RotateCcw, ShieldCheck, UserPlus, XCircle } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -13,7 +13,8 @@ import {
   getCloudStatus, signIn, signOut, listCloudWorkspaces, createCloudWorkspace,
   selectCloudWorkspace, deselectCloudWorkspace, listCloudMembers, setCloudMemberLevel, createCloudInvite,
   startCheckout, openBillingPortal, setWorkspaceSeats, listCloudConnections,
-  getAiCredits, startAiCreditsCheckout,
+  getAiCredits, startAiCreditsCheckout, getAiCreditsHistory,
+  getSubscriptionDetails, cancelSubscription, resumeSubscription,
   type AccessLevel, type CloudMember, type PlanKey,
 } from '@/lib/cloudApi'
 import { listConnections, provisionRole } from '@/lib/api'
@@ -291,38 +292,48 @@ function SharedConnections({ workspaceId }: { workspaceId: string }) {
 
 // The workspace is the only thing that has a plan — one line, no separate
 // "your plan" concept anywhere. Solo users are just a one-seat workspace.
+// Cancel/resume live in-app now; "Update payment method" is the one thing
+// still kicked to Dodo's hosted portal, deliberately — collecting card
+// details ourselves would be a PCI-compliance problem with no upside.
 function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { workspaceId: string; canManage: boolean; checkoutPending: boolean }) {
-  const workspaces = useQuery({
-    queryKey: ['cloud-workspaces'],
-    queryFn: ({ signal }) => listCloudWorkspaces(signal),
+  const qc = useQueryClient()
+  const detailsKey = ['subscription-details', workspaceId]
+  const details = useQuery({
+    queryKey: detailsKey,
+    queryFn: ({ signal }) => getSubscriptionDetails(workspaceId, signal),
     refetchInterval: checkoutPending ? 1500 : false,
   })
-  const workspace = workspaces.data?.workspaces.find((w) => w.id === workspaceId)
   const [newSeatCount, setNewSeatCount] = useState(1)
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: detailsKey })
+    qc.invalidateQueries({ queryKey: ['cloud-workspaces'] })
+  }
 
   const checkout = useMutation({
     mutationFn: (key: PlanKey) => startCheckout({ key, workspaceId, seatCount: newSeatCount }),
   })
   const portal = useMutation({ mutationFn: () => openBillingPortal(workspaceId) })
+  const cancel = useMutation({ mutationFn: () => cancelSubscription(workspaceId), onSuccess: invalidate })
+  const resume = useMutation({ mutationFn: () => resumeSubscription(workspaceId), onSuccess: invalidate })
 
-  if (!workspace) return null
+  if (!details.data) return null
+  const { plan, seatCount, subscription } = details.data
+  const pending = subscription?.cancelAtNextBillingDate ?? false
+  const renewalDate = subscription ? new Date(subscription.nextBillingDate).toLocaleDateString() : null
 
   return (
     <div className="rounded-lg border border-border bg-muted/30 px-4 py-2.5">
       <div className="flex items-center gap-3 text-xs">
         <span className="text-muted-foreground">Plan</span>
-        <span className="font-medium">{workspace.plan === 'pro' ? 'Pro' : 'Free'}</span>
-        {workspace.plan === 'pro' && (
-          <span className="text-muted-foreground">
-            · {workspace.seat_count} {workspace.seat_count === 1 ? 'seat' : 'seats'}
-          </span>
+        <span className="font-medium">{plan === 'pro' ? 'Pro' : 'Free'}</span>
+        {plan === 'pro' && (
+          <span className="text-muted-foreground">· {seatCount} {seatCount === 1 ? 'seat' : 'seats'}</span>
         )}
-        {workspace.plan !== 'free' && workspace.billing_status !== 'active' && (
-          <span className="text-destructive">({workspace.billing_status})</span>
-        )}
+        {pending && <span className="text-destructive">cancels {renewalDate}</span>}
         {canManage && (
           <div className="ml-auto flex items-center gap-2">
-            {workspace.plan === 'free' ? (
+            {plan === 'free' ? (
               <>
                 <Input
                   type="number"
@@ -343,10 +354,21 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
               </>
             ) : (
               <>
-                <SeatEditor workspaceId={workspaceId} seatCount={workspace.seat_count} />
+                <SeatEditor workspaceId={workspaceId} seatCount={seatCount} onChanged={invalidate} />
+                {pending ? (
+                  <Button size="sm" variant="outline" className="h-7" onClick={() => resume.mutate()} disabled={resume.isPending}>
+                    {resume.isPending ? <Spinner aria-label="Resuming" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                    Resume
+                  </Button>
+                ) : (
+                  <Button size="sm" variant="ghost" className="h-7 text-destructive" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
+                    {cancel.isPending ? <Spinner aria-label="Cancelling" /> : <XCircle className="h-3.5 w-3.5" />}
+                    Cancel
+                  </Button>
+                )}
                 <Button size="sm" variant="outline" className="h-7" onClick={() => portal.mutate()} disabled={portal.isPending}>
                   {portal.isPending ? <Spinner aria-label="Opening billing portal" /> : <CreditCard className="h-3.5 w-3.5" />}
-                  Manage billing
+                  Update payment method
                 </Button>
               </>
             )}
@@ -354,8 +376,10 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
         )}
       </div>
       <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-        {workspace.plan === 'pro'
-          ? 'Unlimited connections, cross-device sync, shared access with real Postgres roles, 90-day audit log.'
+        {plan === 'pro' && subscription
+          ? pending
+            ? `Access continues through ${renewalDate} — click Resume to keep the subscription going.`
+            : `Renews ${renewalDate} at $${(subscription.pricePerSeat / 100).toFixed(2)}/seat/mo × ${subscription.quantity}.`
           : 'Free: 1 member, 1 synced connection. Pro adds unlimited connections, sync, teammates (one seat each), access levels, and the audit log.'}
       </p>
       {!canManage && (
@@ -363,17 +387,18 @@ function WorkspaceBillingPanel({ workspaceId, canManage, checkoutPending }: { wo
       )}
       {checkout.error && <p className="mt-1 text-xs text-destructive">{(checkout.error as Error).message}</p>}
       {portal.error && <p className="mt-1 text-xs text-destructive">{(portal.error as Error).message}</p>}
+      {cancel.error && <p className="mt-1 text-xs text-destructive">{(cancel.error as Error).message}</p>}
+      {resume.error && <p className="mt-1 text-xs text-destructive">{(resume.error as Error).message}</p>}
     </div>
   )
 }
 
-function SeatEditor({ workspaceId, seatCount }: { workspaceId: string; seatCount: number }) {
-  const qc = useQueryClient()
+function SeatEditor({ workspaceId, seatCount, onChanged }: { workspaceId: string; seatCount: number; onChanged: () => void }) {
   const [value, setValue] = useState(seatCount)
 
   const update = useMutation({
     mutationFn: () => setWorkspaceSeats(workspaceId, value),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['cloud-workspaces'] }),
+    onSuccess: onChanged,
   })
 
   return (
@@ -403,6 +428,7 @@ function SeatEditor({ workspaceId, seatCount }: { workspaceId: string; seatCount
 // never touches this at all. Renders nothing for a workspace with no
 // hosted-AI access (Free plan, or Pro but no credits ever granted yet).
 function AiCreditsPanel({ workspaceId, checkoutPending }: { workspaceId: string; checkoutPending: boolean }) {
+  const [showHistory, setShowHistory] = useState(false)
   const credits = useQuery({
     queryKey: ['ai-credits', workspaceId],
     queryFn: ({ signal }) => getAiCredits(workspaceId, signal),
@@ -419,6 +445,9 @@ function AiCreditsPanel({ workspaceId, checkoutPending }: { workspaceId: string;
         <span className="text-muted-foreground">Hosted AI credits</span>
         <span className={low ? 'font-medium text-destructive' : 'font-medium'}>{credits.data.balance}</span>
         <div className="ml-auto flex items-center gap-2">
+          <Button size="sm" variant="ghost" className="h-7" onClick={() => setShowHistory((v) => !v)}>
+            {showHistory ? 'Hide usage' : 'Usage history'}
+          </Button>
           <Button size="sm" variant="outline" className="h-7" onClick={() => buyMore.mutate()} disabled={buyMore.isPending}>
             {buyMore.isPending ? <Spinner aria-label="Starting checkout" /> : <CreditCard className="h-3.5 w-3.5" />}
             Buy 500 more — $5
@@ -431,7 +460,35 @@ function AiCreditsPanel({ workspaceId, checkoutPending }: { workspaceId: string;
           : "Metered NL→SQL against pglens's hosted model. BYOK AI mode is separate and always free."}
       </p>
       {buyMore.error && <p className="mt-1 text-xs text-destructive">{(buyMore.error as Error).message}</p>}
+      {showHistory && <CreditUsageHistory workspaceId={workspaceId} />}
     </div>
+  )
+}
+
+function CreditUsageHistory({ workspaceId }: { workspaceId: string }) {
+  const history = useQuery({
+    queryKey: ['ai-credits-history', workspaceId],
+    queryFn: ({ signal }) => getAiCreditsHistory(workspaceId, signal),
+  })
+
+  if (history.isLoading) return <p className="mt-2 text-[11px] text-muted-foreground">Loading…</p>
+  if (!history.data?.entries.length) {
+    return <p className="mt-2 text-[11px] text-muted-foreground">No usage yet.</p>
+  }
+
+  return (
+    <ul className="mt-2 max-h-48 space-y-1 overflow-auto border-t border-border/50 pt-2 text-[11px]">
+      {history.data.entries.map((entry, i) => (
+        <li key={i} className="flex items-center justify-between gap-2 text-muted-foreground">
+          <span>{new Date(entry.createdAt).toLocaleString()}</span>
+          <span className="truncate">{entry.reason ?? entry.type}</span>
+          <span className={entry.type.includes('deduct') ? 'text-destructive' : 'text-foreground'}>
+            {entry.type.includes('deduct') ? '−' : '+'}{entry.amount}
+          </span>
+          <span>bal {entry.balanceAfter}</span>
+        </li>
+      ))}
+    </ul>
   )
 }
 
