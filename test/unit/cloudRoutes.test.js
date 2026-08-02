@@ -27,6 +27,7 @@ let token;
 let jar = '';
 let lastCheckoutBody;
 let lastPortalBody;
+let lastAiCheckoutBody;
 
 function respondJson(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -75,6 +76,16 @@ test.before(async () => {
       }
       if (req.method === 'PATCH' && url === '/billing/workspaces/11111111-1111-1111-1111-111111111111/seats') {
         return respondJson(res, 200, { ok: true, seatCount: body.seatCount });
+      }
+      if (req.method === 'POST' && url === '/ai/complete') {
+        return respondJson(res, 200, { sql: `SELECT 1 -- ${body.prompt}` });
+      }
+      if (req.method === 'GET' && url === '/ai/credits?workspaceId=11111111-1111-1111-1111-111111111111') {
+        return respondJson(res, 200, { balance: 42, hasAccess: true });
+      }
+      if (req.method === 'POST' && url === '/ai/credits/checkout') {
+        lastAiCheckoutBody = body;
+        return respondJson(res, 200, { checkoutUrl: 'https://test.checkout.dodopayments.com/session/ai-credits' });
       }
       return respondJson(res, 404, { error: { code: 'NOT_FOUND', message: `no fake route for ${req.method} ${url}` } });
     });
@@ -248,6 +259,35 @@ test('billing checkout/portal/seats all proxy through to the cloud once signed i
   });
   assert.equal(seatsRes.status, 200);
   assert.equal((await seatsRes.json()).seatCount, 8);
+});
+
+test('hosted AI complete/credits/checkout all proxy through to the cloud once signed in', async () => {
+  const completeRes = await core('/api/cloud/ai/complete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      workspaceId: '11111111-1111-1111-1111-111111111111',
+      prompt: 'count users', schemaContext: 'table users(id)',
+    }),
+  });
+  assert.equal(completeRes.status, 200);
+  assert.match((await completeRes.json()).sql, /count users/);
+
+  const creditsRes = await core('/api/cloud/ai/credits?workspaceId=11111111-1111-1111-1111-111111111111');
+  assert.equal(creditsRes.status, 200);
+  assert.deepEqual(await creditsRes.json(), { balance: 42, hasAccess: true });
+
+  const checkoutRes = await core('/api/cloud/ai/credits/checkout', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workspaceId: '11111111-1111-1111-1111-111111111111', quantity: 2 }),
+  });
+  assert.equal(checkoutRes.status, 200);
+  assert.match((await checkoutRes.json()).checkoutUrl, /ai-credits/);
+  // Same token-embedding returnUrl mechanism as billing checkout/portal.
+  const aiReturn = new URL(lastAiCheckoutBody.returnUrl);
+  assert.equal(aiReturn.searchParams.get('token'), token);
+  assert.equal(aiReturn.searchParams.get('checkout'), 'return');
 });
 
 test('the billing return URL actually re-authenticates a fresh, cookie-less request (the cross-site-redirect case)', async () => {

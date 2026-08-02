@@ -265,4 +265,48 @@ router.patch(
   },
 );
 
+// Hosted AI mode — metered NL→SQL against pglens's own key. BYOK AI never
+// touches this proxy or pglens-cloud at all; it talks to the user's chosen
+// provider directly with the user's own key. This path only exists for the
+// hosted, Pro-only alternative.
+const AiCompleteBody = z.object({
+  workspaceId: z.string().uuid(),
+  prompt: z.string().min(1).max(4000),
+  schemaContext: z.string().max(64_000),
+});
+
+router.post('/ai/complete', validate({ body: AiCompleteBody }), async (req, res) => {
+  try {
+    res.json(await client.request('/ai/complete', { method: 'POST', body: req.body }));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
+router.get(
+  '/ai/credits',
+  validate({ query: z.object({ workspaceId: z.string().uuid() }) }),
+  async (req, res) => {
+    try {
+      res.json(await client.request(`/ai/credits?workspaceId=${req.query.workspaceId}`));
+    } catch (err) {
+      handleCloudError(res, err);
+    }
+  },
+);
+
+const AiCreditsCheckoutBody = z.object({
+  workspaceId: z.string().uuid(),
+  quantity: z.number().int().positive().optional(),
+});
+
+router.post('/ai/credits/checkout', validate({ body: AiCreditsCheckoutBody }), async (req, res) => {
+  try {
+    const body = { ...req.body, returnUrl: billingReturnUrl(req) };
+    res.json(await client.request('/ai/credits/checkout', { method: 'POST', body }));
+  } catch (err) {
+    handleCloudError(res, err);
+  }
+});
+
 module.exports = { router, handleCallback };

@@ -136,3 +136,30 @@ export async function openBillingPortal(workspaceId: string) {
 export function setWorkspaceSeats(workspaceId: string, seatCount: number) {
   return postJson(`/api/cloud/workspaces/${workspaceId}/seats`, { seatCount }, z.object({ ok: z.boolean() }), 'PATCH')
 }
+
+// Hosted AI mode — the metered, Pro-only alternative to BYOK. BYOK AI never
+// calls any of this; it talks to the user's own provider directly with the
+// user's own key.
+const AiCreditsResponse = z.object({ balance: z.number(), hasAccess: z.boolean() })
+export type AiCredits = z.infer<typeof AiCreditsResponse>
+
+export function getAiCredits(workspaceId: string, signal?: AbortSignal) {
+  return api(`/api/cloud/ai/credits?workspaceId=${workspaceId}`, AiCreditsResponse, { signal })
+}
+
+const AiCompleteResponse = z.object({ sql: z.string() })
+
+/** Sends a prompt + schema context (never the database itself) for a hosted, metered NL→SQL completion. */
+export function generateHostedSql(params: { workspaceId: string; prompt: string; schemaContext: string }) {
+  return postJson('/api/cloud/ai/complete', params, AiCompleteResponse)
+}
+
+const AiCreditsCheckoutResponse = z.object({ checkoutUrl: z.string() })
+
+/** Opens Dodo's hosted checkout for a one-time AI credit top-up pack. */
+export async function startAiCreditsCheckout(workspaceId: string, quantity?: number) {
+  const { checkoutUrl } = await postJson(
+    '/api/cloud/ai/credits/checkout', { workspaceId, quantity }, AiCreditsCheckoutResponse,
+  )
+  window.location.href = checkoutUrl
+}
