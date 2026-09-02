@@ -52,7 +52,7 @@ write statements require an explicit opt-in.
   token budget. Core logic — the read-only guard and schema renderer — is pure
   and unit-tested (`src/ai/assistant.js`).
 - **Three providers, BYOK**:
-  - **Anthropic** via `@anthropic-ai/sdk` (`claude-opus-4-8`, adaptive thinking,
+  - **Anthropic** via `@anthropic-ai/sdk` (`claude-opus-5`, adaptive thinking,
     structured JSON output).
   - **OpenAI** via the Chat Completions REST API with a strict `json_schema`
     response format (global `fetch`, no extra dependency).

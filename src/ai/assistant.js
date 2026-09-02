@@ -27,7 +27,7 @@ const logger = require('../log');
 
 const PROVIDERS = ['anthropic', 'openai', 'ollama'];
 const DEFAULT_MODELS = {
-  anthropic: 'claude-opus-4-8',
+  anthropic: 'claude-opus-5',
   openai: 'gpt-4o',
   ollama: 'llama3.1',
 };
