@@ -483,4 +483,7 @@ module.exports = {
   updateConnection,
   restoreConnections,
   getConnectionString,
+  // For the AI eval harness (test/eval/run.js): a pool over a bare postgres.js
+  // client, without going through the connections registry or keychain.
+  createPoolWrapper,
 };

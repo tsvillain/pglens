@@ -12,6 +12,7 @@ import { Extensions } from './pages/Extensions'
 import { Sidebar } from './components/Sidebar'
 import { TabBar } from './components/TabBar'
 import { Spotlight } from './components/Spotlight'
+import { AiPanel } from './components/AiPanel'
 
 function RootLayout() {
   return (
@@ -23,6 +24,7 @@ function RootLayout() {
           <Outlet />
         </div>
       </main>
+      <AiPanel />
       <Spotlight />
     </div>
   )

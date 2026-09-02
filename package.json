@@ -1,6 +1,6 @@
 {
   "name": "pglens",
-  "version": "3.5.0",
+  "version": "3.6.0",
   "description": "A no-code PostgreSQL workstation: browse, filter, edit, and query your databases from a fast local web UI",
   "bin": {
     "pglens": "./bin/pglens"
@@ -57,6 +57,7 @@
   "homepage": "https://github.com/tsvillain/pglens#readme",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.107.0",
     "commander": "^11.1.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",

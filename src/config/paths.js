@@ -14,6 +14,9 @@ const CONNECTIONS_FILE = path.join(PGLENS_DIR, 'connections.json');
 const VIEWS_FILE = path.join(PGLENS_DIR, 'views.json');
 const SAVED_QUERIES_FILE = path.join(PGLENS_DIR, 'saved-queries.json');
 const QUERY_HISTORY_FILE = path.join(PGLENS_DIR, 'query-history.json');
+// AI mode (roadmap §7.6) non-secret settings: provider, model, write toggle.
+// The API key itself lives in the keychain via the secret backend, not here.
+const AI_CONFIG_FILE = path.join(PGLENS_DIR, 'ai.json');
 // Only used by the file-based secret store (PGLENS_SECRET_STORE=file); the
 // keychain backend stores nothing here.
 const SECRETS_FILE = path.join(PGLENS_DIR, 'secrets.json');
@@ -40,6 +43,7 @@ module.exports = {
   VIEWS_FILE,
   SAVED_QUERIES_FILE,
   QUERY_HISTORY_FILE,
+  AI_CONFIG_FILE,
   SECRETS_FILE,
   PID_FILE,
   PORT_FILE,

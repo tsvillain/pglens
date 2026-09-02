@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **AI value grounding** (`nl2sql-v6`). The schema context now includes real
+  column values, the biggest lever against valid-but-zero-rows SQL: enum
+  labels from `pg_enum` and most-common values for low-cardinality text
+  columns from `pg_stats` (catalog-only, no table scan; empty until ANALYZE
+  has run) render inline as `[values: 'pending', 'paid', …]`. New prompt
+  rules: filter literals must come from a `[values: …]` list, and
+  user-supplied free text (names, titles) matches with `ILIKE '%…%'` instead
+  of case-sensitive `=`. The zero-row retry now walks the model through each
+  WHERE predicate against those grounded values.
+- **AI eval harness** (`test/eval/`, manual, not CI). Applies a trap-laden
+  fixture schema (British-spelled enum, mixed-case identifiers, case-varied
+  names, singular table names) to the docker test DB and runs ~25
+  natural-language prompts through the real pipeline, grading by executing
+  generated vs golden SQL and comparing result sets:
+  `node test/eval/run.js --provider anthropic|openai|ollama [--model …]`.
+  Pins provider/model per run without touching `~/.pglens/ai.json`.
+- **AI panel labeled Beta.** The panel shows a Beta badge, always reports the
+  live row-count probe ("Matches ~N rows right now"), and AI settings warn
+  when an 8b-class local Ollama model is selected — small local models
+  produce significantly less accurate SQL.
+
+## [3.6.0] - 2026-06-30
+
+AI mode. Schema-aware natural-language → SQL (roadmap §7.6). BYOK across three
+providers — Anthropic (Claude), OpenAI, or a local Ollama model — so data can
+stay on-machine when needed. Keys live in the OS keychain alongside connection
+passwords. A chat box in the sidebar turns "orders from last week that weren't
+shipped" into PostgreSQL — grounded on the live schema, sample rows for the
+focused table, and recent query history. The generated SQL is always shown and
+is handed to the Advanced-mode editor, where it is editable and reviewed before
+it runs; pglens never executes the model's SQL directly. Read-only by default —
+write statements require an explicit opt-in.
+
+### Added
+
+- **Schema-aware NL→SQL** (`POST /api/ai/nl2sql`, requires a connection).
+  Grounds a model call on a compact rendering of the schema (tables, column
+  types, PK/FK relations), 3 sample rows from the focused table, and the last 5
+  successful queries for the connection. Returns `{ sql, explanation, readOnly }`.
+  The prompt is bounded (`MAX_SCHEMA_CHARS`) so a large schema can't blow the
+  token budget. Core logic — the read-only guard and schema renderer — is pure
+  and unit-tested (`src/ai/assistant.js`).
+- **Three providers, BYOK**:
+  - **Anthropic** via `@anthropic-ai/sdk` (`claude-opus-4-8`, adaptive thinking,
+    structured JSON output).
+  - **OpenAI** via the Chat Completions REST API with a strict `json_schema`
+    response format (global `fetch`, no extra dependency).
+  - **Ollama** via a local daemon's `/api/chat` with a JSON-schema `format`
+    (configurable host; no key — keeps data on-machine).
+
+  Provider, model, write toggle, and Ollama host live in `~/.pglens/ai.json`;
+  the Anthropic/OpenAI key lives in the keychain (account `ai-key:<provider>`).
+  `GET`/`PUT /api/ai/config` read/update these. AI mode reports
+  `available: false` (UI hidden) when `PGLENS_AI_DISABLED=1`.
+- **Read-only enforcement**. Generated SQL is checked (`isReadOnly`): unless the
+  user has opted into writes, a statement that writes data or runs DDL is
+  rejected with a hint rather than returned.
+- **Sidebar AI panel** (`AiPanel.tsx`). A chat box with inline settings —
+  provider selector, model, key (or Ollama host), and the write toggle.
+  Generated SQL (plus a one-line explanation and a write-warning when
+  applicable) is shown in place and opens in the Query editor via the existing
+  query-seed hand-off — so "Save as view" and "Run" are reached through the
+  editor's existing actions.
+
+### Notes
+
+- Deferred (the API already accepts an optional `filter`, so these slot in
+  without a breaking change): grounding on the current view's filter, sample
+  rows for every table rather than just the focused one, and the standalone
+  query explainer (roadmap §7.7).
+
 ## [3.5.0] - 2026-06-25
 
 Smart features. The five no-code "wow": schema diff & migration generator, an editable visual ERD,

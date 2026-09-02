@@ -35,6 +35,7 @@ const { txManager } = require('../db/tx');
 const views = require('../db/views');
 const savedQueries = require('../db/savedQueries');
 const queryHistory = require('../db/queryHistory');
+const aiAssistant = require('../ai/assistant');
 const { sendError, codes } = require('../http/errors');
 const { validate } = require('../http/validate');
 const logger = require('../log');
@@ -1712,5 +1713,80 @@ router.get('/schema-diff', validate({ query: SchemaDiffQuery }), async (req, res
     return sendError(res, 500, codes.DB_ERROR, err.message);
   }
 });
+
+// ---- AI mode — schema-aware NL→SQL (roadmap §7.6) --------------------------
+//
+// BYOK Anthropic key in the keychain; settings (model, write toggle) in
+// ~/.pglens/ai.json. `/ai/config` is open (no connection) so the panel can show
+// its state before a DB is picked. `/ai/nl2sql` grounds the prompt on the live
+// schema + sample rows + recent history and returns SQL for the user to review
+// and run in the editor — pglens never executes the generated SQL here. By
+// default only read-only SQL is produced (see assistant.isReadOnly).
+
+const AiConfigBody = z.object({
+  // null/empty string clears the stored key (for the active provider); omit to
+  // leave it unchanged.
+  apiKey: z.string().max(500).nullable().optional(),
+  model: z.string().min(1).max(100).optional(),
+  allowWrites: z.boolean().optional(),
+  provider: z.enum(['anthropic', 'openai', 'ollama']).optional(),
+  // Base URL of a local Ollama daemon (only meaningful for the ollama provider).
+  ollamaHost: z.string().url().max(500).optional(),
+});
+
+router.get('/ai/config', async (_req, res) => {
+  try {
+    res.json(await aiAssistant.getConfig());
+  } catch (err) {
+    logger.error({ err: err.message }, 'ai config read failed');
+    return sendError(res, 500, codes.INTERNAL, err.message);
+  }
+});
+
+router.put('/ai/config', validate({ body: AiConfigBody }), async (req, res) => {
+  try {
+    res.json(await aiAssistant.setConfig(req.body));
+  } catch (err) {
+    const status = err.statusCode || 500;
+    if (status >= 500) logger.warn({ err: err.message }, 'ai config write failed');
+    return sendError(res, status, status >= 500 ? codes.INTERNAL : codes.BAD_REQUEST,
+      err.message, { hint: err.hint });
+  }
+});
+
+const NlSqlBody = z.object({
+  prompt: z.string().min(1).max(4_000),
+  // Optional grounding context from the active view.
+  table: TableNameSchema.optional(),
+  filter: z.string().max(64_000).optional(),
+});
+
+router.post('/ai/nl2sql',
+  requireConnection,
+  validate({ body: NlSqlBody }),
+  async (req, res) => {
+    try {
+      // Recent successful SQL for this connection sharpens the model's grounding.
+      const history = queryHistory
+        .listHistory({ connectionId: req.connectionId, limit: 5 })
+        .filter((h) => h.success)
+        .map((h) => h.sql);
+
+      const result = await aiAssistant.generateSql({
+        pool: req.pool,
+        schema: req.schema,
+        prompt: req.body.prompt,
+        focusTable: req.body.table,
+        filterText: req.body.filter,
+        history,
+      });
+      res.json(result);
+    } catch (err) {
+      const status = err.statusCode || 500;
+      const code = status >= 500 ? codes.INTERNAL : codes.BAD_REQUEST;
+      if (status >= 500) logger.error({ err: err.message }, 'nl2sql failed');
+      return sendError(res, status, code, err.message, { hint: err.hint });
+    }
+  });
 
 module.exports = router;

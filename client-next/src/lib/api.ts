@@ -1355,3 +1355,79 @@ export type SchemaEditOp =
 export function generateSchemaDdl(connectionId: string, ops: SchemaEditOp[]) {
   return postJson('/api/schema/ddl', { ops }, MigrationSchema, 'POST', connectionId)
 }
+
+// ---- AI mode — schema-aware NL→SQL (roadmap §7.6) ---------------------------
+
+export type AiProvider = 'anthropic' | 'openai' | 'ollama'
+
+const AiConfigSchema = z.object({
+  // false when PGLENS_AI_DISABLED=1.
+  available: z.boolean(),
+  // true once the active provider is usable (key stored, or ollama).
+  configured: z.boolean(),
+  provider: z.enum(['anthropic', 'openai', 'ollama']),
+  model: z.string(),
+  allowWrites: z.boolean(),
+  ollamaHost: z.string(),
+})
+export type AiConfig = z.infer<typeof AiConfigSchema>
+
+export function getAiConfig(signal?: AbortSignal) {
+  return api('/api/ai/config', AiConfigSchema, { signal })
+}
+
+export interface AiConfigPayload {
+  // null/'' clears the active provider's stored key; omit to leave unchanged.
+  apiKey?: string | null
+  model?: string
+  allowWrites?: boolean
+  provider?: AiProvider
+  ollamaHost?: string
+}
+
+export function setAiConfig(payload: AiConfigPayload) {
+  return postJson('/api/ai/config', payload, AiConfigSchema, 'PUT')
+}
+
+const NlSqlResponse = z.object({
+  sql: z.string(),
+  explanation: z.string(),
+  // Set when the request is out of scope (not answerable with SQL); `sql` is
+  // then empty. null on a normal answer.
+  refusal: z.string().nullable(),
+  readOnly: z.boolean(),
+  // Postgres' message when the generated SQL failed to plan (hallucinated
+  // column, etc.) and the repair attempt didn't fix it; null when it planned.
+  validationError: z.string().nullable(),
+  // Live row count from the server's read-only probe. 0 ⇒ the query is valid
+  // but matches nothing right now; null ⇒ probe not applicable / timed out.
+  rowCount: z.number().nullable(),
+  // Token spend across all attempts (including any repair round-trip). Either
+  // field is null when the provider didn't report it.
+  usage: z.object({
+    inputTokens: z.number().nullable(),
+    outputTokens: z.number().nullable(),
+  }),
+})
+export type NlSqlResult = z.infer<typeof NlSqlResponse>
+
+export interface NlSqlOptions {
+  /** Focused table for sample-row grounding. */
+  table?: string
+  /** JSON-encoded filter currently applied in the UI. */
+  filter?: string
+}
+
+export function generateNlSql(
+  connectionId: string,
+  prompt: string,
+  options: NlSqlOptions = {},
+): Promise<NlSqlResult> {
+  return postJson(
+    '/api/ai/nl2sql',
+    { prompt, table: options.table, filter: options.filter },
+    NlSqlResponse,
+    'POST',
+    connectionId,
+  )
+}
