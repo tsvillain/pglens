@@ -2,7 +2,8 @@
 /**
  * Post-install notice.
  *
- * pglens is curl-managed (install/install.sh, under ~/.pglens). When this
+ * pglens is curl-managed (install.sh, served from pglens.org / the
+ * pglens-website repo, under ~/.pglens). When this
  * runs from the curl installer's `npm install --prefix ~/.pglens` it sits
  * under ~/.pglens and analyze() reports ok — silent. When it runs from a
  * direct `npm i -g pglens`, that's the discouraged channel: analyze()

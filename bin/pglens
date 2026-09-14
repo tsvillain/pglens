@@ -254,6 +254,78 @@ program
   });
 
 program
+  .command('update')
+  .description('Update pglens to the latest (or a specific) version')
+  .option('--version <v>', 'Install a specific version instead of latest')
+  .action((opts) => {
+    const version = opts.version || 'latest';
+    console.log(`Updating pglens to ${version === 'latest' ? 'the latest version' : `v${version}`}...\n`);
+    // Delegate to the same curl/iwr installer used for a fresh install —
+    // it already resolves, downloads, and checksum-verifies the release.
+    const env = { ...process.env, PGLENS_VERSION: version };
+    const [cmd, args] = process.platform === 'win32'
+      ? ['powershell', ['-NoProfile', '-Command', 'iwr https://pglens.org/install.ps1 -useb | iex']]
+      : ['sh', ['-c', 'curl -fsSL https://pglens.org/install.sh | bash']];
+    const child = spawn(cmd, args, { stdio: 'inherit', env });
+    child.on('exit', (code) => process.exit(code ?? 0));
+  });
+
+program
+  .command('uninstall')
+  .description('Remove pglens and all local data (~/.pglens)')
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action((opts) => {
+    const pglensHome = path.join(os.homedir(), '.pglens');
+    if (!fs.existsSync(pglensHome) && !fs.existsSync(PID_FILE)) {
+      console.log('pglens is not installed under ~/.pglens (nothing to remove).');
+      return;
+    }
+
+    if (!opts.yes) {
+      console.log('This will stop pglens (if running) and permanently delete:');
+      console.log(`  ${pglensHome}`);
+      console.log('  (including connections, saved queries, logs, and your auth token)\n');
+      console.log('Re-run with --yes to confirm: pglens uninstall --yes');
+      return;
+    }
+
+    // Load diagnostics and compute rc-file targets *before* deleting
+    // pglensHome: this running script is itself required from inside
+    // ~/.pglens/node_modules/pglens, so requiring it after the rm would
+    // crash (module file already gone from disk).
+    const diag = require('../src/diagnostics');
+    const { rcRefs } = diag.detectInstalls();
+
+    if (fs.existsSync(PID_FILE)) {
+      try {
+        process.kill(parseInt(fs.readFileSync(PID_FILE, 'utf8')), 'SIGTERM');
+        console.log('Stopped running server.');
+      } catch { /* not running */ }
+      try { fs.unlinkSync(PID_FILE); } catch { }
+    }
+    if (fs.existsSync(PORT_FILE)) { try { fs.unlinkSync(PORT_FILE); } catch { } }
+
+    if (fs.existsSync(pglensHome)) {
+      fs.rmSync(pglensHome, { recursive: true, force: true });
+      console.log(`Removed ${pglensHome}`);
+    }
+
+    // Strip the "# pglens" PATH block install.sh appended to shell rc files.
+    for (const rc of rcRefs) {
+      try {
+        const content = fs.readFileSync(rc, 'utf8');
+        const stripped = content.replace(/\n# pglens\nexport PATH="[^"]*"\n?/g, '\n');
+        if (stripped !== content) {
+          fs.writeFileSync(rc, stripped);
+          console.log(`Removed PATH entry from ${rc}`);
+        }
+      } catch { /* unreadable/unwritable rc file — leave it */ }
+    }
+
+    console.log('\npglens has been uninstalled.');
+  });
+
+program
   .command('doctor')
   .description('Diagnose install problems (shadowed binaries, stale upgrades)')
   .action(() => {
