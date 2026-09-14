@@ -1,5 +1,5 @@
 /**
- * Index assistant — Postgres-native operations (roadmap §6.4).
+ * Index assistant — Postgres-native operations.
  *
  * Read-only advice derived entirely from the server's own catalogs/stat views,
  * surfaced in the "Index assistant" panel:
@@ -16,8 +16,8 @@
  * identifier escaper the rest of the app uses; it is shown for review and run
  * by the user in the editor, never executed by this module.
  *
- * ponytail: the "suggest CREATE INDEX (status, created_at) for this filter"
- * recommender from the roadmap needs hypopg or query-plan parsing to pick the
+ * ponytail: a "suggest CREATE INDEX (status, created_at) for this filter"
+ * recommender needs hypopg or query-plan parsing to pick the
  * columns — skipped. The seq-scan section is the catalog-only proxy: it flags
  * which tables lean on sequential scans; the user picks the columns. Add the
  * column recommender when hypopg integration lands. Bloat (pgstattuple) is also
@@ -131,7 +131,7 @@ async function getDuplicateIndexes(pool, schema) {
 }
 
 /**
- * Tables leaning on sequential scans (roadmap §6.4 missing-index proxy): more
+ * Tables leaning on sequential scans (a missing-index proxy): more
  * seq scans than index scans, on a table large enough that an index would help.
  * Worst total rows read by seq scans first. No CREATE DDL is generated — the
  * right columns depend on the query, which the catalogs don't record (see the

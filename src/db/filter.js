@@ -19,7 +19,7 @@
  *   has_key                     jsonb_exists(col, $)        (jsonb columns only)
  *   array_overlaps              && $                        (array columns only)
  *
- * JSONB path conditions (roadmap §7.3 path builder): a condition on a json/jsonb
+ * JSONB path conditions: a condition on a json/jsonb
  * column may carry a `path` (array of object keys). The left-hand side then
  * becomes `(col #>> $path::text[])` — the text at that path — which the standard
  * comparison and null operators apply to. ponytail: path comparisons are text

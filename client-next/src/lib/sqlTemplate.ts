@@ -1,9 +1,8 @@
 /**
- * Postman-style `{{variable}}` template substitution for saved queries
- * (roadmap §5.5).
+ * Postman-style `{{variable}}` template substitution for saved queries.
  *
  * This is a deliberately separate layer from the `:name` bound parameters of
- * the Advanced editor (roadmap §5.2 / `sqlParams.ts`):
+ * the Advanced editor (`sqlParams.ts`):
  *
  *   - `{{variable}}` are *template variables* — resolved client-side by literal
  *     text substitution when a saved query is loaded into the editor. They can

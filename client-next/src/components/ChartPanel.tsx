@@ -21,7 +21,7 @@ import {
 } from '@/lib/chartSuggest'
 
 /**
- * Chart panel (roadmap §7.5). Renders the rows in hand as a line / bar / scatter
+ * Chart panel. Renders the rows in hand as a line / bar / scatter
  * chart, auto-suggesting a type and axes from the column types. The user can
  * override the type and either axis. Plots client-side from the result already
  * loaded — no re-query — so it works for both raw query results and no-code

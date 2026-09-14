@@ -1,5 +1,5 @@
 /**
- * Live activity dashboard — Postgres-native operations (roadmap §6.1).
+ * Live activity dashboard — Postgres-native operations.
  *
  * Read-only introspection of the server's own catalogs/stats views, surfaced
  * in the "Operations" panel and polled every few seconds by the client:
@@ -23,10 +23,10 @@
 // the grid truncates further for display.
 const QUERY_TRUNCATE = 2000;
 
-// Top-N tables shown in the size panel (roadmap §6.1: "top 20 tables by size").
+// Top-N tables shown in the size panel.
 const TOP_TABLES = 20;
 
-// Connection-count warning threshold (roadmap §6.1: "warning at 80%").
+// Connection-count warning threshold.
 const CONN_WARN_RATIO = 0.8;
 
 /**
@@ -112,7 +112,7 @@ async function getReplication(pool) {
 
 /**
  * Database size plus the top-N relations in `schema` by total size, with the
- * heap / index / toast bytes broken out (roadmap §6.1: "index sizes broken out").
+ * heap / index / toast bytes broken out.
  */
 async function getSizes(pool, schema) {
   const db = await pool.query(

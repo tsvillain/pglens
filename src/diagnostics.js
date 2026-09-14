@@ -2,7 +2,7 @@
  * Install diagnostics.
  *
  * pglens is curl-managed: the supported install lives under ~/.pglens
- * (see install/install.sh) with a launcher at ~/.pglens/bin/pglens on
+ * (see install.sh in the pglens-website repo) with a launcher at ~/.pglens/bin/pglens on
  * PATH. That is the *canonical* copy. Anything else on PATH — most
  * commonly a `npm i -g pglens` — is a foreign copy that shadows the
  * curl one and makes "upgrade didn't take" bugs. Doctor flags those.

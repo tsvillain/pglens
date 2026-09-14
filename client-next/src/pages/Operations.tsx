@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { formatBytes, formatDuration } from '@/lib/format'
 import { useConnectionStore } from '@/store/connection'
 
-// Roadmap §6.1: "Refresh every 5 seconds while the panel is open."
+// Refresh every 5 seconds while the panel is open.
 const REFRESH_MS = 5_000
 
 type BackendAction = { kind: 'cancel' | 'terminate'; pid: number; query: string | null }

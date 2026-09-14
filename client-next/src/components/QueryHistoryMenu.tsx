@@ -38,7 +38,7 @@ function firstLine(sql: string): string {
 }
 
 /**
- * Per-connection query history (roadmap §5.5). A dropdown of recent runs;
+ * Per-connection query history. A dropdown of recent runs;
  * clicking one reloads its SQL into the editor. Entries are written by
  * `SqlConsole` after each run.
  */

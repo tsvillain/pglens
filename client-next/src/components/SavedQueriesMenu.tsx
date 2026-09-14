@@ -48,7 +48,7 @@ function downloadJson(filename: string, data: unknown) {
 }
 
 /**
- * Saved queries (roadmap §5.5): a per-connection library of raw SQL with
+ * Saved queries: a per-connection library of raw SQL with
  * folder/tag organization and Postman-style `{{variable}}` defaults. The
  * dropdown lists saved queries grouped by folder; loading one substitutes its
  * `{{variables}}` (via a fill dialog) before dropping the SQL into the editor.

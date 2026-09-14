@@ -1,6 +1,6 @@
 /**
- * Postgres type OID → type name, for labelling arbitrary query-result columns
- * (roadmap §5.4). The server can't supply schema metadata for raw SQL, so it
+ * Postgres type OID → type name, for labelling arbitrary query-result
+ * columns. The server can't supply schema metadata for raw SQL, so it
  * returns each column's type OID (`dataTypeID`); this maps the common ones to a
  * name the DataGrid can use to pick a cell renderer (e.g. json/jsonb → tree
  * viewer) and to display the type under the column header.

@@ -1,5 +1,5 @@
 /**
- * Saved Queries store (roadmap §5.5).
+ * Saved Queries store.
  *
  * A saved query bundles raw SQL plus organizational metadata (name, folder,
  * tags, description) and a set of Postman-style `{{variable}}` default values.
@@ -15,7 +15,7 @@
  * the normal `/api/query` path (parameterized, server-side) when loaded into
  * the editor, so persisting it carries no execution risk. `{{variable}}` values
  * are template substitutions resolved client-side at load time, kept distinct
- * from the `:name` bound parameters of `/api/query` (roadmap §5.2).
+ * from the `:name` bound parameters of `/api/query`.
  */
 
 const fs = require('fs');
@@ -167,7 +167,7 @@ function deleteSavedQuery(id) {
 }
 
 /**
- * Bulk import for a target connection (roadmap §5.5 export/import). Each item is
+ * Bulk import for a target connection. Each item is
  * validated, the connection is forced to `connectionId`, and a name colliding
  * with an existing sibling is auto-suffixed (`"name (2)"`, `"(3)"`, …) so an
  * import never overwrites or rejects on conflict. Returns the created records.

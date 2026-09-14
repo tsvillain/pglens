@@ -1,5 +1,5 @@
 /**
- * Visual ERD editor → DDL (roadmap §7.2).
+ * Visual ERD editor → DDL.
  *
  * The editable ERD produces a list of *structured* edit ops (never SQL strings —
  * see CLAUDE.md: no raw SQL fragments from the no-code UI). This module turns
@@ -8,9 +8,8 @@
  * the statements go to the editor behind the Run button, with a `destructive`
  * flag per statement so the UI can flag the dangerous ones red.
  *
- * Scope is "edit what's in your DB" (roadmap §12), so there is no CREATE TABLE —
- * only column add/alter/drop and adding a foreign key, the four actions §7.2
- * lists.
+ * Scope is "edit what's in your DB", so there is no CREATE TABLE — only
+ * column add/alter/drop and adding a foreign key.
  */
 
 const { quoteIdent, quoteQualifiedIdent } = require('./identifier');

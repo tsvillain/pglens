@@ -1,5 +1,5 @@
 /**
- * Monaco SQL language support for the Advanced-mode editor (roadmap §5.2).
+ * Monaco SQL language support for the Advanced-mode editor.
  *
  * Syntax highlighting comes from Monaco's built-in `sql` grammar. On top of it
  * we register a single, schema-aware completion provider: it suggests Postgres
@@ -85,7 +85,7 @@ export function registerSqlSupport(monaco: typeof Monaco): void {
   if (registered) return
   registered = true
 
-  // Format-on-save: routes through the server formatter (roadmap §5.2). Wiring
+  // Format-on-save: routes through the server formatter. Wiring
   // it as a document-formatting provider means Monaco's own format actions and
   // Cmd/Ctrl+S (bound in SqlConsole) both go through here.
   monaco.languages.registerDocumentFormattingEditProvider('sql', {

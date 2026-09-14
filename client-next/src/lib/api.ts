@@ -175,8 +175,8 @@ export function connect(payload: ConnectPayload) {
   return postJson('/api/connect', payload, ConnectResponse)
 }
 
-// One statement's result set (roadmap §5.4 — a multi-statement script yields
-// one of these per statement, each its own result tab).
+// One statement's result set — a multi-statement script yields one of these
+// per statement, each its own result tab.
 const StatementResultSchema = z.object({
   rows: z.array(z.record(z.string(), z.unknown())),
   fields: z.array(
@@ -190,8 +190,8 @@ const StatementResultSchema = z.object({
 })
 export type StatementResult = z.infer<typeof StatementResultSchema>
 
-// EXPLAIN ANALYZE timing breakdown (roadmap §5.4). `plan` is the raw FORMAT JSON
-// plan, kept for the (future §6.3) visualizer.
+// EXPLAIN ANALYZE timing breakdown. `plan` is the raw FORMAT JSON plan, kept
+// for the (future) visualizer.
 const ExplainTimingSchema = z.object({
   planningMs: z.number().nullable(),
   executionMs: z.number().nullable(),
@@ -234,7 +234,7 @@ export function runQuery(
     QueryResponse, 'POST', connectionId)
 }
 
-// ---- Transaction mode (roadmap §5.3) ----------------------------------------
+// ---- Transaction mode --------------------------------------------------------
 
 const TxQueryResponse = QueryResponse.extend({ txOpen: z.boolean() })
 export type TxQueryResult = z.infer<typeof TxQueryResponse>
@@ -281,7 +281,7 @@ export function rollbackTx(connectionId: string, tabId: string) {
 const FormatResponse = z.object({ sql: z.string() })
 
 /**
- * Pretty-print SQL server-side (roadmap §5.2). No connection needed — the
+ * Pretty-print SQL server-side. No connection needed — the
  * server formatter is a pure text transform.
  */
 export async function formatSql(sql: string): Promise<string> {
@@ -646,7 +646,7 @@ export function deleteView(id: string): Promise<void> {
   return del(`/api/views/${encodeURIComponent(id)}`)
 }
 
-// ---- Saved queries (roadmap §5.5) -------------------------------------------
+// ---- Saved queries -------------------------------------------------------------
 
 const SavedQuerySchema = z.object({
   id: z.string(),
@@ -722,7 +722,7 @@ export async function importSavedQueries(
   return res.savedQueries
 }
 
-// ---- Query history (roadmap §5.5) -------------------------------------------
+// ---- Query history --------------------------------------------------------
 
 const QueryHistoryEntrySchema = z.object({
   id: z.string(),
@@ -924,7 +924,7 @@ export function getAggregates(
   )
 }
 
-// ---- JSONB schema inference (roadmap §7.3) ----------------------------------
+// ---- JSONB schema inference --------------------------------------------------
 
 const JsonbPathSchema = z.object({
   path: z.string(),
@@ -961,7 +961,7 @@ export function getJsonbSchema(
   )
 }
 
-// ---- Live activity dashboard (roadmap §6.1) ---------------------------------
+// ---- Live activity dashboard --------------------------------------------------
 
 // Postgres bigint/numeric values (sizes, LSN lag, epoch seconds) arrive as
 // strings through the driver, while int4 counts arrive as numbers. Accept
@@ -1093,7 +1093,7 @@ export function terminateBackend(connectionId: string, pid: number) {
   return backendAction('terminate', connectionId, pid)
 }
 
-// ---- Slow query view (roadmap §6.2) -----------------------------------------
+// ---- Slow query view -----------------------------------------------------------
 
 // One pg_stat_statements aggregate. bigint counters (calls, rows, blocks)
 // arrive as strings; the float8 `*_exec_time` values (milliseconds) arrive as
@@ -1131,7 +1131,7 @@ const StatementsResponseSchema = z.object({
 })
 export type StatementsResponse = z.infer<typeof StatementsResponseSchema>
 
-// Sortable metrics (roadmap §6.2). Mirrors the server-side allowlist.
+// Sortable metrics. Mirrors the server-side allowlist.
 export type StatementSort = 'total_exec_time' | 'mean_exec_time' | 'calls'
 
 export function getSlowStatements(
@@ -1166,12 +1166,12 @@ export function enableStatements(connectionId: string) {
   return statementsAction('enable', connectionId)
 }
 
-/** Discard all collected statistics (roadmap §6.2: "Reset stats"). */
+/** Discard all collected statistics (the "Reset stats" action). */
 export function resetStatements(connectionId: string) {
   return statementsAction('reset', connectionId)
 }
 
-// ---- Index assistant (roadmap §6.4) -----------------------------------------
+// ---- Index assistant -----------------------------------------------------------
 
 // One removable index. `drop_ddl` is generated server-side (properly quoted)
 // for the user to review and run in the editor — pglens never runs it directly.
@@ -1223,7 +1223,7 @@ export function getIndexAdvice(connectionId: string, signal?: AbortSignal) {
   return api('/api/operations/indexes', IndexAdviceSchema, { connectionId, signal })
 }
 
-// ---- Extensions panel (roadmap §7.4) ----------------------------------------
+// ---- Extensions panel -----------------------------------------------------------
 
 const ExtensionSchema = z.object({
   name: z.string(),
@@ -1263,7 +1263,7 @@ export function dropExtension(connectionId: string, name: string) {
     InstallExtensionResponse, 'POST', connectionId)
 }
 
-// ---- Schema diff & migration generator (roadmap §7.1) -----------------------
+// ---- Schema diff & migration generator ------------------------------------------
 
 // One generated migration statement. `destructive` (DROP / column-type change)
 // is flagged so the UI can render it red; nothing is run for the user — the SQL
@@ -1340,7 +1340,7 @@ export function getSchemaDiff(source: string, target: string, signal?: AbortSign
   return api(`/api/schema-diff?${qs.toString()}`, SchemaDiffResponseSchema, { signal })
 }
 
-// ---- Visual ERD editor → DDL (roadmap §7.2) ---------------------------------
+// ---- Visual ERD editor → DDL -----------------------------------------------
 // The editor builds a list of structured ops; the server turns them into DDL
 // (escaping identifiers) and flags destructive statements. Nothing runs — the
 // SQL goes to the editor, like the schema-diff generator. `default: null` means

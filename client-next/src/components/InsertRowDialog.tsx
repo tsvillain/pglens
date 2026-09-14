@@ -13,7 +13,7 @@ import { previewInsert } from "@/lib/insertSql";
 import { cn } from "@/lib/utils";
 
 /**
- * Schema-generated row insert form (roadmap §4.5).
+ * Schema-generated row insert form.
  *
  * Each column becomes a field whose widget is chosen by its Postgres type
  * (the same `detectEditorKind` the inline cell editor uses). Every field is in

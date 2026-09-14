@@ -1,5 +1,5 @@
 /**
- * JSONB schema inference (roadmap §7.3).
+ * JSONB schema inference.
  *
  * Sample N rows of a json/jsonb column and walk the parsed values in JS to infer
  * the set of paths, the types seen at each, how often each occurs, and one

@@ -1,5 +1,5 @@
 /**
- * Query History store (roadmap §5.5).
+ * Query History store.
  *
  * Records each Advanced-mode query run, scoped per connection. Persisted to
  * `~/.pglens/query-history.json` as `{ entries: [...] }`, written atomically

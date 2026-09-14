@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 /**
- * Per-tab Advanced toggle state (roadmap §5.1). Advanced Mode is per-tab, not
+ * Per-tab Advanced toggle state. Advanced Mode is per-tab, not
  * per-app, so mode and the edited SQL live keyed by tab id — flipping back to
  * No-code preserves the SQL the user was editing. Cleared when the tab closes.
  */

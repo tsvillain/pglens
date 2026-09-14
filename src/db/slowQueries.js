@@ -1,5 +1,5 @@
 /**
- * Slow query view — Postgres-native operations (roadmap §6.2).
+ * Slow query view — Postgres-native operations.
  *
  * Surfaces the server's own `pg_stat_statements` aggregates so a user can find
  * the queries that cost the most cumulative time and drill into one for its
@@ -19,14 +19,12 @@
  * raw "column does not exist" error to the client.
  */
 
-// CREATE EXTENSION is offered as a one-click action (roadmap §6.2: "show a
-// one-click 'Enable pg_stat_statements' with the DDL preview"). The same string
-// is shown to the user as the preview and run by the enable action.
+// CREATE EXTENSION is offered as a one-click action, with the same string
+// shown to the user as the preview and run by the enable action.
 const ENABLE_DDL = 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;';
 
-// Allowlist of sortable metrics → the real column (roadmap §6.2: "Top queries
-// by total_exec_time, mean_exec_time, calls"). The ORDER BY is chosen from this
-// map only, so a bad/spoofed sort key can never reach the SQL.
+// Allowlist of sortable metrics → the real column. The ORDER BY is chosen
+// from this map only, so a bad/spoofed sort key can never reach the SQL.
 const SORT_COLUMNS = {
   total_exec_time: 'total_exec_time',
   mean_exec_time: 'mean_exec_time',
@@ -168,7 +166,7 @@ async function enableStatements(pool) {
 }
 
 /**
- * Discard all collected statistics (roadmap §6.2: "Reset stats" button) via
+ * Discard all collected statistics (the "Reset stats" button) via
  * pg_stat_statements_reset(). Requires a privileged role.
  */
 async function resetStatements(pool) {

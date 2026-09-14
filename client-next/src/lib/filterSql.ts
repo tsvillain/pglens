@@ -48,7 +48,7 @@ function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`
 }
 
-/** `"col"->'a'->>'b'` for a JSONB key path — matches the roadmap's accessor form. */
+/** `"col"->'a'->>'b'` for a JSONB key path. */
 export function jsonbAccessor(column: string, path: string[]): string {
   const col = quoteIdent(column)
   if (path.length === 0) return col

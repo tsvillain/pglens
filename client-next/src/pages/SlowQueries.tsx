@@ -308,7 +308,7 @@ function Drilldown({ stmt }: { stmt: SlowStatement }) {
   const [planOpen, setPlanOpen] = useState(false)
   const query = stmt.query?.trim() ?? ''
 
-  // EXPLAIN integration (roadmap §6.2): hand the statement to the Query editor
+  // EXPLAIN integration: hand the statement to the Query editor
   // ready to run.
   const explain = () => {
     useQuerySeedStore.getState().setSeed(buildExplainSql(query))

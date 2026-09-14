@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
  *     while the dialog is open.
  *
  * Foreign-key and enum columns fall back to a plain text input until their
- * lookup pipelines land — graceful degradation per roadmap §4.4.
+ * lookup pipelines land — graceful degradation.
  */
 
 export type EditorKind =

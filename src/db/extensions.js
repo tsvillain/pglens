@@ -1,5 +1,5 @@
 /**
- * Postgres extensions panel (roadmap §7.4).
+ * Postgres extensions panel.
  *
  * Lists every extension the server makes available (pg_available_extensions),
  * with the installed version (null when not installed) and the default version
@@ -10,7 +10,7 @@
 
 const { quoteIdent } = require('./identifier');
 
-// Curated highlights from the roadmap, surfaced first so the common ones aren't
+// Curated highlights, surfaced first so the common ones aren't
 // buried in the alphabetical long tail. pgvector ships as the `vector` extension.
 const POPULAR = new Set([
   'pg_trgm', 'vector', 'postgis', 'pg_stat_statements',

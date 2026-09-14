@@ -44,7 +44,7 @@ function previewOrderBy(sort: SortEntry[]): string {
 /**
  * "Export" toolbar action. Streams the current table view (filter + sort +
  * chosen columns) to disk as CSV, JSON, or a SQL `INSERT` script. Honors the
- * roadmap's "every no-code action exposes Show SQL" principle with a preview
+ * the app's "every no-code action exposes Show SQL" principle with a preview
  * of the exact SELECT the server runs.
  */
 export function ExportMenu({

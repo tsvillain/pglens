@@ -137,8 +137,8 @@ router.put('/connections/:id',
     }
   });
 
-router.get('/connections', (req, res) => {
-  res.json({ connections: getConnections() });
+router.get('/connections', async (req, res) => {
+  res.json({ connections: await getConnections() });
 });
 
 router.post('/disconnect', async (req, res) => {
@@ -518,7 +518,7 @@ router.get('/tables/:tableName/aggregate',
     }
   });
 
-// ---- JSONB schema inference (roadmap §7.3) ----------------------------------
+// ---- JSONB schema inference --------------------------------------------------
 //
 // GET /api/tables/:tableName/jsonb?column=<col>&sample=<n>
 //   Samples up to `sample` non-null rows of a json/jsonb column and returns the
@@ -1078,7 +1078,7 @@ router.get('/schema', requireConnection, async (req, res) => {
   }
 });
 
-// POST /api/schema/ddl — Visual ERD editor (roadmap §7.2).
+// POST /api/schema/ddl — Visual ERD editor.
 //   Takes structured edit ops (never SQL fragments) and returns reviewable DDL.
 //   Nothing is executed: the statements go to the editor's Run button, exactly
 //   like the schema-diff and index-assistant generators. requireConnection only
@@ -1173,7 +1173,7 @@ router.delete('/views/:id', validate({ params: ViewIdParam }), (req, res) => {
   res.json({ deleted: true });
 });
 
-// ---- Saved queries (roadmap §5.5) -------------------------------------------
+// ---- Saved queries ------------------------------------------------------------
 //
 // Raw SQL + organizational metadata (folder / tags / description) and
 // Postman-style `{{variable}}` defaults, scoped per connection. Stored in
@@ -1235,7 +1235,7 @@ router.delete('/saved-queries/:id', validate({ params: SavedQueryIdParam }), (re
   res.json({ deleted: true });
 });
 
-// ---- Query history (roadmap §5.5) -------------------------------------------
+// ---- Query history --------------------------------------------------------
 //
 // Per-connection run log written by the Advanced editor after each run. Stored
 // in `~/.pglens/query-history.json` — see `src/db/queryHistory.js`. Like saved
@@ -1354,7 +1354,7 @@ router.post('/query',
     }
   });
 
-// ---- Transaction mode (roadmap §5.3) ---------------------------------------
+// ---- Transaction mode -------------------------------------------------------
 //
 // An Advanced tab in Transaction mode holds one dedicated backend for the life
 // of the transaction. BEGIN runs implicitly on the first `/tx/query`; COMMIT /
@@ -1473,7 +1473,7 @@ router.get('/tx/status',
     res.json(txManager.status(req.query.tabId));
   });
 
-// Pretty-print SQL for the Advanced-mode editor (roadmap §5.2 "format on save").
+// Pretty-print SQL for the Advanced-mode editor ("format on save").
 // Pure text transform — no DB connection needed, so this route is open. We run
 // the JS `sql-formatter` (postgresql dialect) rather than the Perl pg-formatter
 // so a single `npm install` stays sufficient (CLAUDE.md principle #5).
@@ -1492,7 +1492,7 @@ router.post('/format', validate({ body: FormatBodySchema }), (req, res) => {
   }
 });
 
-// ---- Live activity dashboard (roadmap §6.1) --------------------------------
+// ---- Live activity dashboard ------------------------------------------------
 //
 // One snapshot of the server's own stat views per call; the client polls this
 // every few seconds while the Operations panel is open. Each section degrades
@@ -1539,7 +1539,7 @@ router.post('/operations/terminate',
     }
   });
 
-// ---- Slow query view (roadmap §6.2) ----------------------------------------
+// ---- Slow query view ---------------------------------------------------------
 //
 // Reads pg_stat_statements. The list response is a small state machine
 // (not_installed / not_loaded / ready) so the client renders the enable prompt
@@ -1591,7 +1591,7 @@ router.post('/operations/statements/reset', requireConnection, async (req, res) 
   }
 });
 
-// ---- Index assistant (roadmap §6.4) ----------------------------------------
+// ---- Index assistant --------------------------------------------------------
 //
 // Read-only catalog advice (unused / duplicate indexes + heavy seq-scan
 // tables). Each section degrades independently inside getAdvice(), so the route
@@ -1608,7 +1608,7 @@ router.get('/operations/indexes', requireConnection, async (req, res) => {
   }
 });
 
-// ---- Extensions panel (roadmap §7.4) ---------------------------------------
+// ---- Extensions panel -------------------------------------------------------
 //
 // Lists server-available extensions with installed/default versions, and a
 // one-click install that runs CREATE EXTENSION server-side (like the
@@ -1659,7 +1659,7 @@ router.post('/operations/extensions/drop',
     }
   });
 
-// ---- Schema diff & migration generator (roadmap §7.1) ----------------------
+// ---- Schema diff & migration generator --------------------------------------
 //
 // GET /api/schema-diff?source=<connId>&target=<connId>
 //   Diffs two registered connections (each at its own configured schema) and

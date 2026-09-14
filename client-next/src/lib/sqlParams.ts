@@ -1,5 +1,5 @@
 /**
- * Named-parameter support for the Advanced-mode editor (roadmap §5.2).
+ * Named-parameter support for the Advanced-mode editor.
  *
  * A query may use `:name` placeholders; we render a form for them below the
  * editor and, on run, rewrite each `:name` to a positional `$n` and ship a
