@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.1] - 2026-09-14
+
+### Added
+
+- Cloud extension points for the upcoming pglens-cloud service: an auth provider hook, a
+  remote-sync adapter, and a connection-source adapter. Each defaults to today's exact local
+  behavior — nothing is registered by default, OSS install is unchanged.
+- `pglens update` and `pglens uninstall` CLI commands.
+- A tag-triggered GitHub Actions release workflow that builds the frontend, packs an npm
+  tarball, and publishes it to GitHub Releases with sha256 checksums.
+- DCO sign-off requirement for contributions (see CONTRIBUTING.md).
+- MIT LICENSE file.
+
+### Changed
+
+- The install script (now maintained in the pglens-website repo) supports `PGLENS_VERSION`
+  pinning and verifies the downloaded release tarball's checksum before installing.
+
 ## [3.5.0] - 2026-06-25
 
 Smart features. The five no-code "wow": schema diff & migration generator, an editable visual ERD,
