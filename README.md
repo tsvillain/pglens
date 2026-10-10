@@ -1,12 +1,12 @@
 # pglens
 
-A no-code PostgreSQL workstation. View, explore, visualize, edit, and query your
-PostgreSQL databases through a fast local web interface — SQL is the escape hatch,
-not the entry point. Every no-code action has a "Show SQL" disclosure, and the UI
-never sends raw SQL fragments; the server parses structured specs into
-parameterized queries.
+A no-code PostgreSQL workstation. Browse, filter, edit, visualize, and query your
+PostgreSQL databases from a fast local web UI. Every no-code action has a
+"Show SQL" disclosure, and the UI never sends raw SQL fragments: the server turns
+structured specs into parameterized queries. When you want to write SQL yourself,
+any tab switches to Advanced mode.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history.
+Website: [pglens.org](https://pglens.org) · Release history: [CHANGELOG.md](CHANGELOG.md)
 
 ## Features
 
