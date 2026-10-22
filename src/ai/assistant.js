@@ -1,5 +1,5 @@
 /**
- * AI mode — schema-aware NL→SQL (roadmap §7.6).
+ * AI mode — schema-aware NL→SQL.
  *
  * BYOK across three providers:
  *   - anthropic — via @anthropic-ai/sdk (optional dependency, loaded lazily)
@@ -12,9 +12,16 @@
  *
  * A request is grounded on the live schema, sample rows for the focused table,
  * the user's recent query history, and (optionally) the current view's filter.
- * Generated SQL is returned to the client for review/edit before it runs — pglens
- * never executes it here. By default only read-only SQL is produced; writes
- * require the user to opt in (`allowWrites`).
+ * Sample rows, column values and history are only sent when `shareData` is on.
+ * Columns that look like credentials, plus anything in the user's `redact`
+ * rules, never have their values sent.
+ *
+ * Generated SQL is returned to the client for review/edit before it runs. The
+ * one exception is the row-count probe (countRows): read-only SQL is wrapped in
+ * `count(*)` inside a READ ONLY transaction with a short statement_timeout, and
+ * only after it passes isReadOnly(), which also rejects side-effecting
+ * functions. By default only read-only SQL is produced; writes require the user
+ * to opt in (`allowWrites`).
  */
 
 const crypto = require('crypto');
@@ -27,7 +34,7 @@ const logger = require('../log');
 
 const PROVIDERS = ['anthropic', 'openai', 'ollama'];
 const DEFAULT_MODELS = {
-  anthropic: 'claude-opus-5',
+  anthropic: 'claude-opus-5-5',
   openai: 'gpt-4o',
   ollama: 'llama3.1',
 };
@@ -37,6 +44,10 @@ const DEFAULT_OLLAMA_HOST = 'http://127.0.0.1:11434';
 // A truncation note tells the model the context was clipped.
 const MAX_SCHEMA_CHARS = 24_000;
 const SAMPLE_ROWS = 3;
+// Each sample row is clipped to this, and all sample blocks together get this
+// budget on top of MAX_SCHEMA_CHARS (3 tables × 3 rows fits comfortably).
+const MAX_SAMPLE_ROW_CHARS = 500;
+const MAX_SAMPLE_CHARS = 6_000;
 // How many prompt-relevant tables get sample rows (each costs one LIMIT-3 query).
 const MAX_SAMPLED_TABLES = 3;
 // Real values rendered per column ([values: …]) — enough to cover enums and
@@ -57,7 +68,7 @@ function keyAccount(provider) {
 }
 
 // `responseClass` tags the error with one of the telemetry classes so the
-// per-request log event can be sliced by failure mode (the article's three
+// per-request log event can be sliced by failure mode (three
 // "200 OK" signals: schema_fail, refusal, and — via token/attempt counts — cost).
 function httpError(status, message, hint, responseClass) {
   const e = new Error(message);
@@ -123,11 +134,19 @@ async function getConfig() {
     provider,
     model: s.model || DEFAULT_MODELS[provider],
     allowWrites: !!s.allowWrites,
+    // Sample rows, column values and query history in the prompt. On unless
+    // the user turned it off; credential-like columns are redacted either way.
+    shareData: s.shareData !== false,
+    // User redaction rules (`table`, `table.column`, `*.column`): values from
+    // these never reach the model. Names still do — the model needs them.
+    redact: Array.isArray(s.redact) ? s.redact : [],
     ollamaHost: s.ollamaHost || DEFAULT_OLLAMA_HOST,
   };
 }
 
-async function setConfig({ apiKey, model, allowWrites, provider, ollamaHost } = {}) {
+async function setConfig({
+  apiKey, model, allowWrites, shareData, redact, provider, ollamaHost,
+} = {}) {
   const s = readSettings();
   if (provider !== undefined) {
     if (!PROVIDERS.includes(provider)) throw httpError(400, `Unknown provider "${provider}".`);
@@ -140,6 +159,10 @@ async function setConfig({ apiKey, model, allowWrites, provider, ollamaHost } = 
     s.model = model || DEFAULT_MODELS[s.provider || 'anthropic'];
   }
   if (allowWrites !== undefined) s.allowWrites = !!allowWrites;
+  if (shareData !== undefined) s.shareData = !!shareData;
+  if (redact !== undefined) {
+    s.redact = [...new Set(redact.map((r) => String(r).trim()).filter(Boolean))];
+  }
   if (ollamaHost !== undefined) s.ollamaHost = ollamaHost || DEFAULT_OLLAMA_HOST;
   writeSettings(s);
 
@@ -156,10 +179,40 @@ async function setConfig({ apiKey, model, allowWrites, provider, ollamaHost } = 
 
 // ---- Read-only guard --------------------------------------------------------
 
+// `SELECT … INTO t` creates a table, so INTO counts as a write here.
+const WRITE_KEYWORD =
+  /\b(insert|update|delete|truncate|drop|alter|create|grant|revoke|merge|call|do|copy|into)\b/i;
+
+// Built-ins that have side effects even inside a plain SELECT: killing
+// sessions, network egress, server file access, large objects, sequences,
+// session config, locks, sleeps. A READ ONLY transaction stops the ones that
+// write, but not pg_terminate_backend, dblink, pg_read_file or pg_sleep — so
+// they are named here.
+// ponytail: denylist, not an allowlist of safe functions. Extensions with
+// their own side-effecting functions slip past; the READ ONLY probe transaction
+// still blocks anything that writes, and the user reviews the SQL before Run.
+const UNSAFE_FUNCTION = new RegExp(
+  '\\b(?:'
+  + [
+    'pg_terminate_backend', 'pg_cancel_backend', 'pg_reload_conf',
+    'pg_rotate_logfile', 'pg_promote', 'pg_switch_wal', 'pg_log_backend_memory_contexts',
+    'pg_sleep\\w*', 'pg_(?:try_)?advisory\\w*',
+    'pg_read_\\w+', 'pg_ls_\\w+', 'pg_stat_file', 'pg_file_\\w+',
+    'lo_\\w+', 'dblink\\w*',
+    'set_config', 'setval', 'nextval',
+    'pg_notify', 'pg_logical_emit_message',
+    'pg_create_\\w+', 'pg_drop_replication_slot', 'pg_replication_origin_\\w+',
+    'pg_import_system_collations',
+  ].join('|')
+  + ')\\s*\\(',
+  'i',
+);
+
 /**
  * Conservative read-only check used to enforce the "read-only unless writes
- * enabled" rule. Every statement must start with a read keyword AND contain no
- * write/DDL keyword anywhere (so a `WITH ... INSERT` CTE is also rejected).
+ * enabled" rule and to gate the row-count probe. Every statement must start
+ * with a read keyword AND contain no write/DDL keyword or side-effecting
+ * built-in anywhere (so a `WITH ... INSERT` CTE is also rejected).
  *
  * ponytail: lexical, not a parser — a string literal like `'please update'`
  * reads as a write and gets blocked. That false-positive is acceptable for a
@@ -170,9 +223,9 @@ function isReadOnly(sql) {
   const stmts = splitStatements(sql);
   if (stmts.length === 0) return false;
   const allowedStart = /^\s*(with|select|explain|show|table|values)\b/i;
-  const writeKeyword =
-    /\b(insert|update|delete|truncate|drop|alter|create|grant|revoke|merge|call|do|copy)\b/i;
-  return stmts.every((s) => allowedStart.test(s) && !writeKeyword.test(s));
+  return stmts.every((s) => allowedStart.test(s)
+    && !WRITE_KEYWORD.test(s)
+    && !UNSAFE_FUNCTION.test(s));
 }
 
 // ---- Schema grounding -------------------------------------------------------
@@ -191,6 +244,57 @@ function typeName(dataType, udtName) {
 // when quoted — showing the quotes here is what teaches the model to keep them.
 function qid(name) {
   return /^[a-z_][a-z0-9_]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+}
+
+// Columns whose values never leave the machine, whatever `shareData` says.
+// Matched on the name with separators stripped, so `password_hash`,
+// `apiKey` and `refresh-token` all hit.
+// ponytail: name heuristic. A secret in a column called `notes` is not caught;
+// turning `shareData` off is the guarantee.
+const SENSITIVE_COLUMN =
+  /passw|passwd|pwd|secret|token|hash|salt|apikey|privatekey|accesskey|ssn|socialsecurity|creditcard|cardnumber|cvv|cvc|iban|otp|mfa/;
+
+function isSensitiveColumn(name) {
+  return SENSITIVE_COLUMN.test(String(name).toLowerCase().replace(/[^a-z0-9]/g, ''));
+}
+
+/**
+ * Compile the user's redaction rules into `isRedacted(table, column?)`.
+ * Rules are case-insensitive: `payments` (whole table), `users.email` (one
+ * column), `*.phone` (that column in every table). With no column, only
+ * whole-table rules apply; with one, the built-in credential check applies too.
+ * ponytail: rules match by table name in whatever schema is active, and apply to
+ * every connection — schema/connection-scoped rules if two DBs disagree.
+ */
+function compileRedactRules(rules = []) {
+  const tables = new Set();
+  const columns = new Set();
+  for (const raw of rules) {
+    const r = String(raw).trim().toLowerCase();
+    if (!r) continue;
+    if (r.includes('.')) columns.add(r);
+    else tables.add(r);
+  }
+  return (table, column) => {
+    const t = String(table).toLowerCase();
+    if (tables.has(t)) return true;
+    if (column === undefined) return false;
+    const c = String(column).toLowerCase();
+    return columns.has(`${t}.${c}`) || columns.has(`*.${c}`) || isSensitiveColumn(column);
+  };
+}
+
+// True when `text` names anything a rule redacts — used to drop past queries
+// and UI filters that may carry those values as literals.
+// ponytail: whole-word name match, so it over-drops (a rule `users.email` also
+// drops queries touching `orders.email`). Losing a history line is cheap.
+function mentionsRedacted(text, rules = []) {
+  return rules.some((raw) => {
+    const name = String(raw).trim().split('.').pop();
+    if (!name || name === '*') return false;
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^A-Za-z0-9_])${esc}($|[^A-Za-z0-9_])`, 'i').test(text);
+  });
 }
 
 // Free-text-ish types whose pg_stats most-common values are worth showing —
@@ -280,7 +384,10 @@ function classifyPrompt(prompt, schemaTokens) {
  * 8b-class models. No score at all ⇒ fall back to every table (still bounded by
  * MAX_SCHEMA_CHARS, best-known-first).
  */
-async function buildGrounding(pool, schema, { focusTable, prompt } = {}) {
+async function buildGrounding(pool, schema, {
+  focusTable, prompt, shareData = true, redact = [],
+} = {}) {
+  const isRedacted = compileRedactRules(redact);
   const [cols, pks, fks, enums, stats] = await Promise.all([
     pool.query(
       `SELECT table_name, column_name, data_type, udt_name, is_nullable
@@ -324,7 +431,7 @@ async function buildGrounding(pool, schema, { focusTable, prompt } = {}) {
     // role can read; both degrade to "no hints". most_common_vals is anyarray,
     // so the ::text::text[] double-cast is required (and quote-safe).
     // n_distinct is negative when a ratio; BETWEEN keeps true low-cardinality.
-    pool.query(
+    !shareData ? { rows: [] } : pool.query(
       `SELECT tablename, attname, most_common_vals::text::text[] AS vals
        FROM pg_stats
        WHERE schemaname = $1 AND inherited = false
@@ -353,6 +460,7 @@ async function buildGrounding(pool, schema, { focusTable, prompt } = {}) {
   }
   const commonVals = new Map(); // `${table}\0${column}` -> [value, ...]
   for (const r of stats.rows) {
+    if (isRedacted(r.tablename, r.attname)) continue;
     commonVals.set(`${r.tablename}\0${r.attname}`, r.vals);
   }
 
@@ -411,8 +519,10 @@ async function buildGrounding(pool, schema, { focusTable, prompt } = {}) {
       // Real values inline on the column line — the model picks filter
       // literals from the line it's already reading. Enum labels win (the
       // complete legal set); stats MCVs only for free-text-ish columns.
-      const vals = enumLabels.get(c.udt_name)
-        ?? (TEXTY_UDT.has(c.udt_name) ? commonVals.get(key) : undefined);
+      // Redacted columns get no list at all, not even enum labels.
+      const vals = isRedacted(table, c.column_name) ? undefined
+        : enumLabels.get(c.udt_name)
+          ?? (TEXTY_UDT.has(c.udt_name) ? commonVals.get(key) : undefined);
       if (vals && vals.length) parts.push(renderValues(vals));
       return parts.join(' ');
     });
@@ -445,18 +555,22 @@ async function buildGrounding(pool, schema, { focusTable, prompt } = {}) {
   // of real values. Without a scored prompt (browsing fallback), only the
   // focused table is sampled — sampling arbitrary tables wastes the budget.
   const sampleTargets = [];
-  if (focusTable && rendered.has(focusTable)) sampleTargets.push(focusTable);
-  if (promptScored) {
+  const sampleable = (t) => rendered.has(t) && !isRedacted(t);
+  if (shareData && focusTable && sampleable(focusTable)) sampleTargets.push(focusTable);
+  if (shareData && promptScored) {
     for (const t of ordered) {
       if (sampleTargets.length >= MAX_SAMPLED_TABLES) break;
-      if (rendered.has(t) && !sampleTargets.includes(t)) sampleTargets.push(t);
+      if (sampleable(t) && !sampleTargets.includes(t)) sampleTargets.push(t);
     }
   }
   const sampled = await Promise.all(
-    sampleTargets.map((t) => sampleRows(pool, schema, t)),
+    sampleTargets.map((t) => sampleRows(pool, schema, t, (col) => isRedacted(t, col))),
   );
+  // Samples share the schema budget; a block that doesn't fit is dropped whole.
   sampled.forEach((s, i) => {
-    if (s) text += `\nSample rows from ${qid(sampleTargets[i])}:\n${s}\n`;
+    if (!s) return;
+    const block = `\nSample rows from ${qid(sampleTargets[i])}:\n${s}\n`;
+    if (text.length + block.length <= MAX_SCHEMA_CHARS + MAX_SAMPLE_CHARS) text += block;
   });
 
   return {
@@ -474,13 +588,13 @@ async function buildSchemaContext(pool, schema, focusTable, prompt) {
   return (await buildGrounding(pool, schema, { focusTable, prompt })).text;
 }
 
-async function sampleRows(pool, schema, table) {
+async function sampleRows(pool, schema, table, isRedactedColumn) {
   try {
     const r = await pool.query(
       `SELECT * FROM ${quoteQualifiedIdent(schema, table)} LIMIT ${SAMPLE_ROWS}`,
     );
     if (!r.rows.length) return null;
-    return r.rows.map((row) => JSON.stringify(row, truncateCells)).join('\n');
+    return r.rows.map((row) => renderSampleRow(row, isRedactedColumn)).join('\n');
   } catch (err) {
     // Missing table / permission error — grounding is best-effort.
     logger.debug?.({ err: err.message, table }, 'ai sample rows skipped');
@@ -488,13 +602,29 @@ async function sampleRows(pool, schema, table) {
   }
 }
 
-// JSON.stringify replacer: clip long string cells so a wide TEXT/JSONB column
-// can't dominate the prompt.
+// JSON.stringify replacer: clip long string cells so a wide TEXT column can't
+// dominate the prompt, and collapse bytea. Buffer.toJSON runs before the
+// replacer, so a bytea cell arrives here as { type: 'Buffer', data: [...] }.
 function truncateCells(_key, value) {
   if (typeof value === 'string' && value.length > 120) {
     return `${value.slice(0, 120)}…`;
   }
+  if (value && value.type === 'Buffer' && Array.isArray(value.data)) {
+    return `<binary ${value.data.length} bytes>`;
+  }
   return value;
+}
+
+// One sample row as a bounded JSON line. Redacted columns (user rules plus the
+// built-in credential check) are masked at the top level, and the whole line is
+// clipped, because nested JSONB and arrays are not limited by truncateCells.
+function renderSampleRow(row, isRedactedColumn = isSensitiveColumn) {
+  const safe = {};
+  for (const [k, v] of Object.entries(row)) {
+    safe[k] = isRedactedColumn(k) && v !== null ? '[redacted]' : v;
+  }
+  const line = JSON.stringify(safe, truncateCells);
+  return line.length > MAX_SAMPLE_ROW_CHARS ? `${line.slice(0, MAX_SAMPLE_ROW_CHARS)}…` : line;
 }
 
 // ---- Prompt assembly --------------------------------------------------------
@@ -571,8 +701,10 @@ function buildUserMessage({ prompt, focusTable, filterText, history }) {
 const RESULT_SCHEMA = {
   type: 'object',
   properties: {
+    // anyOf rather than type: [..., 'null'] — it is the nullable form all
+    // three providers' structured-output modes document.
     sql: {
-      type: ['string', 'null'],
+      anyOf: [{ type: 'string' }, { type: 'null' }],
       description: 'The PostgreSQL query, or null if the request cannot be answered with SQL.',
     },
     explanation: {
@@ -580,7 +712,7 @@ const RESULT_SCHEMA = {
       description: 'One or two sentences on what the query does and any assumption made.',
     },
     refusal: {
-      type: ['string', 'null'],
+      anyOf: [{ type: 'string' }, { type: 'null' }],
       description: 'One-sentence reason the request is out of scope, or null when SQL was produced.',
     },
     confidence: {
@@ -612,25 +744,30 @@ function clip(s) {
 }
 
 // Each provider call returns { result, usage } so the caller can both use the
-// SQL and account for the token spend (the article's cost-per-request signal).
+// SQL and account for the token spend (cost per request).
 
-async function callAnthropic({ apiKey, model, system, user }) {
+async function callAnthropic({ apiKey, model, system, user, signal }) {
   if (!anthropicAvailable()) {
     throw httpError(503, 'Anthropic SDK not installed.', 'Run `npm i @anthropic-ai/sdk` or pick another provider.');
   }
   const Anthropic = loadAnthropic();
-  // The SDK retries transient errors itself (maxRetries) and bounds each attempt.
-  const client = new Anthropic({ apiKey, timeout: CALL_TIMEOUT_MS, maxRetries: 2 });
-  const resp = await client.messages.create({
+  // One SDK retry for transient errors; the route's own deadline and the
+  // client-disconnect signal bound the total.
+  const client = new Anthropic({ apiKey, timeout: CALL_TIMEOUT_MS, maxRetries: 1 });
+  // Beta endpoint only for `fallbacks`: on a safety refusal the API re-runs the
+  // request on a fallback model inside the same call instead of failing.
+  const resp = await client.beta.messages.create({
     model: model || DEFAULT_MODELS.anthropic,
     max_tokens: 16000,
     thinking: { type: 'adaptive' },
     system,
     messages: [{ role: 'user', content: user }],
     output_config: {
-      format: { type: 'json_schema', name: 'sql_suggestion', schema: RESULT_SCHEMA },
+      format: { type: 'json_schema', schema: RESULT_SCHEMA },
     },
-  });
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+  }, { signal });
   if (resp.stop_reason === 'refusal') {
     throw httpError(422, 'The model declined to answer this request.', undefined, 'refusal');
   }
@@ -641,13 +778,19 @@ async function callAnthropic({ apiKey, model, system, user }) {
   return { result: parseModelJson(text), usage: extractUsage('anthropic', resp) };
 }
 
-async function callOpenAI({ apiKey, model, system, user }) {
+// Per-call timeout, also aborted when the client goes away.
+function callSignal(signal) {
+  const timeout = AbortSignal.timeout(CALL_TIMEOUT_MS);
+  return signal ? AbortSignal.any([timeout, signal]) : timeout;
+}
+
+async function callOpenAI({ apiKey, model, system, user, signal }) {
   let resp;
   try {
     resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      signal: callSignal(signal),
       body: JSON.stringify({
         model: model || DEFAULT_MODELS.openai,
         messages: [
@@ -676,14 +819,14 @@ async function callOpenAI({ apiKey, model, system, user }) {
   };
 }
 
-async function callOllama({ ollamaHost, model, system, user }) {
+async function callOllama({ ollamaHost, model, system, user, signal }) {
   const host = (ollamaHost || DEFAULT_OLLAMA_HOST).replace(/\/+$/, '');
   let resp;
   try {
     resp = await fetch(`${host}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+      signal: callSignal(signal),
       body: JSON.stringify({
         model: model || DEFAULT_MODELS.ollama,
         messages: [
@@ -770,16 +913,22 @@ function repairMessage(userMsg, badSql, error) {
  * server learns what the user would otherwise discover by hand — that a
  * plausible-looking query matches nothing (invented filter, wrong join path).
  * Returns the count, or null when the probe doesn't apply or timed out.
- * Read-only-ness is checked by the caller; nothing here can write.
+ *
+ * This runs model output without a click, so it re-checks isReadOnly() itself
+ * (callers have been wrong before) and runs in a READ ONLY transaction: even a
+ * user-defined function that writes fails instead of committing.
  */
 const PROBE_TIMEOUT_MS = 3_000;
 
 async function countRows(pool, schema, sql) {
   const stmts = splitStatements(sql);
   if (stmts.length !== 1 || !/^\s*(select|with)\b/i.test(stmts[0])) return null;
+  if (!isReadOnly(stmts[0])) return null;
   try {
     let count = null;
     await pool.transaction(async (tx) => {
+      // Must be the first statement of the transaction.
+      await tx.query('SET TRANSACTION READ ONLY');
       await tx.query(`SET LOCAL search_path TO ${quoteIdent(schema)}`);
       await tx.query(`SET LOCAL statement_timeout = '${PROBE_TIMEOUT_MS}ms'`);
       const r = await tx.query(
@@ -812,13 +961,13 @@ function zeroRowsMessage(userMsg, sql) {
   ].join('\n');
 }
 
-// One structured telemetry event per request — the article's core advice for
+// One structured telemetry event per request, for
 // apps that "fail with 200 OK". Goes to the existing pino log (`~/.pglens/logs`)
 // as a single JSON line under `ai`, so failure modes (schema_fail / refusal /
 // validation_fail) and token spend per request are queryable after the fact.
 // ponytail: this IS the observability surface for a local single-user tool —
 // pager rules, multi-window burn rates, shadow-eval sampling and request-replay
-// from the article are team-scale ops that arrive (if ever) with team mode (v4).
+// are team-scale ops that arrive (if ever) with team mode (v4).
 function logTelemetry(event) {
   logger.info({ ai: event }, 'ai.nl2sql');
 }
@@ -828,11 +977,15 @@ function logTelemetry(event) {
 // `configOverride` is for the eval harness only (test/eval/run.js) — it lets a
 // run pin provider/model without mutating ~/.pglens/ai.json. The HTTP route
 // never passes it; API keys still resolve from the keychain either way.
-async function generateSql({ pool, schema, prompt, focusTable, filterText, history, configOverride }) {
+// `signal` aborts in-flight model calls and skips further repair rounds when
+// the HTTP client disconnects.
+async function generateSql({
+  pool, schema, prompt, focusTable, filterText, history, configOverride, signal,
+}) {
   const requestId = crypto.randomUUID();
   const started = Date.now();
   // Token spend is summed across attempts so a repair round-trip shows its real
-  // cost (the article's "retry loops inflate cost" signal).
+  // cost (retry loops inflate cost).
   const used = { inputTokens: 0, outputTokens: 0 };
   const addUsage = (u) => {
     if (u?.inputTokens) used.inputTokens += u.inputTokens;
@@ -862,7 +1015,9 @@ async function generateSql({ pool, schema, prompt, focusTable, filterText, histo
       }
     }
 
-    const grounding = await buildGrounding(pool, schema, { focusTable, prompt });
+    const grounding = await buildGrounding(pool, schema, {
+      focusTable, prompt, shareData: cfg.shareData, redact: cfg.redact,
+    });
     tablesSent = grounding.tableCount;
     tablesTotal = grounding.totalTables;
 
@@ -885,13 +1040,22 @@ async function generateSql({ pool, schema, prompt, focusTable, filterText, histo
       allowWrites: cfg.allowWrites,
       exampleTable: grounding.exampleTable,
     });
-    const userMsg = buildUserMessage({ prompt, focusTable, filterText, history });
+    // Past queries and the UI filter carry literal values, so they follow the
+    // same switch as sample rows, and any that touch a redacted name are dropped.
+    const shareable = (t) => cfg.shareData && !mentionsRedacted(t, cfg.redact);
+    const userMsg = buildUserMessage({
+      prompt,
+      focusTable,
+      filterText: filterText && shareable(filterText) ? filterText : undefined,
+      history: (history || []).filter(shareable),
+    });
 
     const call = async (user) => {
+      if (signal?.aborted) throw httpError(499, 'Request cancelled.', undefined, 'cancelled');
       attempts += 1;
       try {
         const out = await callModel(provider, {
-          apiKey, model: cfg.model, ollamaHost: cfg.ollamaHost, system, user,
+          apiKey, model: cfg.model, ollamaHost: cfg.ollamaHost, system, user, signal,
         });
         addUsage(out.usage);
         return out.result;
@@ -956,7 +1120,8 @@ async function generateSql({ pool, schema, prompt, focusTable, filterText, histo
     if (!cfg.allowWrites && !readOnly) {
       throw httpError(
         400,
-        'The generated statement writes data, but write access is disabled.',
+        'The generated statement writes data or calls a function with side effects,'
+          + ' but write access is disabled.',
         'Enable write access in AI settings to allow this — then review it carefully.',
         'write_blocked',
       );
@@ -967,7 +1132,7 @@ async function generateSql({ pool, schema, prompt, focusTable, filterText, histo
     // path). Probe read-only SQL; on 0 rows give the model ONE shot to fix it,
     // and surface the count so the UI can warn when it stays at 0.
     rowCount = null;
-    if (!validationError && readOnly) {
+    if (!validationError && readOnly && !signal?.aborted) {
       rowCount = await countRows(pool, schema, sql);
       if (rowCount === 0) {
         try {
@@ -1036,4 +1201,9 @@ module.exports = {
   extractUsage,
   zeroRowsMessage,
   buildSystemPrompt,
+  renderSampleRow,
+  isSensitiveColumn,
+  compileRedactRules,
+  mentionsRedacted,
+  RESULT_SCHEMA,
 };

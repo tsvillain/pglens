@@ -1714,7 +1714,7 @@ router.get('/schema-diff', validate({ query: SchemaDiffQuery }), async (req, res
   }
 });
 
-// ---- AI mode — schema-aware NL→SQL (roadmap §7.6) --------------------------
+// ---- AI mode — schema-aware NL→SQL --------------------------
 //
 // BYOK Anthropic key in the keychain; settings (model, write toggle) in
 // ~/.pglens/ai.json. `/ai/config` is open (no connection) so the panel can show
@@ -1729,6 +1729,13 @@ const AiConfigBody = z.object({
   apiKey: z.string().max(500).nullable().optional(),
   model: z.string().min(1).max(100).optional(),
   allowWrites: z.boolean().optional(),
+  // Send sample rows, column values and query history to the model.
+  shareData: z.boolean().optional(),
+  // Redaction rules: `table`, `table.column` or `*.column`. Replaces the list.
+  redact: z.array(z.string().trim().min(1).max(200)
+    .regex(/^[^.\s]+(\.[^.\s]+)?$/, 'Use table, table.column or *.column'))
+    .max(500)
+    .optional(),
   provider: z.enum(['anthropic', 'openai', 'ollama']).optional(),
   // Base URL of a local Ollama daemon (only meaningful for the ollama provider).
   ollamaHost: z.string().url().max(500).optional(),
@@ -1765,6 +1772,9 @@ router.post('/ai/nl2sql',
   requireConnection,
   validate({ body: NlSqlBody }),
   async (req, res) => {
+    // Closing the panel or reloading stops paid model calls still in flight.
+    const ac = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) ac.abort(); });
     try {
       // Recent successful SQL for this connection sharpens the model's grounding.
       const history = queryHistory
@@ -1779,9 +1789,11 @@ router.post('/ai/nl2sql',
         focusTable: req.body.table,
         filterText: req.body.filter,
         history,
+        signal: ac.signal,
       });
       res.json(result);
     } catch (err) {
+      if (ac.signal.aborted) return undefined; // client is gone, nothing to send
       const status = err.statusCode || 500;
       const code = status >= 500 ? codes.INTERNAL : codes.BAD_REQUEST;
       if (status >= 500) logger.error({ err: err.message }, 'nl2sql failed');

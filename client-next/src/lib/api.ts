@@ -1356,7 +1356,7 @@ export function generateSchemaDdl(connectionId: string, ops: SchemaEditOp[]) {
   return postJson('/api/schema/ddl', { ops }, MigrationSchema, 'POST', connectionId)
 }
 
-// ---- AI mode — schema-aware NL→SQL (roadmap §7.6) ---------------------------
+// ---- AI mode — schema-aware NL→SQL ---------------------------
 
 export type AiProvider = 'anthropic' | 'openai' | 'ollama'
 
@@ -1368,6 +1368,10 @@ const AiConfigSchema = z.object({
   provider: z.enum(['anthropic', 'openai', 'ollama']),
   model: z.string(),
   allowWrites: z.boolean(),
+  // Sample rows, column values and query history go to the model when true.
+  shareData: z.boolean(),
+  // Redaction rules: `table`, `table.column` or `*.column`.
+  redact: z.array(z.string()),
   ollamaHost: z.string(),
 })
 export type AiConfig = z.infer<typeof AiConfigSchema>
@@ -1381,6 +1385,8 @@ export interface AiConfigPayload {
   apiKey?: string | null
   model?: string
   allowWrites?: boolean
+  shareData?: boolean
+  redact?: string[]
   provider?: AiProvider
   ollamaHost?: string
 }

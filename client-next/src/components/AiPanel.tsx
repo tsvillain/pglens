@@ -19,7 +19,7 @@ import { useQuerySeedStore } from '@/store/querySeed'
 import { useTabsStore } from '@/store/tabs'
 
 /**
- * AI mode — schema-aware NL→SQL (roadmap §7.6).
+ * AI mode — schema-aware NL→SQL.
  *
  * A chat box in the sidebar: the user describes what they want, the server
  * grounds the prompt on the live schema + sample rows + recent history and
@@ -29,7 +29,7 @@ import { useTabsStore } from '@/store/tabs'
  *
  * ponytail: reuses the querySeed → QueryRunner hand-off the slow-query
  * drilldown already uses, so there's no new editor/runner surface. "Save as
- * view" (roadmap §7.6) is reached through the editor's existing Save action
+ * view" is reached through the editor's existing Save action
  * rather than a bespoke flow.
  *
  * Mounted as the right rail in the root layout. It reads the active connection
@@ -61,11 +61,15 @@ export function AiPanel() {
   const [result, setResult] = useState<NlSqlResult | null>(null)
 
   const generate = useMutation({
-    // connectionId is non-null whenever the rail renders (gated below).
-    mutationFn: () =>
-      generateNlSql(connectionId as string, prompt.trim(), { table: focusTable }),
-    onSuccess: (r) => setResult(r),
+    mutationFn: (cid: string) => generateNlSql(cid, prompt.trim(), { table: focusTable }),
+    // Drop an answer that arrives after the user switched databases, so SQL
+    // for one connection never lands in another's editor.
+    onSuccess: (r, cid) => {
+      if (cid === useConnectionStore.getState().activeConnectionId) setResult(r)
+    },
   })
+
+  useEffect(() => setResult(null), [connectionId])
 
   // No rail without a connection, or when AI mode is disabled server-side.
   if (!connectionId || (config.data && !config.data.available)) return null
@@ -98,7 +102,7 @@ export function AiPanel() {
   const submit = () => {
     if (!prompt.trim() || generate.isPending) return
     setResult(null)
-    generate.mutate()
+    generate.mutate(connectionId)
   }
 
   return (
@@ -205,7 +209,7 @@ export function AiPanel() {
               </pre>
               {!result.readOnly && (
                 <p className="text-[11px] text-amber-600 dark:text-amber-500">
-                  ⚠ This query writes data — review carefully before running.
+                  ⚠ This query writes data or has side effects — review carefully before running.
                 </p>
               )}
               {result.validationError && (
@@ -268,15 +272,18 @@ const KEY_PLACEHOLDER: Record<AiConfig['provider'], string> = {
 }
 
 function AiSettings({ config, onSaved }: { config: AiConfig; onSaved: () => void }) {
-  const { provider, model, ollamaHost, allowWrites, configured } = config
+  const { provider, model, ollamaHost, allowWrites, shareData, redact, configured } = config
   const [key, setKey] = useState('')
   const [modelDraft, setModelDraft] = useState(model)
   const [hostDraft, setHostDraft] = useState(ollamaHost)
+  const redactSaved = redact.join('\n')
+  const [redactDraft, setRedactDraft] = useState(redactSaved)
 
   // Keep local drafts in sync when a save round-trips a new server value (e.g.
   // switching provider resets the model to that provider's default).
   useEffect(() => setModelDraft(model), [model])
   useEffect(() => setHostDraft(ollamaHost), [ollamaHost])
+  useEffect(() => setRedactDraft(redactSaved), [redactSaved])
 
   const save = useMutation({
     mutationFn: (payload: AiConfigPayload) => setAiConfig(payload),
@@ -378,6 +385,45 @@ function AiSettings({ config, onSaved }: { config: AiConfig; onSaved: () => void
         />
         Allow write queries (INSERT/UPDATE/DELETE)
       </label>
+
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={shareData}
+          onChange={(e) => save.mutate({ shareData: e.target.checked })}
+        />
+        Share sample rows and recent queries
+      </label>
+      <p className="text-[11px] text-muted-foreground">
+        {provider === 'ollama'
+          ? 'Requests go to your Ollama host'
+          : `Requests go to ${PROVIDER_LABELS[provider]}`}
+        {shareData
+          ? ': table and column names, a few sample rows, common column values and your last 5 queries. Password, token and key columns, and anything listed below, are always hidden.'
+          : ': table and column names only.'}
+      </p>
+
+      <label className="block text-[11px] text-muted-foreground">
+        Never send data from (one per line: <code>table</code>, <code>table.column</code>,{' '}
+        <code>*.column</code>)
+        <textarea
+          value={redactDraft}
+          onChange={(e) => setRedactDraft(e.target.value)}
+          rows={3}
+          placeholder={'payments\nusers.email\n*.phone'}
+          className="mt-1 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 font-mono text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+      </label>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={redactDraft === redactSaved || save.isPending}
+        onClick={() =>
+          save.mutate({ redact: redactDraft.split('\n').map((l) => l.trim()).filter(Boolean) })
+        }
+      >
+        Save redactions
+      </Button>
       {save.error && (
         <p className="text-[11px] text-destructive">{(save.error as Error).message}</p>
       )}

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   isReadOnly, buildSchemaContext, buildGrounding, classifyPrompt,
   validateSql, countRows, extractUsage, zeroRowsMessage, buildSystemPrompt,
+  renderSampleRow, isSensitiveColumn, RESULT_SCHEMA, compileRedactRules, mentionsRedacted,
 } = require('../../src/ai/assistant');
 
 // Fake pool over a 4-table schema: Dispute -> Project (FK), plus two unrelated
@@ -367,4 +368,125 @@ test('extractUsage normalizes each provider token block', () => {
   );
   // Missing usage → nulls, never throws.
   assert.deepEqual(extractUsage('openai', {}), { inputTokens: null, outputTokens: null });
+});
+
+test('isReadOnly rejects SELECT INTO and side-effecting built-ins', () => {
+  for (const sql of [
+    'SELECT * INTO backup FROM users',
+    'SELECT pg_terminate_backend(pid) FROM pg_stat_activity',
+    'SELECT pg_cancel_backend(42)',
+    "SELECT setval('orders_id_seq', 1)",
+    "SELECT nextval('orders_id_seq')",
+    'SELECT lo_unlink(16400)',
+    "SELECT * FROM dblink('host=evil', 'select 1') AS t(x int)",
+    "SELECT dblink_connect('host=evil')",
+    "SELECT pg_read_file('/etc/passwd')",
+    "SELECT * FROM pg_ls_dir('.')",
+    'SELECT pg_sleep(10)',
+    "SELECT set_config('search_path', 'x', false)",
+    'SELECT pg_advisory_lock(1)',
+    'WITH x AS (SELECT 1) SELECT pg_reload_conf() FROM x',
+  ]) {
+    assert.equal(isReadOnly(sql), false, sql);
+  }
+  // Names that only contain a denied word stay readable.
+  assert.equal(isReadOnly('SELECT setval_count, lo_total FROM stats'), true);
+});
+
+test('countRows runs in a READ ONLY transaction and refuses unsafe SQL', async () => {
+  const queries = [];
+  const pool = {
+    transaction: async (handler) => handler({
+      query: async (sql) => {
+        queries.push(sql);
+        if (/SELECT count\(\*\)/.test(sql)) return { rows: [{ n: '3' }] };
+        return { rows: [] };
+      },
+    }),
+  };
+  assert.equal(await countRows(pool, 'public', 'SELECT * FROM "Dispute"'), 3);
+  assert.equal(queries[0], 'SET TRANSACTION READ ONLY');
+
+  queries.length = 0;
+  assert.equal(
+    await countRows(pool, 'public', 'SELECT pg_terminate_backend(pid) FROM pg_stat_activity'),
+    null,
+  );
+  assert.equal(await countRows(pool, 'public', 'SELECT * INTO t2 FROM t'), null);
+  assert.deepEqual(queries, [], 'nothing reaches the database');
+});
+
+test('isSensitiveColumn catches credential-like names', () => {
+  for (const c of ['password', 'password_hash', 'apiKey', 'refresh-token', 'mfa_secret', 'card_number']) {
+    assert.equal(isSensitiveColumn(c), true, c);
+  }
+  for (const c of ['id', 'email', 'status', 'created_at', 'fullName']) {
+    assert.equal(isSensitiveColumn(c), false, c);
+  }
+});
+
+test('renderSampleRow redacts secrets, collapses bytea and clips the line', () => {
+  const line = renderSampleRow({
+    id: 1,
+    password_hash: '$2b$10$abc',
+    avatar: Buffer.alloc(50_000, 7),
+    doc: { items: Array.from({ length: 2000 }, (_, i) => i) },
+  });
+  assert.ok(line.includes('"password_hash":"[redacted]"'));
+  assert.ok(line.includes('<binary 50000 bytes>'));
+  assert.ok(!line.includes('$2b$10$abc'));
+  assert.ok(line.length <= 501);
+});
+
+test('buildGrounding with shareData off sends no samples or common values', async () => {
+  const g = await buildGrounding(fakePool(), 'public', {
+    prompt: 'disputes by status', shareData: false,
+  });
+  assert.ok(!/Sample rows/.test(g.text));
+  assert.ok(!/\[values:/.test(g.text));
+});
+
+test('RESULT_SCHEMA uses anyOf for nullable fields', () => {
+  for (const f of ['sql', 'refusal']) {
+    assert.deepEqual(RESULT_SCHEMA.properties[f].anyOf, [{ type: 'string' }, { type: 'null' }]);
+  }
+});
+
+test('compileRedactRules matches tables, table.column and *.column, case-insensitively', () => {
+  const isRedacted = compileRedactRules(['Payments', 'users.email', '*.phone']);
+  assert.equal(isRedacted('payments'), true);
+  assert.equal(isRedacted('payments', 'amount'), true);
+  assert.equal(isRedacted('Users', 'Email'), true);
+  assert.equal(isRedacted('orders', 'email'), false);
+  assert.equal(isRedacted('orders', 'phone'), true);
+  assert.equal(isRedacted('users'), false, 'a column rule does not hide the table');
+  assert.equal(isRedacted('users', 'password_hash'), true, 'built-in check still applies');
+  assert.equal(isRedacted('users', 'id'), false);
+});
+
+test('mentionsRedacted drops queries naming a redacted table or column', () => {
+  const rules = ['payments', 'users.email', '*.phone'];
+  assert.equal(mentionsRedacted('SELECT * FROM payments', rules), true);
+  assert.equal(mentionsRedacted("SELECT id FROM users WHERE email = 'a@b.c'", rules), true);
+  assert.equal(mentionsRedacted('SELECT "phone" FROM t', rules), true);
+  assert.equal(mentionsRedacted('SELECT id FROM users', rules), false);
+  assert.equal(mentionsRedacted('SELECT payments_total FROM t', rules), false, 'whole words only');
+});
+
+test('buildGrounding: a redacted table gets no samples or values', async () => {
+  const g = await buildGrounding(fakePool(), 'public', {
+    prompt: 'disputes by status', redact: ['dispute'],
+  });
+  assert.ok(/TABLE "Dispute"/.test(g.text), 'names are still sent');
+  assert.ok(!/Sample rows from "Dispute"/.test(g.text));
+  assert.ok(!/'lost'/.test(g.text));
+});
+
+test('buildGrounding: a redacted column is masked in samples and has no value list', async () => {
+  const g = await buildGrounding(fakePool(), 'public', {
+    prompt: 'disputes by status', redact: ['*.status'],
+  });
+  assert.ok(/Sample rows from "Dispute"/.test(g.text));
+  assert.ok(/"status":"\[redacted\]"/.test(g.text));
+  assert.ok(!/'lost'/.test(g.text));
 });
