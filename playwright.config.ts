@@ -21,7 +21,7 @@ export default defineConfig({
     // The CLI start command would fork a detached child; for the test we
     // run `pglens serve` directly so Playwright owns the lifecycle.
     command: 'node bin/pglens serve',
-    url: `${BASE_URL}/api/v3/health`,
+    url: `${BASE_URL}/api/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
     env: {

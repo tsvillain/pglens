@@ -174,7 +174,7 @@ dev setup, code style, and the PR process.
 
 Upgrading from v2.x:
 
-- **Auth token required.** Every route (except `/api/v3/health`) now requires a
+- **Auth token required.** Every route (except `/api/health`) now requires a
   per-install token, stored at `~/.pglens/token`. Use the URL from `pglens url`
   or `pglens start`; the bare `http://localhost:54321` will no longer work without it.
 - **Secrets moved to the OS keychain.** Passwords are no longer kept in plaintext
@@ -188,7 +188,7 @@ Upgrading from v2.x:
   React/TS app. The migration-era `/v3/*` path 301-redirects to `/`, so old bookmarks
   keep working.
 - **Standard error envelope.** API errors now return
-  `{ error: { code, message, hint? }, errorMessage }`. Update any tooling that parsed
+  `{ error: { code, message, hint? } }`. Update any tooling that parsed
   the old error shape.
 
 ## Security Note

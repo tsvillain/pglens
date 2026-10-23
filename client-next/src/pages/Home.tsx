@@ -20,7 +20,7 @@ function maskHost(host?: string | null) {
 }
 
 async function fetchHealth() {
-  const res = await fetch('/api/v3/health')
+  const res = await fetch('/api/health')
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return HealthSchema.parse(await res.json())
 }

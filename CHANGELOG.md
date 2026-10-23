@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the installer use, and falls back to npm only when GitHub can't answer
   (for example its unauthenticated rate limit). Still once a day, still off with
   `PGLENS_NO_UPDATE_CHECK=1`.
+- **Health probe moved to `/api/health`** (was `/api/v3/health`). Update any
+  external monitors that hit the old path.
+
+### Removed
+
+- **`errorMessage` field from API error responses.** It mirrored
+  `error.message` for the old vanilla client; read `error.message` instead.
+- `cors` dependency (it was configured to send no CORS headers, so it did nothing).
+- Unused frontend dev dependencies: `@tanstack/router-devtools`,
+  `@testing-library/react`, `@testing-library/dom`.
 
 ## [3.6.0] - 2026-10-23
 
