@@ -1,4 +1,4 @@
-# Postgres for integration tests. Brought up by CI and locally on demand:
+# Postgres for integration tests. Bring up locally on demand:
 #   docker compose -f docker-compose.test.yml up -d
 #   PGLENS_TEST_DB_URL=postgresql://pglens:pglens@localhost:55432/pglens_test npm run test:integration
 #

@@ -21,12 +21,6 @@ test('sendError returns the structured envelope', () => {
   assert.equal(res.body.error.message, 'oops');
 });
 
-test('sendError mirrors the message in errorMessage for the v2 client', () => {
-  const res = fakeRes();
-  sendError(res, 500, codes.INTERNAL, 'boom');
-  assert.equal(res.body.errorMessage, 'boom');
-});
-
 test('sendError includes hint only when provided', () => {
   const res1 = fakeRes();
   sendError(res1, 400, codes.BAD_REQUEST, 'oops');

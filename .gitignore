@@ -1,13 +1,10 @@
 node_modules/
-client/node_modules/
-client/dist/
-client/build/
 .env
 .DS_Store
 *.log
 
-# Electron build output
 dist/
+client-next/coverage/
 
 CLAUDE.md
 docs/

@@ -84,8 +84,11 @@ There are many ways to contribute to pglens:
 5. **Test the installation**:
 
    ```bash
-   node bin/pglens --url postgresql://user:password@localhost:5432/testdb --port 54321
+   npm --prefix client-next install && npm --prefix client-next run build
+   node bin/pglens start
    ```
+
+   Then add your test database from the connection dialog in the browser.
 
 6. **Create a branch** for your changes:
    ```bash
@@ -100,16 +103,24 @@ There are many ways to contribute to pglens:
 pglens/
 ├── bin/
 │   └── pglens              # CLI entry point
-├── client/                 # Frontend application
-│   ├── app.js             # Main client-side JavaScript
-│   ├── index.html         # HTML template
-│   └── styles.css         # Stylesheet
-├── src/
-│   ├── db/
-│   │   └── connection.js   # Database connection pool
+├── src/                    # Express server
+│   ├── ai/                 # NL→SQL assistant
+│   ├── db/                 # Postgres access (connections, queries, schema, ops)
+│   ├── extensions/         # Pluggable auth / connection-source / sync hooks
+│   ├── http/               # Error envelope + request validation
 │   ├── routes/
-│   │   └── api.js         # API routes
-│   └── server.js          # Express server setup
+│   │   └── api.js          # API routes
+│   └── server.js           # Express server setup
+├── client-next/            # React + TypeScript frontend (Vite)
+│   └── src/
+│       ├── pages/          # Routed screens
+│       ├── components/
+│       ├── lib/            # API client + helpers
+│       └── store/          # Zustand state
+├── test/
+│   ├── unit/
+│   └── integration/
+├── e2e/                    # Playwright
 ├── package.json
 ├── README.md
 ├── CHANGELOG.md

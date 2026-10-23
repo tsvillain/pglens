@@ -34,22 +34,15 @@ const SchemasResponse = z.object({
   schemas: z.array(z.string()),
 })
 
-// Server returns the envelope:
-//   { error: { code, message, hint? }, errorMessage: <string mirror for v2> }
-// During the strangler-fig migration we accept either shape so v3 keeps
-// working against older pglens binaries.
+// Server returns the envelope: { error: { code, message, hint? } }
 const ApiErrorResponse = z.object({
   error: z
-    .union([
-      z.string(),
-      z.object({
-        code: z.string().optional(),
-        message: z.string(),
-        hint: z.string().optional(),
-      }),
-    ])
+    .object({
+      code: z.string().optional(),
+      message: z.string(),
+      hint: z.string().optional(),
+    })
     .optional(),
-  errorMessage: z.string().optional(),
 })
 
 export class ApiError extends Error {
@@ -72,20 +65,14 @@ function parseErrorBody(body: unknown, status: number): ApiError {
   if (!parsed.success) {
     return new ApiError({ message: `HTTP ${status}`, status })
   }
-  const { error, errorMessage } = parsed.data
-  if (typeof error === 'object' && error) {
+  const { error } = parsed.data
+  if (error) {
     return new ApiError({
       message: error.message,
       status,
       code: error.code,
       hint: error.hint,
     })
-  }
-  if (typeof error === 'string') {
-    return new ApiError({ message: error, status })
-  }
-  if (errorMessage) {
-    return new ApiError({ message: errorMessage, status })
   }
   return new ApiError({ message: `HTTP ${status}`, status })
 }

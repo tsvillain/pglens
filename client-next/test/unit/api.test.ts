@@ -23,12 +23,11 @@ function jsonResponse(body: unknown, init: { status?: number } = {}) {
 }
 
 describe('ApiError parsing', () => {
-  it('extracts code + message + hint from the v3 envelope', async () => {
+  it('extracts code + message + hint from the error envelope', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
         {
           error: { code: 'UNAUTHENTICATED', message: 'Missing or invalid token', hint: 'open via CLI' },
-          errorMessage: 'Missing or invalid token',
         },
         { status: 401 },
       ),
@@ -38,26 +37,6 @@ describe('ApiError parsing', () => {
       status: 401,
       code: 'UNAUTHENTICATED',
       hint: 'open via CLI',
-    })
-  })
-
-  it('falls back to the legacy string-error shape', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ error: 'legacy text' }, { status: 400 }),
-    )
-    await expect(listConnections()).rejects.toMatchObject({
-      message: 'legacy text',
-      status: 400,
-    })
-  })
-
-  it('falls back to errorMessage when error field is missing', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ errorMessage: 'mirror only' }, { status: 500 }),
-    )
-    await expect(listConnections()).rejects.toMatchObject({
-      message: 'mirror only',
-      status: 500,
     })
   })
 

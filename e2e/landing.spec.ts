@@ -11,7 +11,7 @@ function readToken() {
   return fs.readFileSync(tokenFile, 'utf8').trim()
 }
 
-test.describe('v3 landing', () => {
+test.describe('landing', () => {
   test('serves a 401 envelope when the token is missing', async ({ request }) => {
     const res = await request.get('/api/connections')
     expect(res.status()).toBe(401)
@@ -19,8 +19,8 @@ test.describe('v3 landing', () => {
     expect(body.error.code).toBe('UNAUTHENTICATED')
   })
 
-  test('GET /api/v3/health is open and returns ok', async ({ request }) => {
-    const res = await request.get('/api/v3/health')
+  test('GET /api/health is open and returns ok', async ({ request }) => {
+    const res = await request.get('/api/health')
     expect(res.status()).toBe(200)
     const body = await res.json()
     expect(body.ok).toBe(true)

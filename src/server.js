@@ -7,7 +7,6 @@
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
@@ -43,8 +42,6 @@ async function startServer({ standalone = true } = {}) {
   if (await isPortInUse(port)) port = 0;
 
   app.use(cookieParser());
-  // CORS off — same-origin localhost-only.
-  app.use(cors({ origin: false }));
   app.use(express.json({ limit: '10mb' }));
 
   // DNS-rebinding defense: only serve requests whose Host header is a known
@@ -65,7 +62,7 @@ async function startServer({ standalone = true } = {}) {
   });
 
   // Health probe — no auth, used by the landing page + Playwright.
-  app.get('/api/v3/health', (_req, res) => {
+  app.get('/api/health', (_req, res) => {
     res.json({ ok: true, version: pkg.version });
   });
 
