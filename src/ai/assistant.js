@@ -567,17 +567,34 @@ async function buildGrounding(pool, schema, {
     sampleTargets.map((t) => sampleRows(pool, schema, t, (col) => isRedacted(t, col))),
   );
   // Samples share the schema budget; a block that doesn't fit is dropped whole.
+  const sampledTables = [];
   sampled.forEach((s, i) => {
     if (!s) return;
     const block = `\nSample rows from ${qid(sampleTargets[i])}:\n${s}\n`;
-    if (text.length + block.length <= MAX_SCHEMA_CHARS + MAX_SAMPLE_CHARS) text += block;
+    if (text.length + block.length <= MAX_SCHEMA_CHARS + MAX_SAMPLE_CHARS) {
+      text += block;
+      sampledTables.push(sampleTargets[i]);
+    }
   });
+
+  // What redaction withheld from the tables the model saw, for the UI.
+  const hiddenTables = [];
+  const hiddenColumns = [];
+  for (const t of rendered) {
+    if (isRedacted(t)) { hiddenTables.push(t); continue; }
+    for (const c of byTable.get(t)) {
+      if (isRedacted(t, c.column_name)) hiddenColumns.push(`${t}.${c.column_name}`);
+    }
+  }
 
   return {
     text,
     schemaTokens,
     tableCount,
     totalTables: byTable.size,
+    sampledTables,
+    hiddenTables,
+    hiddenColumns,
     // First (highest-scoring) rendered table — seeds the few-shot example.
     exampleTable: ordered.length ? ordered[0] : null,
   };
@@ -775,7 +792,13 @@ async function callAnthropic({ apiKey, model, system, user, signal }) {
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('');
-  return { result: parseModelJson(text), usage: extractUsage('anthropic', resp) };
+  // resp.model is the model that served the turn — differs from the request
+  // when a refusal fallback took over.
+  return {
+    result: parseModelJson(text),
+    usage: extractUsage('anthropic', resp),
+    servedModel: resp.model,
+  };
 }
 
 // Per-call timeout, also aborted when the client goes away.
@@ -816,6 +839,7 @@ async function callOpenAI({ apiKey, model, system, user, signal }) {
   return {
     result: parseModelJson(data.choices?.[0]?.message?.content || ''),
     usage: extractUsage('openai', data),
+    servedModel: data.model,
   };
 }
 
@@ -854,6 +878,7 @@ async function callOllama({ ollamaHost, model, system, user, signal }) {
   return {
     result: parseModelJson(data.message?.content || ''),
     usage: extractUsage('ollama', data),
+    servedModel: data.model,
   };
 }
 
@@ -998,6 +1023,33 @@ async function generateSql({
   let tablesSent = null;
   let tablesTotal = null;
   let rowCount = null;
+  let grounding = null;
+  let historySent = 0;
+  let filterSent = false;
+  // One entry per model call: why it was made, which model answered, and
+  // (for the zero-row rewrite) whether its SQL was kept.
+  const calls = [];
+
+  // Shown under each answer: who answered, how many calls, how long, and what
+  // left the machine. Names only for hidden columns/tables, never values.
+  const meta = () => ({
+    provider: cfg?.provider ?? null,
+    model: calls.at(-1)?.model ?? cfg?.model ?? null,
+    requestedModel: cfg?.model ?? null,
+    calls: calls.map((c) => ({ ...c })),
+    latencyMs: Date.now() - started,
+    sent: {
+      tables: tablesSent,
+      totalTables: tablesTotal,
+      sampledTables: grounding?.sampledTables ?? [],
+      history: historySent,
+      filter: filterSent,
+    },
+    hidden: {
+      tables: grounding?.hiddenTables ?? [],
+      columns: grounding?.hiddenColumns ?? [],
+    },
+  });
 
   try {
     cfg = await getConfig();
@@ -1015,7 +1067,7 @@ async function generateSql({
       }
     }
 
-    const grounding = await buildGrounding(pool, schema, {
+    grounding = await buildGrounding(pool, schema, {
       focusTable, prompt, shareData: cfg.shareData, redact: cfg.redact,
     });
     tablesSent = grounding.tableCount;
@@ -1031,6 +1083,7 @@ async function generateSql({
         refusal: 'This looks like a general programming request, not a question'
           + ' about your database — pglens only turns data questions into SQL.',
         readOnly: true, validationError: null, rowCount: null, usage: { ...used },
+        meta: meta(),
       };
     }
 
@@ -1043,14 +1096,17 @@ async function generateSql({
     // Past queries and the UI filter carry literal values, so they follow the
     // same switch as sample rows, and any that touch a redacted name are dropped.
     const shareable = (t) => cfg.shareData && !mentionsRedacted(t, cfg.redact);
+    const sentFilterText = filterText && shareable(filterText) ? filterText : undefined;
+    const sentHistory = (history || []).filter(shareable);
+    filterSent = !!sentFilterText;
+    historySent = sentHistory.length;
     const userMsg = buildUserMessage({
-      prompt,
-      focusTable,
-      filterText: filterText && shareable(filterText) ? filterText : undefined,
-      history: (history || []).filter(shareable),
+      prompt, focusTable, filterText: sentFilterText, history: sentHistory,
     });
 
-    const call = async (user) => {
+    // reason: 'initial' | 'fix_error' (Postgres rejected the SQL) |
+    // 'fix_zero_rows' (valid SQL matched nothing).
+    const call = async (user, reason) => {
       if (signal?.aborted) throw httpError(499, 'Request cancelled.', undefined, 'cancelled');
       attempts += 1;
       try {
@@ -1058,6 +1114,7 @@ async function generateSql({
           apiKey, model: cfg.model, ollamaHost: cfg.ollamaHost, system, user, signal,
         });
         addUsage(out.usage);
+        calls.push({ reason, model: out.servedModel || cfg.model });
         return out.result;
       } catch (err) {
         if (err.statusCode) throw err; // already an httpError (refusal / parse / transport)
@@ -1065,7 +1122,7 @@ async function generateSql({
       }
     };
 
-    const result = await call(userMsg);
+    const result = await call(userMsg, 'initial');
     const refusal = (result.refusal || '').trim();
     let sql = (result.sql || '').trim();
 
@@ -1076,26 +1133,23 @@ async function generateSql({
       return {
         sql: '', explanation: '', refusal,
         readOnly: true, validationError: null, rowCount: null, usage: { ...used },
+        meta: meta(),
       };
     }
     if (!sql) throw httpError(502, 'Model returned no SQL.', undefined, 'schema_fail');
 
-    // The model produced SQL but flagged itself as guessing. A plausible-looking
-    // wrong query is worse than no query in a no-code tool, so surface the doubt
-    // as a refusal instead of handing over SQL (the sql/explanation stay out of
-    // the response on purpose).
-    if (result.confidence === 'low') {
-      responseClass = 'low_confidence';
-      const why = (result.explanation || '').trim();
-      return {
-        sql: '',
-        explanation: '',
-        refusal: 'The model was not confident your schema contains this data'
-          + (why ? ` (its guess: ${why})` : '')
-          + '. Try rephrasing with the table or column you have in mind.',
-        readOnly: true, validationError: null, rowCount: null, usage: { ...used },
-      };
-    }
+    // The model produced SQL but flagged itself as guessing (e.g. "delivered"
+    // read as status = 'shipped'). Keep the SQL and surface the guess as an
+    // `assumption` the UI shows prominently: the user can check one stated
+    // assumption faster than rephrase, and the call is already paid for. A
+    // request with no plausible table at all comes back as a refusal above.
+    // Re-derived whenever a repair replaces the SQL, so the warning always
+    // describes the query the user actually gets.
+    const assumptionOf = (r) => (r.confidence === 'low'
+      ? (r.explanation || '').trim()
+        || 'The model was unsure your schema holds this data. Check the tables and filters it used.'
+      : null);
+    let assumption = assumptionOf(result);
     let explanation = result.explanation || '';
 
     // Plan the SQL against the live DB to catch hallucinated columns/tables.
@@ -1104,11 +1158,12 @@ async function generateSql({
     validationError = await validateSql(pool, schema, sql);
     for (let round = 0; validationError && round < MAX_REPAIR_ROUNDS; round++) {
       try {
-        const repaired = await call(repairMessage(userMsg, sql, validationError));
+        const repaired = await call(repairMessage(userMsg, sql, validationError), 'fix_error');
         const fixedSql = (repaired.sql || '').trim();
         if (!fixedSql) break;
         sql = fixedSql;
         explanation = repaired.explanation || explanation;
+        assumption = assumptionOf(repaired);
         validationError = await validateSql(pool, schema, sql);
       } catch {
         // Keep the last attempt and surface its error if the repair call fails.
@@ -1136,7 +1191,9 @@ async function generateSql({
       rowCount = await countRows(pool, schema, sql);
       if (rowCount === 0) {
         try {
-          const repaired = await call(zeroRowsMessage(userMsg, sql));
+          const repaired = await call(zeroRowsMessage(userMsg, sql), 'fix_zero_rows');
+          const zeroRowCall = calls.at(-1);
+          zeroRowCall.kept = false;
           const fixedSql = (repaired.sql || '').trim();
           if (fixedSql && fixedSql !== sql
               && isReadOnly(fixedSql)
@@ -1147,8 +1204,10 @@ async function generateSql({
             if (fixedCount !== null && fixedCount > 0) {
               sql = fixedSql;
               explanation = repaired.explanation || explanation;
+              assumption = assumptionOf(repaired);
               rowCount = fixedCount;
               readOnly = true;
+              zeroRowCall.kept = true;
             }
           }
         } catch {
@@ -1157,10 +1216,11 @@ async function generateSql({
       }
     }
 
-    responseClass = validationError ? 'validation_fail' : 'success';
+    if (validationError) responseClass = 'validation_fail';
+    else responseClass = assumption ? 'low_confidence' : 'success';
     return {
-      sql, explanation, refusal: null, readOnly, validationError,
-      rowCount, usage: { ...used },
+      sql, explanation, refusal: null, assumption, readOnly, validationError,
+      rowCount, usage: { ...used }, meta: meta(),
     };
   } catch (err) {
     responseClass = err.responseClass || 'error';

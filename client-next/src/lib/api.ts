@@ -1405,6 +1405,33 @@ const NlSqlResponse = z.object({
   // Postgres' message when the generated SQL failed to plan (hallucinated
   // column, etc.) and the repair attempt didn't fix it; null when it planned.
   validationError: z.string().nullable(),
+  // Set when the model was unsure and guessed (e.g. "delivered" read as
+  // 'shipped'); the SQL is still returned. Absent on refusals.
+  assumption: z.string().nullable().optional(),
+  // Who answered, how, and what left the machine — for the details row.
+  meta: z
+    .object({
+      provider: z.string().nullable(),
+      model: z.string().nullable(),
+      requestedModel: z.string().nullable(),
+      calls: z.array(
+        z.object({
+          reason: z.enum(['initial', 'fix_error', 'fix_zero_rows']),
+          model: z.string().nullable().optional(),
+          kept: z.boolean().optional(),
+        }),
+      ),
+      latencyMs: z.number(),
+      sent: z.object({
+        tables: z.number().nullable(),
+        totalTables: z.number().nullable(),
+        sampledTables: z.array(z.string()),
+        history: z.number(),
+        filter: z.boolean(),
+      }),
+      hidden: z.object({ tables: z.array(z.string()), columns: z.array(z.string()) }),
+    })
+    .optional(),
   // Live row count from the server's read-only probe. 0 ⇒ the query is valid
   // but matches nothing right now; null ⇒ probe not applicable / timed out.
   rowCount: z.number().nullable(),

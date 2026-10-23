@@ -5,6 +5,7 @@ const {
   isReadOnly, buildSchemaContext, buildGrounding, classifyPrompt,
   validateSql, countRows, extractUsage, zeroRowsMessage, buildSystemPrompt,
   renderSampleRow, isSensitiveColumn, RESULT_SCHEMA, compileRedactRules, mentionsRedacted,
+  generateSql,
 } = require('../../src/ai/assistant');
 
 // Fake pool over a 4-table schema: Dispute -> Project (FK), plus two unrelated
@@ -489,4 +490,66 @@ test('buildGrounding: a redacted column is masked in samples and has no value li
   assert.ok(/Sample rows from "Dispute"/.test(g.text));
   assert.ok(/"status":"\[redacted\]"/.test(g.text));
   assert.ok(!/'lost'/.test(g.text));
+});
+
+test('generateSql keeps low-confidence SQL and returns the guess as an assumption', async (t) => {
+  const reply = {
+    sql: 'SELECT * FROM "Dispute" WHERE status = \'lost\'',
+    explanation: "No 'closed' status exists, so 'lost' is treated as closed.",
+    refusal: null,
+    confidence: 'low',
+  };
+  t.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => ({ message: { content: JSON.stringify(reply) } }),
+  }));
+  const pool = {
+    ...fakePool(),
+    explain: async () => ({ rows: [] }),
+    transaction: async (handler) => handler({
+      query: async (sql) => (/count\(\*\)/.test(sql) ? { rows: [{ n: '2' }] } : { rows: [] }),
+    }),
+  };
+  const r = await generateSql({
+    pool, schema: 'public', prompt: 'closed disputes',
+    configOverride: { provider: 'ollama', available: true },
+  });
+  assert.equal(r.sql, reply.sql);
+  assert.equal(r.refusal, null);
+  assert.equal(r.assumption, reply.explanation);
+  assert.equal(r.rowCount, 2);
+  assert.deepEqual(r.meta.calls.map((c) => c.reason), ['initial']);
+  assert.equal(r.meta.provider, 'ollama');
+  assert.deepEqual(r.meta.sent.sampledTables, ['Dispute', 'Project']);
+  assert.deepEqual(r.meta.hidden, { tables: [], columns: [] });
+});
+
+test('generateSql: assumption follows the SQL a zero-row rewrite replaces', async (t) => {
+  const replies = [
+    { sql: 'SELECT * FROM "Dispute" WHERE status = \'open\'', explanation: 'first guess', refusal: null, confidence: 'low' },
+    { sql: 'SELECT * FROM "Dispute" WHERE status = \'lost\'', explanation: 'second guess', refusal: null, confidence: 'low' },
+  ];
+  t.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => ({ model: 'llama3.1', message: { content: JSON.stringify(replies.shift()) } }),
+  }));
+  let probes = 0;
+  const pool = {
+    ...fakePool(),
+    explain: async () => ({ rows: [] }),
+    transaction: async (handler) => handler({
+      query: async (sql) => (/count\(\*\)/.test(sql) ? { rows: [{ n: probes++ ? '4' : '0' }] } : { rows: [] }),
+    }),
+  };
+  const r = await generateSql({
+    pool, schema: 'public', prompt: 'closed disputes',
+    configOverride: { provider: 'ollama', available: true, redact: ['*.status'] },
+  });
+  assert.match(r.sql, /'lost'/);
+  assert.equal(r.assumption, 'second guess');
+  assert.deepEqual(r.meta.calls, [
+    { reason: 'initial', model: 'llama3.1' },
+    { reason: 'fix_zero_rows', model: 'llama3.1', kept: true },
+  ]);
+  assert.deepEqual(r.meta.hidden.columns, ['Dispute.status']);
 });

@@ -190,20 +190,23 @@ export function AiPanel() {
           {result && (
             <div className="mt-3 space-y-2">
               {result.refusal ? (
-                <p className="text-xs text-amber-600 dark:text-amber-500">
-                  {result.refusal}
-                </p>
+                <>
+                  <p className="text-xs text-amber-600 dark:text-amber-500">
+                    {result.refusal}
+                  </p>
+                  <AiDetails result={result} />
+                </>
               ) : (
                 <>
-              {result.explanation && (
-                <p className="text-xs text-muted-foreground">{result.explanation}</p>
-              )}
-              {(result.usage.inputTokens != null || result.usage.outputTokens != null) && (
-                <p className="text-[11px] text-muted-foreground">
-                  {result.usage.inputTokens?.toLocaleString() ?? '—'} in ·{' '}
-                  {result.usage.outputTokens?.toLocaleString() ?? '—'} out tokens
+              {result.assumption && (
+                <p className="text-xs text-amber-600 dark:text-amber-500">
+                  ⚠ Assumption: {result.assumption} Check this before trusting the result.
                 </p>
               )}
+              {result.explanation && result.explanation !== result.assumption && (
+                <p className="text-xs text-muted-foreground">{result.explanation}</p>
+              )}
+              <AiDetails result={result} />
               <pre className="max-h-40 overflow-auto rounded-md border border-border bg-muted/50 p-2 text-[11px] leading-snug">
                 {result.sql}
               </pre>
@@ -250,6 +253,85 @@ export function AiPanel() {
       )}
       </section>
     </aside>
+  )
+}
+
+const CALL_LABELS = {
+  initial: 'first try',
+  fix_error: 'fixed after Postgres error',
+  fix_zero_rows: 'rewritten after 0 rows',
+} as const
+
+// One-line summary (model · calls · time · tokens) that expands to show why
+// each call was made and exactly what was sent to, or withheld from, the model.
+function AiDetails({ result }: { result: NlSqlResult }) {
+  const { meta, usage } = result
+  const tokens =
+    usage.inputTokens != null || usage.outputTokens != null
+      ? `${usage.inputTokens?.toLocaleString() ?? '—'} in / ${usage.outputTokens?.toLocaleString() ?? '—'} out`
+      : null
+  if (!meta) {
+    return tokens ? <p className="text-[11px] text-muted-foreground">{tokens} tokens</p> : null
+  }
+  const n = meta.calls.length
+  const summary = [
+    meta.model,
+    n === 0 ? 'no model call' : `${n} call${n > 1 ? 's' : ''}`,
+    `${(meta.latencyMs / 1000).toFixed(1)} s`,
+    tokens,
+  ].filter(Boolean).join(' · ')
+  const fellBack =
+    meta.requestedModel && meta.model && meta.model !== meta.requestedModel
+  const { sent, hidden } = meta
+  const sentParts = [
+    sent.tables != null && sent.totalTables != null
+      ? `${sent.tables} of ${sent.totalTables} tables`
+      : null,
+    sent.sampledTables.length ? `sample rows from ${sent.sampledTables.join(', ')}` : 'no sample rows',
+    sent.history ? `last ${sent.history} ${sent.history > 1 ? 'queries' : 'query'}` : null,
+    sent.filter ? 'current filter' : null,
+  ].filter(Boolean)
+  const hiddenParts = [
+    hidden.tables.length ? `all data from ${hidden.tables.join(', ')}` : null,
+    hidden.columns.length ? hidden.columns.join(', ') : null,
+  ].filter(Boolean)
+
+  return (
+    <details className="text-[11px] text-muted-foreground">
+      <summary className="cursor-pointer select-none hover:text-foreground">{summary}</summary>
+      <dl className="mt-1 space-y-0.5 pl-3">
+        {fellBack && (
+          <div>
+            <dt className="inline font-medium">Model: </dt>
+            <dd className="inline">
+              {meta.model} answered (fallback from {meta.requestedModel})
+            </dd>
+          </div>
+        )}
+        {n > 0 && (
+          <div>
+            <dt className="inline font-medium">Calls: </dt>
+            <dd className="inline">
+              {meta.calls
+                .map((c) =>
+                  c.reason === 'fix_zero_rows' && c.kept === false
+                    ? `${CALL_LABELS[c.reason]} (not used)`
+                    : CALL_LABELS[c.reason],
+                )
+                .join(' → ')}
+            </dd>
+          </div>
+        )}
+        <div>
+          <dt className="inline font-medium">Sent: </dt>
+          <dd className="inline">{sentParts.join(' · ')}</dd>
+        </div>
+        <div>
+          <dt className="inline font-medium">Hidden: </dt>
+          <dd className="inline">{hiddenParts.length ? hiddenParts.join(' · ') : 'nothing'}</dd>
+        </div>
+      </dl>
+    </details>
   )
 }
 
