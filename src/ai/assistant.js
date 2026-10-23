@@ -804,7 +804,11 @@ async function callAnthropic({ apiKey, model, system, user, signal }) {
 // Per-call timeout, also aborted when the client goes away.
 function callSignal(signal) {
   const timeout = AbortSignal.timeout(CALL_TIMEOUT_MS);
-  return signal ? AbortSignal.any([timeout, signal]) : timeout;
+  if (!signal) return timeout;
+  // ponytail: AbortSignal.any needs Node 18.17+/20.3+ and the installer accepts
+  // any Node 18. Older runtimes keep the timeout only; a disconnect still stops
+  // further repair calls (checked in generateSql). Drop when the floor is 20.
+  return typeof AbortSignal.any === 'function' ? AbortSignal.any([timeout, signal]) : timeout;
 }
 
 async function callOpenAI({ apiKey, model, system, user, signal }) {

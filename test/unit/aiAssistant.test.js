@@ -553,3 +553,26 @@ test('generateSql: assumption follows the SQL a zero-row rewrite replaces', asyn
   ]);
   assert.deepEqual(r.meta.hidden.columns, ['Dispute.status']);
 });
+
+test('generateSql works on runtimes without AbortSignal.any (Node < 18.17)', async (t) => {
+  const original = AbortSignal.any;
+  AbortSignal.any = undefined;
+  t.after(() => { AbortSignal.any = original; });
+  t.mock.method(globalThis, 'fetch', async () => ({
+    ok: true,
+    json: async () => ({
+      message: { content: JSON.stringify({ sql: 'SELECT 1', explanation: 'x', refusal: null, confidence: 'high' }) },
+    }),
+  }));
+  const pool = {
+    ...fakePool(),
+    explain: async () => ({ rows: [] }),
+    transaction: async (handler) => handler({ query: async () => ({ rows: [{ n: '1' }] }) }),
+  };
+  const r = await generateSql({
+    pool, schema: 'public', prompt: 'count disputes',
+    configOverride: { provider: 'ollama', available: true },
+    signal: new AbortController().signal,
+  });
+  assert.equal(r.sql, 'SELECT 1');
+});
