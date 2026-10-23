@@ -26,29 +26,34 @@ function semverGt(a, b) {
   return false;
 }
 
-// Latest release from GitHub Releases, the same source the installer and
-// `pglens update` use. pglens is not published to npm.
-function fetchLatestVersion() {
+// GET a JSON document and pick one field out of it; null on any failure.
+function fetchJsonField(url, headers, pick) {
   return new Promise((resolve) => {
-    const req = https.get(
-      'https://api.github.com/repos/tsvillain/pglens/releases/latest',
-      // GitHub's API rejects requests without a User-Agent.
-      { headers: { 'User-Agent': `pglens/${CURRENT_VERSION}`, Accept: 'application/vnd.github+json' } },
-      (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
-        let body = '';
-        res.on('data', (c) => (body += c));
-        res.on('end', () => {
-          try {
-            const tag = JSON.parse(body).tag_name || '';
-            resolve(tag.replace(/^v/, '') || null);
-          } catch { resolve(null); }
-        });
-      }
-    );
+    const req = https.get(url, { headers }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+      let body = '';
+      res.on('data', (c) => (body += c));
+      res.on('end', () => {
+        try { resolve(pick(JSON.parse(body)) || null); } catch { resolve(null); }
+      });
+    });
     req.on('error', () => resolve(null));
     req.setTimeout(1500, () => { req.destroy(); resolve(null); });
   });
+}
+
+// GitHub Releases is the source of truth (the installer and `pglens update`
+// install from it). npm is a mirror, consulted only when GitHub can't answer,
+// e.g. the unauthenticated API's 60-requests-per-hour limit on a shared IP.
+async function fetchLatestVersion() {
+  const fromGitHub = await fetchJsonField(
+    'https://api.github.com/repos/tsvillain/pglens/releases/latest',
+    // GitHub's API rejects requests without a User-Agent.
+    { 'User-Agent': `pglens/${CURRENT_VERSION}`, Accept: 'application/vnd.github+json' },
+    (j) => (j.tag_name || '').replace(/^v/, ''),
+  );
+  if (fromGitHub) return fromGitHub;
+  return fetchJsonField('https://registry.npmjs.org/pglens/latest', {}, (j) => j.version);
 }
 
 function printUpdateNotice(latest) {
@@ -63,7 +68,7 @@ function printUpdateNotice(latest) {
 }
 
 // Opt out: PGLENS_NO_UPDATE_CHECK=1. Shows cached result instantly,
-// refreshes from GitHub Releases at most once per UPDATE_INTERVAL.
+// refreshes (GitHub Releases, npm as fallback) at most once per UPDATE_INTERVAL.
 async function checkForUpdate() {
   if (process.env.PGLENS_NO_UPDATE_CHECK) return;
 

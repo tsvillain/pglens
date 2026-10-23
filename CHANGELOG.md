@@ -9,11 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **No longer published to npm.** pglens ships only through GitHub Releases and
-  the install script. `package.json` is marked `private` so it can't be
-  published by accident. `pglens doctor` still finds and removes old npm copies.
-- **Update check reads GitHub Releases** instead of the npm registry, the same
-  source `pglens update` and the installer use. Still once a day, still off with
+- **GitHub Releases is the primary release channel; npm is a mirror.** The
+  release workflow publishes the GitHub release first, then the same tarball to
+  npm (when an `NPM_TOKEN` secret is set), so npm is never ahead of GitHub.
+- **Update check reads GitHub Releases first**, the same source `pglens update`
+  and the installer use, and falls back to npm only when GitHub can't answer
+  (for example its unauthenticated rate limit). Still once a day, still off with
   `PGLENS_NO_UPDATE_CHECK=1`.
 
 ## [3.6.0] - 2026-10-23

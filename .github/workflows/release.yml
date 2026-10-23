@@ -12,12 +12,17 @@ jobs:
   release:
     name: Build & publish release artifact
     runs-on: ubuntu-latest
+    env:
+      # Optional. Without it the npm mirror step is skipped; GitHub Releases
+      # (what the installer and `pglens update` use) is published either way.
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Install and build client-next
         run: |
@@ -46,3 +51,11 @@ jobs:
           files: |
             pglens-*.tgz
             checksums.txt
+
+      # npm mirrors GitHub Releases: same tarball, published only after the
+      # GitHub release exists, so npm is never ahead of the primary source.
+      - name: Publish the same tarball to npm
+        if: env.NPM_TOKEN != ''
+        run: npm publish ./pglens-*.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
