@@ -4,7 +4,8 @@ A no-code PostgreSQL workstation. Browse, filter, edit, visualize, and query you
 PostgreSQL databases from a fast local web UI. Every no-code action has a
 "Show SQL" disclosure, and the UI never sends raw SQL fragments: the server turns
 structured specs into parameterized queries. When you want to write SQL yourself,
-any tab switches to Advanced mode.
+any tab switches to Advanced mode. New in 3.6: ask in plain English and review
+the SQL AI mode writes before you run it.
 
 Website: [pglens.org](https://pglens.org) · Release history: [CHANGELOG.md](CHANGELOG.md)
 
@@ -19,7 +20,16 @@ Website: [pglens.org](https://pglens.org) · Release history: [CHANGELOG.md](CHA
 - **Import / export** — stream CSV / JSON / SQL `INSERT`, CSV import wizard with
   dry-run, schema export/import, streaming database backup with progress.
 - **Schema visualization** — interactive auto-laid-out relationship graph, export
-  as SVG or Mermaid ER.
+  as SVG or Mermaid ER. The ERD editor lets you add tables, columns and foreign
+  keys on the canvas and generates the DDL for review.
+- **Schema diff & migrate** — compare two connections and get forward and
+  backward migrations, dependency-ordered, with destructive statements flagged.
+- **JSONB explorer, extensions panel, charts** — infer the keys inside JSONB
+  columns, install or drop extensions, and chart any query result.
+- **AI mode (Beta)** — ask a question in plain English and get PostgreSQL
+  grounded on your live schema, opened in the editor for review. Bring your own
+  key for Anthropic or OpenAI, or run a local Ollama model. See
+  [AI mode](#ai-mode-beta).
 - **Advanced (SQL) mode** — per-tab `[ No-code | Advanced ]` toggle into a
   schema-aware Monaco editor, transaction mode (`BEGIN`/`Commit`/`Rollback`,
   idle auto-rollback), multi-statement result tabs with `EXPLAIN ANALYZE` timing,
@@ -91,6 +101,42 @@ pglens doctor   # diagnose install problems (shadowed/stale binaries)
 6. To change the **Schema**, edit the connection and select from the dropdown (schemas are fetched from the database).
 7. Click the server card to open the **Explorer** — tables and views for the selected schema will be listed.
 
+### AI mode (Beta)
+
+The **Ask AI** panel on the right turns a question such as "orders from last
+week that weren't shipped" into PostgreSQL for the connected database.
+
+1. Open the panel's settings (gear icon) and pick a provider:
+   - **Anthropic** or **OpenAI**: paste your API key. It is stored in the OS
+     keychain, like connection passwords.
+   - **Ollama**: no key. Point it at your Ollama host (default
+     `http://127.0.0.1:11434`) to keep everything on your machine. 8b-class
+     models write noticeably less accurate SQL; use a larger one if you can.
+2. Ask a question and click **Generate SQL**.
+3. Read the SQL, then **Open in editor** to edit and run it like any other query.
+
+Before showing you SQL, pglens checks it: it plans the query with `EXPLAIN` and
+lets the model fix errors, and it counts the rows a read-only query would
+return, so you see "Matches ~N rows right now" or a warning when it matches
+nothing. If the model had to guess what you meant, an amber **Assumption** line
+says what it assumed. Expand the line under the answer to see which model
+answered, how many calls it took, and what was sent.
+
+**What is sent to the provider.** Table and column names and types, keys, enum
+labels, and the list of other tables. With **Share sample rows and recent
+queries** on (the default), also up to 3 sample rows from up to 3 tables
+relevant to the question, common values of low-cardinality text columns, and
+your last 5 successful queries on that connection. Values from credential-like
+columns (password, hash, token, API key, secret, …) are never sent, and the
+**Never send data from** list lets you withhold more: `payments` (a whole
+table), `users.email` (one column) or `*.phone` (a column in every table).
+Turn sharing off to send the schema only.
+
+**Safety.** Generated SQL is read-only unless you enable writes in the AI
+settings. The only model SQL pglens runs without your click is the row count,
+which runs as `SELECT count(*)` in a read-only transaction with a 3-second
+timeout. Set `PGLENS_AI_DISABLED=1` to hide AI mode entirely.
+
 ### Stop the Server
 
 To stop the background service:
@@ -150,6 +196,11 @@ per-install token, binds `127.0.0.1` by default, keeps connection passwords in t
 keychain, and writes its token and metadata files with mode `0600`. Even so, the web
 interface runs over HTTP. **Do not expose the pglens port (54321) directly to the
 internet.**
+
+pglens sends no telemetry. Apart from the CLI checking the npm registry for a
+newer version, the only feature that talks to the internet is AI mode with a
+cloud provider, and only when you ask a question; see [AI mode](#ai-mode-beta)
+for exactly what is sent.
 
 ## License
 
