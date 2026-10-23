@@ -67,15 +67,17 @@ export function SqlConsole({
   const qc = useQueryClient()
 
   // Schema powers autocomplete; cached and shared with the no-code views via the
-  // same query key. Kept in a ref so the editor's focus handler can publish it
-  // to the (singleton) Monaco completion provider without re-running on mount.
+  // same query key — so it must cache the same shape they do (the unwrapped
+  // table map), or whichever page loads second reads the wrong one. Kept in a
+  // ref so the editor's focus handler can publish it to the (singleton) Monaco
+  // completion provider without re-running on mount.
   const schemaQuery = useQuery({
     queryKey: ['schema', connectionId],
-    queryFn: ({ signal }) => getDatabaseSchema(connectionId, signal),
+    queryFn: ({ signal }) => getDatabaseSchema(connectionId, signal).then((r) => r.schema),
     staleTime: 60_000,
   })
-  const schemaRef = useRef(schemaQuery.data?.schema ?? null)
-  schemaRef.current = schemaQuery.data?.schema ?? null
+  const schemaRef = useRef(schemaQuery.data ?? null)
+  schemaRef.current = schemaQuery.data ?? null
 
   // Publish the schema to the (singleton) Monaco completion provider once it
   // loads — at mount the query is usually still pending, so without this the

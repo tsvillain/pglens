@@ -5,7 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.6.0] - 2026-10-23
+
+AI mode (Beta). Ask a question in plain English and get PostgreSQL written
+against your live schema, then review it in the Advanced-mode editor before it
+runs. Bring your own key for Anthropic (Claude) or OpenAI, or use a local
+Ollama model so nothing leaves your machine. Keys live in the OS keychain next
+to connection passwords. AI mode stays dormant until you add a key or pick
+Ollama, and `PGLENS_AI_DISABLED=1` hides it entirely.
+
+### Added
+
+- **Schema-aware NL→SQL** (`POST /api/ai/nl2sql`). The prompt is grounded on
+  the tables relevant to the question (scored by name, plus one foreign-key hop
+  so joins survive), with column types, keys and real values: enum labels from
+  `pg_enum` and most-common values for low-cardinality text columns from
+  `pg_stats` (catalog only, no table scan). Filter literals must come from
+  those values, and free text such as names matches with `ILIKE '%…%'`. The
+  schema context is capped, so a large database can't blow the token budget.
+  Prompt contract: `nl2sql-v6`.
+- **Self-checking answers.** Generated SQL is planned with `EXPLAIN` (never
+  `ANALYZE`) to catch invented tables and columns, and the Postgres error goes
+  back to the model for up to two repairs. Read-only SQL then gets a row-count
+  probe: a 0-row result triggers one rewrite, which is kept only if it finds
+  rows. The panel shows "Matches ~N rows right now" or a 0-row warning.
+- **Three providers, BYOK.** Anthropic via `@anthropic-ai/sdk`
+  (`claude-opus-5-5`, adaptive thinking, structured output, server-side refusal
+  fallback); OpenAI via Chat Completions with a strict JSON schema (`gpt-4o`);
+  Ollama via a local daemon (`llama3.1`, configurable host, no key). Settings
+  live in `~/.pglens/ai.json`; `GET`/`PUT /api/ai/config` read and update them.
+- **AI panel** in the right rail, labeled Beta. Generated SQL opens in the
+  Query editor, where Run and "Save as view" work as usual. When the model has
+  to guess (for example reading "delivered" as `status = 'shipped'`), the SQL
+  comes with an amber **Assumption** line. Each answer has an expandable
+  details row: model, number of calls and why, time, tokens, what was sent and
+  what was withheld. Picking an 8b-class Ollama model shows an accuracy warning.
+- **Data controls.** A "Share sample rows and recent queries" setting (on by
+  default) decides whether sample rows, common column values and recent
+  queries go to the model; off means table and column names only. Values from
+  credential-like columns (password, hash, token, API key, secret, SSN, card
+  number, …) are never sent. A **Never send data from** list adds your own
+  rules: `table`, `table.column` or `*.column`. Past queries that mention a
+  withheld name are dropped too.
+- **Write gate.** Read-only by default. With writes off, a statement that
+  writes, runs DDL, uses `SELECT … INTO`, or calls a side-effecting built-in
+  (`pg_terminate_backend`, `dblink`, `pg_read_file`, `lo_*`, `setval`,
+  `pg_sleep`, …) is rejected. With writes on, the panel flags it.
+- **AI eval harness** (`test/eval/`, manual, not in CI). A fixture schema full
+  of traps (British-spelled enum, mixed-case identifiers, case-varied names,
+  singular table names) and 25 prompts graded by comparing result sets with
+  golden SQL: `node test/eval/run.js --provider anthropic|openai|ollama`.
+  Measured on this release: `claude-opus-5-5` 22/25 (all three misses return
+  the right rows with an extra column) and declines all 3 out-of-scope
+  questions; `llama3.1:8b` also 22/25, but answers 2 of the 3 questions it
+  should decline.
+- One structured `ai.nl2sql` log line per request (provider, model, prompt
+  version, calls, tokens, latency, outcome) in `~/.pglens/logs`. Prompts and
+  SQL are not logged; a Postgres validation error message is.
+
+### Security
+
+- The row-count probe is the only model SQL pglens runs without a click. It
+  runs as `SELECT count(*) FROM (…)` in a `READ ONLY` transaction with a 3 s
+  `statement_timeout`, and only after the statement passes the write gate.
+- Closing the panel or reloading cancels model calls still in flight.
+- Patched transitive advisories in `body-parser`, `proxy-addr` and `qs` (an
+  `overrides` entry pins `qs` to `^6.16.1`).
+
+### Fixed
+
+- The schema visualizer and ERD editor crashed with "n.columns is not
+  iterable" if the Query page had been opened first. The two shared a cache
+  entry but stored different shapes. Affects 3.5.x.
 
 ## [3.5.1] - 2026-09-14
 
