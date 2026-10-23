@@ -26,16 +26,23 @@ function semverGt(a, b) {
   return false;
 }
 
+// Latest release from GitHub Releases, the same source the installer and
+// `pglens update` use. pglens is not published to npm.
 function fetchLatestVersion() {
   return new Promise((resolve) => {
     const req = https.get(
-      'https://registry.npmjs.org/pglens/latest',
+      'https://api.github.com/repos/tsvillain/pglens/releases/latest',
+      // GitHub's API rejects requests without a User-Agent.
+      { headers: { 'User-Agent': `pglens/${CURRENT_VERSION}`, Accept: 'application/vnd.github+json' } },
       (res) => {
         if (res.statusCode !== 200) { res.resume(); return resolve(null); }
         let body = '';
         res.on('data', (c) => (body += c));
         res.on('end', () => {
-          try { resolve(JSON.parse(body).version || null); } catch { resolve(null); }
+          try {
+            const tag = JSON.parse(body).tag_name || '';
+            resolve(tag.replace(/^v/, '') || null);
+          } catch { resolve(null); }
         });
       }
     );
@@ -56,7 +63,7 @@ function printUpdateNotice(latest) {
 }
 
 // Opt out: PGLENS_NO_UPDATE_CHECK=1. Shows cached result instantly,
-// refreshes from npm registry at most once per UPDATE_INTERVAL.
+// refreshes from GitHub Releases at most once per UPDATE_INTERVAL.
 async function checkForUpdate() {
   if (process.env.PGLENS_NO_UPDATE_CHECK) return;
 

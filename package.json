@@ -1,9 +1,10 @@
 {
   "name": "pglens",
   "version": "3.6.0",
+  "private": true,
   "description": "A no-code PostgreSQL workstation: browse, filter, edit, and query your databases from a fast local web UI",
   "bin": {
-    "pglens": "./bin/pglens"
+    "pglens": "bin/pglens"
   },
   "files": [
     "bin",
@@ -49,7 +50,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/tsvillain/pglens.git"
+    "url": "git+https://github.com/tsvillain/pglens.git"
   },
   "bugs": {
     "url": "https://github.com/tsvillain/pglens/issues"

@@ -59,10 +59,10 @@ iwr https://pglens.org/install.ps1 -useb | iex
 The installer is self-contained (it bundles Node if you don't have it), keeps pglens
 under `~/.pglens`, and a re-run upgrades in place. **This is the supported install.**
 
-> **Note on npm.** `npm install -g pglens` works but is **not recommended** — it installs
-> outside `~/.pglens` and ends up shadowing the curl copy, which is the usual cause of
-> "I upgraded but still see the old version". `pglens doctor` flags an npm install and
-> prints the commands to remove it. Stick to the curl script above.
+> **Not on npm.** pglens ships only through GitHub Releases and the install script
+> above. The old `pglens` package on npm is deprecated and stops at 3.5.0. If you
+> installed it with `npm install -g pglens`, remove it (`npm rm -g pglens`) and use
+> the curl script; `pglens doctor` detects a leftover npm copy and prints the commands.
 
 ## Usage
 
@@ -197,8 +197,9 @@ keychain, and writes its token and metadata files with mode `0600`. Even so, the
 interface runs over HTTP. **Do not expose the pglens port (54321) directly to the
 internet.**
 
-pglens sends no telemetry. Apart from the CLI checking the npm registry for a
-newer version, the only feature that talks to the internet is AI mode with a
+pglens sends no telemetry. Apart from the CLI checking GitHub Releases for a
+newer version (once a day; set `PGLENS_NO_UPDATE_CHECK=1` to turn it off), the
+only feature that talks to the internet is AI mode with a
 cloud provider, and only when you ask a question; see [AI mode](#ai-mode-beta)
 for exactly what is sent.
 
