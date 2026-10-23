@@ -100,8 +100,8 @@ export function ExportMenu({
 
   return (
     <>
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
-        <Download className="h-4 w-4" /> Export
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)} aria-label="Export" title="Export">
+        <Download className="h-4 w-4" /> <span className="toolbar-label">Export</span>
       </Button>
 
       <Dialog
