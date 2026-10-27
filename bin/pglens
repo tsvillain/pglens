@@ -113,9 +113,8 @@ function getToken() {
   try { return fs.readFileSync(TOKEN_FILE, 'utf8').trim() || null; } catch { return null; }
 }
 
-function buildUrl(port, token, basePath = '/') {
-  const tokenQuery = token ? `?token=${token}` : '';
-  return `http://127.0.0.1:${port}${basePath}${tokenQuery}`;
+function buildUrl(port, token) {
+  return require('../src/config/host').displayUrl(port, token);
 }
 
 program
@@ -159,6 +158,7 @@ program
         const token = getToken();
         const url = buildUrl(port, token);
         console.log(`✓ Server running on ${url}`);
+        if (process.env.PGLENS_PUBLIC_URL) process.exit(0); // server: no browser to open
         const openCmd = process.platform === 'win32' ? 'start'
           : process.platform === 'darwin' ? 'open' : 'xdg-open';
         spawn(openCmd, [url], { detached: true, stdio: 'ignore' }).unref();
@@ -174,10 +174,16 @@ program
   });
 
 program
-  .command('serve', { hidden: true })
-  .action(() => {
-    const { startServer } = require('../src/server');
-    startServer();
+  .command('serve')
+  .description('Run the server in the foreground (Docker, systemd)')
+  .action(async () => {
+    try {
+      // require inside try: bad PGLENS_* values throw at module load.
+      await require('../src/server').startServer();
+    } catch (err) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+    }
   });
 
 program

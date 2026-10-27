@@ -12,6 +12,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { TOKEN_FILE, ensureLayout } = require('./config/paths');
 const { sendError } = require('./http/errors');
+const { secureCookie } = require('./config/host');
 
 const COOKIE_NAME = 'pglens_token';
 let cachedToken = null;
@@ -69,7 +70,7 @@ function createTokenMiddleware(expected) {
       res.cookie(COOKIE_NAME, expected, {
         httpOnly: true,
         sameSite: 'strict',
-        secure: false,
+        secure: secureCookie,
         path: '/',
         maxAge: 365 * 24 * 60 * 60 * 1000,
       });
