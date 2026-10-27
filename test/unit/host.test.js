@@ -26,6 +26,10 @@ test('public URL allows its hostname, secures the cookie, and is printed', () =>
   assert.equal(c.displayUrl(8080), 'https://db.example.com');
 });
 
+test('wildcard bind prints a loopback URL', () => {
+  assert.equal(loadHostConfig({ PGLENS_BIND: '0.0.0.0' }).displayUrl(54321), 'http://127.0.0.1:54321');
+});
+
 test('http public URL keeps the cookie non-secure', () => {
   assert.equal(loadHostConfig({ PGLENS_PUBLIC_URL: 'http://pglens.lan' }).secureCookie, false);
 });

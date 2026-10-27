@@ -49,7 +49,9 @@ function loadHostConfig(env = process.env) {
     allowedHosts,
     secureCookie: publicUrl?.protocol === 'https:',
     displayUrl(port, token) {
-      const base = publicUrl ? publicUrl.origin : `http://${bindHost}:${port}`;
+      // A wildcard bind isn't an address a browser can open.
+      const host = bindHost === '0.0.0.0' || bindHost === '::' ? '127.0.0.1' : bindHost;
+      const base = publicUrl ? publicUrl.origin : `http://${host}:${port}`;
       return token ? `${base}/?token=${token}` : base;
     },
   };

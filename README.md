@@ -165,7 +165,7 @@ docker run -d --name pglens --restart unless-stopped \
 ```
 
 Images are published to `ghcr.io/tsvillain/pglens` for `linux/amd64` and `linux/arm64`
-on every release. Tags: `latest`, `3.7`, `3.7.0`. Pin a version in production. To build
+on every release. Tags: `latest`, `MAJOR.MINOR` and the full version (e.g. `3.6` and `3.6.0`). Pin a version in production. To build
 the image yourself instead, run `docker build -t pglens .` in a clone of this repo.
 
 `-p 127.0.0.1:54321:54321` publishes the port on the server's loopback only, so

@@ -114,9 +114,7 @@ function getToken() {
 }
 
 function buildUrl(port, token) {
-  const { publicUrl } = require('../src/config/host');
-  const base = publicUrl ? publicUrl.origin : `http://127.0.0.1:${port}`;
-  return token ? `${base}/?token=${token}` : base;
+  return require('../src/config/host').displayUrl(port, token);
 }
 
 program
