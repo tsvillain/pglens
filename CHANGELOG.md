@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [3.7.0] - 2026-10-27
+
+Self-hosting. Run pglens on your own server and open it on a subdomain such as
+`https://db.example.com`, behind a reverse proxy that handles HTTPS (Caddy,
+nginx, Traefik). Local installs behave exactly as before.
+
+### Added
+
+- **Docker image** at `ghcr.io/tsvillain/pglens` for `linux/amd64` and
+  `linux/arm64`, published on every release and tagged `latest`, `MAJOR.MINOR`
+  and the full version. It runs as a non-root user, keeps connections, passwords,
+  query history and the auth token in a volume at `/home/node/.pglens`, and
+  prints the sign-in link to `docker logs`.
+- **`PGLENS_PUBLIC_URL`**. Set it to the public origin. pglens then accepts
+  that hostname (every other hostname still gets a 403), marks the auth cookie
+  `Secure` when the URL is `https`, and prints that URL. Origins only; a path
+  such as `/pglens` is rejected at startup.
+- **`PGLENS_PORT`** pins the port. If it's taken, pglens exits with an error
+  instead of picking a random port the proxy doesn't know about.
+- **`pglens serve`** is now a documented command that runs the server in the
+  foreground, for Docker, systemd or any process manager. Invalid `PGLENS_*`
+  values print a clear error and exit 1.
+- README section "Self-hosting on a server": Docker, Caddy and nginx examples,
+  systemd unit, settings table, and access and security notes.
+
+### Fixed
+
+- With `PGLENS_BIND=0.0.0.0` the printed URL was `http://0.0.0.0:…`, which a
+  browser can't open. It's now `http://127.0.0.1:…`.
+
+### Changed
+
+- **GitHub Releases is the primary release channel; npm is a mirror.** The
+  release workflow publishes the GitHub release first, then the same tarball to
+  npm (when an `NPM_TOKEN` secret is set), so npm is never ahead of GitHub.
+- **Update check reads GitHub Releases first**, the same source `pglens update`
+  and the installer use, and falls back to npm only when GitHub can't answer
+  (for example its unauthenticated rate limit). Still once a day, still off with
+  `PGLENS_NO_UPDATE_CHECK=1`.
+- **Health probe moved to `/api/health`** (was `/api/v3/health`). Update any
+  external monitors that hit the old path.
+
+### Removed
+
+- **`errorMessage` field from API error responses.** It mirrored
+  `error.message` for the old vanilla client; read `error.message` instead.
+- `cors` dependency (it was configured to send no CORS headers, so it did nothing).
+- Unused frontend dev dependencies: `@tanstack/router-devtools`,
+  `@testing-library/react`, `@testing-library/dom`.
+
 ## [3.6.0] - 2026-10-23
 
 AI mode (Beta). Ask a question in plain English and get PostgreSQL written
@@ -709,7 +761,10 @@ migration 301-redirects to `/` so existing bookmarks keep working.
 - SQL injection prevention via table name sanitization
 - Input validation for pagination parameters
 
-[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/tsvillain/pglens/compare/v3.7.0...HEAD
+[3.7.0]: https://github.com/tsvillain/pglens/compare/v3.6.0...v3.7.0
+[3.6.0]: https://github.com/tsvillain/pglens/compare/v3.5.1...v3.6.0
+[3.5.1]: https://github.com/tsvillain/pglens/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/tsvillain/pglens/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/tsvillain/pglens/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/tsvillain/pglens/compare/v3.2.0...v3.3.0

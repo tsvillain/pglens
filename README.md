@@ -59,10 +59,12 @@ iwr https://pglens.org/install.ps1 -useb | iex
 The installer is self-contained (it bundles Node if you don't have it), keeps pglens
 under `~/.pglens`, and a re-run upgrades in place. **This is the supported install.**
 
-> **Note on npm.** `npm install -g pglens` works but is **not recommended** — it installs
-> outside `~/.pglens` and ends up shadowing the curl copy, which is the usual cause of
-> "I upgraded but still see the old version". `pglens doctor` flags an npm install and
-> prints the commands to remove it. Stick to the curl script above.
+> **npm is a mirror.** Releases are published to GitHub first, and the same tarball
+> then goes to npm, so `npm install -g pglens` gets the same code. Prefer the curl
+> script anyway: an npm copy lives outside `~/.pglens`, can shadow the curl install
+> on `PATH` (the usual cause of "I upgraded but still see the old version"), and
+> `pglens update` always installs from GitHub. `pglens doctor` finds an npm copy
+> and prints the commands to remove it.
 
 ## Usage
 
@@ -87,7 +89,8 @@ pglens doctor   # diagnose install problems (shadowed/stale binaries)
 
 > **Auth:** Opening the printed URL stores an `HttpOnly` cookie, so subsequent visits
 > work without the token in the address bar. The server binds `127.0.0.1` by default;
-> override with the `PGLENS_BIND` environment variable.
+> override with the `PGLENS_BIND` environment variable. To run pglens on a server, see
+> [Self-hosting on a server](#self-hosting-on-a-server).
 
 ### Connect to a Database
 
@@ -145,6 +148,134 @@ To stop the background service:
 pglens stop
 ```
 
+## Self-hosting on a server
+
+Run pglens on a server and open it on a subdomain such as `https://db.example.com`.
+pglens itself speaks plain HTTP, so it always sits behind a reverse proxy that
+handles TLS (Caddy, nginx, Traefik).
+
+### 1. Run the container
+
+```bash
+docker run -d --name pglens --restart unless-stopped \
+  -p 127.0.0.1:54321:54321 \
+  -v pglens-data:/home/node/.pglens \
+  -e PGLENS_PUBLIC_URL=https://db.example.com \
+  ghcr.io/tsvillain/pglens:latest
+```
+
+Images are published to `ghcr.io/tsvillain/pglens` for `linux/amd64` and `linux/arm64`
+on every release. Tags: `latest`, `MAJOR.MINOR` and the full version (e.g. `3.6` and `3.6.0`). Pin a version in production. To build
+the image yourself instead, run `docker build -t pglens .` in a clone of this repo.
+
+`-p 127.0.0.1:54321:54321` publishes the port on the server's loopback only, so
+the proxy can reach it and the internet can't. The `pglens-data` volume holds
+saved connections, passwords, query history and the auth token.
+
+### 2. Put a TLS proxy in front
+
+Point a DNS record for `db.example.com` at the server, then:
+
+**Caddy** (gets a certificate automatically):
+
+```
+db.example.com {
+    basic_auth {
+        admin <hash from `caddy hash-password`>
+    }
+    reverse_proxy 127.0.0.1:54321
+}
+```
+
+**nginx**:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name db.example.com;
+    # ssl_certificate / ssl_certificate_key ...
+    auth_basic "pglens";
+    auth_basic_user_file /etc/nginx/pglens.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:54321;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+The proxy must pass the original `Host` header (Caddy does by default). pglens
+rejects any hostname other than the one in `PGLENS_PUBLIC_URL` with a 403.
+
+### 3. Sign in
+
+```bash
+docker logs pglens                   # prints  Open: https://db.example.com/?token=...
+docker exec pglens node bin/pglens token
+```
+
+Open that link once. pglens sets an `HttpOnly; Secure; SameSite=Strict` cookie and
+drops the token from the address bar. Share the link only with people who should
+have full access (see below).
+
+### Settings
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PGLENS_PUBLIC_URL` | unset | Public origin, e.g. `https://db.example.com`. Allows that hostname, marks the auth cookie `Secure` when it's `https`, and is the URL pglens prints. Subdomain only; a path such as `/pglens` is rejected. |
+| `PGLENS_BIND` | `127.0.0.1` (`0.0.0.0` in Docker) | Address the server listens on. |
+| `PGLENS_PORT` | `54321`, or a random port if busy | Fixed port. If it's taken, pglens exits instead of picking another. |
+| `PGLENS_SECRET_STORE` | `keychain` (`file` in Docker) | `file` stores passwords in `~/.pglens/secrets.json` (mode `0600`) for servers without a keychain. |
+| `PGLENS_NO_UPDATE_CHECK` | unset (`1` in Docker) | Turns off the daily update check. |
+
+### Without Docker
+
+Install as usual, then run `pglens serve` (foreground) under systemd or any process
+manager:
+
+```ini
+# /etc/systemd/system/pglens.service
+[Unit]
+Description=pglens
+After=network.target
+
+[Service]
+User=pglens
+Environment=PGLENS_PUBLIC_URL=https://db.example.com
+Environment=PGLENS_PORT=54321
+Environment=PGLENS_SECRET_STORE=file
+ExecStart=/home/pglens/.pglens/bin/pglens serve
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Leave `PGLENS_BIND` at `127.0.0.1` here; the proxy runs on the same machine.
+
+### Access and security
+
+- **One token, full access.** Everyone with the token can open every saved
+  connection and run any query those database users are allowed to run. There are
+  no per-user accounts or audit log. Add your proxy's own login on top (basic auth
+  as above, Cloudflare Access, Tailscale, an OAuth proxy).
+- **Use least-privilege database users.** Connect with a read-only role where
+  editing isn't needed.
+- **Rotate the token** to sign everyone out:
+  `docker exec pglens rm /home/node/.pglens/token && docker restart pglens`
+- **Never serve pglens over plain HTTP on a public network.** Without TLS the token
+  travels in clear text.
+- **Hostnames resolve from the server.** Inside the container `localhost` is the
+  container itself; use the database's network address. AI mode's Ollama host
+  default (`127.0.0.1:11434`) works the same way.
+
+### Update
+
+```bash
+docker pull ghcr.io/tsvillain/pglens:latest && docker rm -f pglens
+# then run the same `docker run` command again; the volume keeps your data
+```
+
 ## Troubleshooting
 
 ### `pglens --version` shows an old version after upgrading
@@ -172,7 +303,7 @@ dev setup, code style, and the PR process.
 
 Upgrading from v2.x:
 
-- **Auth token required.** Every route (except `/api/v3/health`) now requires a
+- **Auth token required.** Every route (except `/api/health`) now requires a
   per-install token, stored at `~/.pglens/token`. Use the URL from `pglens url`
   or `pglens start`; the bare `http://localhost:54321` will no longer work without it.
 - **Secrets moved to the OS keychain.** Passwords are no longer kept in plaintext
@@ -186,7 +317,7 @@ Upgrading from v2.x:
   React/TS app. The migration-era `/v3/*` path 301-redirects to `/`, so old bookmarks
   keep working.
 - **Standard error envelope.** API errors now return
-  `{ error: { code, message, hint? }, errorMessage }`. Update any tooling that parsed
+  `{ error: { code, message, hint? } }`. Update any tooling that parsed
   the old error shape.
 
 ## Security Note
@@ -195,12 +326,14 @@ This tool is designed for local development use. v3.0.0 gates every route behind
 per-install token, binds `127.0.0.1` by default, keeps connection passwords in the OS
 keychain, and writes its token and metadata files with mode `0600`. Even so, the web
 interface runs over HTTP. **Do not expose the pglens port (54321) directly to the
-internet.**
+internet.** To reach it remotely, put it behind a TLS proxy as described in
+[Self-hosting on a server](#self-hosting-on-a-server).
 
-pglens sends no telemetry. Apart from the CLI checking the npm registry for a
-newer version, the only feature that talks to the internet is AI mode with a
-cloud provider, and only when you ask a question; see [AI mode](#ai-mode-beta)
-for exactly what is sent.
+pglens sends no telemetry. Apart from the CLI checking GitHub Releases for a
+newer version once a day (npm if GitHub is unreachable; set
+`PGLENS_NO_UPDATE_CHECK=1` to turn it off), the only feature that talks to the
+internet is AI mode with a cloud provider, and only when you ask a question; see
+[AI mode](#ai-mode-beta) for exactly what is sent.
 
 ## License
 

@@ -7,7 +7,6 @@
 
 const express = require('express');
 const cookieParser = require('cookie-parser');
-const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
@@ -21,8 +20,9 @@ const { sendError, codes } = require('./http/errors');
 const { closePool, restoreConnections } = require('./db/connection');
 const apiRoutes = require('./routes/api');
 
+const { bindHost: BIND_HOST, fixedPort, publicUrl, allowedHosts, displayUrl } = require('./config/host');
+
 const DEFAULT_PORT = 54321;
-const BIND_HOST = process.env.PGLENS_BIND || '127.0.0.1';
 
 function isPortInUse(port) {
   return new Promise((resolve) => {
@@ -39,18 +39,19 @@ async function startServer({ standalone = true } = {}) {
   await restoreConnections();
 
   const app = express();
-  let port = DEFAULT_PORT;
-  if (await isPortInUse(port)) port = 0;
+  let port = fixedPort ?? DEFAULT_PORT;
+  if (await isPortInUse(port)) {
+    // A reverse proxy points at a fixed port, so a random fallback would break it.
+    if (fixedPort) throw new Error(`Port ${fixedPort} (PGLENS_PORT) is already in use`);
+    port = 0;
+  }
 
   app.use(cookieParser());
-  // CORS off — same-origin localhost-only.
-  app.use(cors({ origin: false }));
   app.use(express.json({ limit: '10mb' }));
 
   // DNS-rebinding defense: only serve requests whose Host header is a known
-  // loopback name. A rebound attacker domain (resolving to 127.0.0.1) would
-  // arrive with its own Host header and be rejected here.
-  const ALLOWED_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', BIND_HOST]);
+  // loopback name (or the PGLENS_PUBLIC_URL hostname). A rebound attacker
+  // domain would arrive with its own Host header and be rejected here.
   app.use((req, res, next) => {
     const raw = req.headers.host || '';
     // Strip the port. Bracketed IPv6 (`[::1]:54321`) keeps the address inside
@@ -58,14 +59,14 @@ async function startServer({ standalone = true } = {}) {
     const host = raw.startsWith('[')
       ? raw.slice(1, raw.indexOf(']'))
       : raw.split(':')[0];
-    if (!ALLOWED_HOSTS.has(host)) {
+    if (!allowedHosts.has(host.toLowerCase())) {
       return sendError(res, 403, codes.BAD_REQUEST, 'Invalid Host header');
     }
     next();
   });
 
   // Health probe — no auth, used by the landing page + Playwright.
-  app.get('/api/v3/health', (_req, res) => {
+  app.get('/api/health', (_req, res) => {
     res.json({ ok: true, version: pkg.version });
   });
 
@@ -102,10 +103,10 @@ async function startServer({ standalone = true } = {}) {
   return new Promise((resolve) => {
     const server = app.listen(port, BIND_HOST, () => {
       const actualPort = server.address().port;
-      const url = `http://${BIND_HOST}:${actualPort}/?token=${token}`;
-      logger.info({ port: actualPort, host: BIND_HOST }, 'server listening');
+      const url = displayUrl(actualPort, token);
+      logger.info({ port: actualPort, host: BIND_HOST, publicUrl: publicUrl?.origin }, 'server listening');
       if (standalone) {
-        console.log(`✓ Server running on http://${BIND_HOST}:${actualPort}`);
+        console.log(`✓ Server running on ${displayUrl(actualPort)}`);
         console.log(`  Open: ${url}`);
         fs.writeFileSync(PORT_FILE, actualPort.toString(), { mode: 0o600 });
       }

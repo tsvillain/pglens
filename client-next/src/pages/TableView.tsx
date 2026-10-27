@@ -312,10 +312,10 @@ export function TableView() {
           isRefetching && "animate-pulse",
         )}
       />
-      <header className="flex items-center justify-between border-b border-border px-6 py-3">
+      <header className="table-header flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-6 py-3">
         <div className="min-w-0">
           <h1 className="truncate text-lg font-semibold">{tableName}</h1>
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <p className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
             {mode === "advanced"
               ? "Advanced mode (raw SQL)"
               : data
@@ -331,17 +331,17 @@ export function TableView() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <ModeToggle mode={mode} onChange={switchMode} />
           {mode === "nocode" && (
             <>
               {data?.columns && (
                 <>
-                  <Button size="sm" onClick={() => setInsertOpen(true)}>
-                    <Plus className="h-4 w-4" /> Insert row
+                  <Button size="sm" onClick={() => setInsertOpen(true)} aria-label="Insert row" title="Insert row">
+                    <Plus className="h-4 w-4" /> <span className="toolbar-label">Insert row</span>
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => setImportOpen(true)}>
-                    <Upload className="h-4 w-4" /> Import
+                  <Button size="sm" variant="outline" onClick={() => setImportOpen(true)} aria-label="Import" title="Import">
+                    <Upload className="h-4 w-4" /> <span className="toolbar-label">Import</span>
                   </Button>
                   <ExportMenu
                     connectionId={connectionId}
@@ -355,16 +355,18 @@ export function TableView() {
                     variant="outline"
                     onClick={() => setExplainOpen(true)}
                     title="Visualize the query plan for the current filter & sort"
+                    aria-label="Explain plan"
                   >
-                    <Gauge className="h-4 w-4" /> Explain plan
+                    <Gauge className="h-4 w-4" /> <span className="toolbar-label">Explain plan</span>
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() => setChartOpen(true)}
                     title="Chart this page of rows"
+                    aria-label="Chart"
                   >
-                    <BarChart3 className="h-4 w-4" /> Chart
+                    <BarChart3 className="h-4 w-4" /> <span className="toolbar-label">Chart</span>
                   </Button>
                 </>
               )}

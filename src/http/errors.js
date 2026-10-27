@@ -3,12 +3,6 @@
  *
  * Responses use the shape:
  *   { error: { code, message, hint? } }
- *
- * The legacy vanilla client expects `error` to be a string. To stay
- * compatible during the strangler-fig migration, we also include a
- * top-level `errorMessage` mirror; v3 reads the structured field, v2 can
- * fall back to the mirror. Once `client/` is deleted (Phase 0 DoD),
- * the mirror goes too.
  */
 
 function sendError(res, status, code, message, extra = {}) {
@@ -18,7 +12,6 @@ function sendError(res, status, code, message, extra = {}) {
       message,
       ...(extra.hint ? { hint: extra.hint } : {}),
     },
-    errorMessage: message,
   };
   return res.status(status).json(envelope);
 }

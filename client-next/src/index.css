@@ -99,3 +99,14 @@
     background: transparent;
   }
 }
+
+/* Table header: drop button labels (icon + tooltip only) when the pane is
+   too narrow, e.g. sidebar and AI panel both open on a small window. */
+.table-header {
+  container-type: inline-size;
+}
+@container (max-width: 560px) {
+  .table-header .toolbar-label {
+    display: none;
+  }
+}

@@ -33,16 +33,18 @@ export function ModeToggle({
             key={value}
             role="tab"
             aria-selected={active}
+            aria-label={label}
+            title={label}
             onClick={() => onChange(value)}
             className={cn(
-              'flex items-center gap-1.5 rounded px-2.5 py-1 transition',
+              'flex items-center gap-1.5 whitespace-nowrap rounded px-2.5 py-1 transition',
               active
                 ? 'bg-background text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >
             <Icon className="h-3.5 w-3.5" />
-            {label}
+            <span className="toolbar-label">{label}</span>
           </button>
         )
       })}

@@ -1,0 +1,8 @@
+.git
+node_modules
+client-next/node_modules
+client-next/dist
+dist
+e2e
+test
+docs

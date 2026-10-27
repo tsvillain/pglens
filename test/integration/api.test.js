@@ -47,8 +47,8 @@ test.before(async () => {
   jar = `pglens_token=${token}`;
 });
 
-test('GET /api/v3/health is open (no auth required)', async () => {
-  const res = await fetch(baseUrl + '/api/v3/health');
+test('GET /api/health is open (no auth required)', async () => {
+  const res = await fetch(baseUrl + '/api/health');
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.ok, true);
